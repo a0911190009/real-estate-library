@@ -1,0 +1,7 @@
+# 請把以下變數加入 ~/Projects/.env（與 portal、survey、ad 同一份）
+
+# 物件庫 Cloud Run 網址（首次部署 real-estate-library 後，到 Cloud Run 主控台複製網址貼上）
+LIBRARY_URL=https://real-estate-library-334765337861.asia-east1.run.app
+
+# 物件庫免費次數上限（可選，預設 3）
+FREE_LIBRARY_LIMIT=3
