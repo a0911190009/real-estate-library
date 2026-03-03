@@ -647,15 +647,16 @@ def api_extract_from_url():
         params = {
             "access_key": SCREENSHOTONE_KEY,
             "url": url,
-            "format": "jpg",          # jpg 比 png 小，傳輸更快
+            "format": "jpg",
             "image_quality": 80,
             "viewport_width": 1280,
             "viewport_height": 900,
             "full_page": "false",
             "block_ads": "true",
             "block_cookie_banners": "true",
-            "delay": 1,               # 縮短等待時間
-            "timeout": 25,            # 截圖最多等 25 秒
+            "ignore_host_errors": "true",   # 即使目標網站回 4xx/5xx 也強制截圖
+            "delay": 1,
+            "timeout": 25,
         }
         resp = _req.get(screenshot_url, params=params, timeout=35)
         if resp.status_code != 200:
