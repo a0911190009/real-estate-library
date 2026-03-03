@@ -792,6 +792,7 @@ OBJECTS_APP_HTML = """
 <script>
   const fields = {{ fields | tojson }};
   const isAdmin = {{ is_admin | tojson }};
+{% raw %}
   var _libImageFile = null;
 
   // ── Toast ──
@@ -1111,6 +1112,7 @@ OBJECTS_APP_HTML = """
   }
 
   loadUsers(); loadList();
+{% endraw %}
 </script>
 </body>
 </html>
