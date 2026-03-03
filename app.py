@@ -1224,8 +1224,14 @@ __ADMIN_BAR__
       var html = '';
       fields.forEach(function(kv){ var k=kv[0], l=kv[1], v=o[k]; if (v==null||v==='') return; html += '<p><strong class="text-slate-400">'+escapeHtml(l)+'</strong>：'+escapeHtml(String(v))+'</p>'; });
       if (o.ad_outputs && o.ad_outputs.length) {
-        html += '<div class="mt-4 pt-3 border-t border-slate-600"><p class="text-xs text-slate-400 mb-2">廣告產出</p>';
-        o.ad_outputs.forEach(function(ad){ html += '<p><strong>'+escapeHtml(ad.type||'')+'</strong> '+escapeHtml(ad.title||'')+'</p>'; });
+        html += '<div class="mt-4 pt-3 border-t border-slate-600">';
+        html += '<p class="text-xs text-slate-400 mb-3 font-medium">廣告產出</p>';
+        o.ad_outputs.forEach(function(ad) {
+          html += '<div class="mb-4 bg-slate-700/50 rounded-xl p-3 border border-slate-600">';
+          html += '<p class="text-xs font-semibold text-blue-400 mb-2">' + escapeHtml(ad.type || ad.title || '') + '</p>';
+          html += '<div class="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap">' + escapeHtml(ad.content || '（無內容）') + '</div>';
+          html += '</div>';
+        });
         html += '</div>';
       }
       document.getElementById('detailContent').innerHTML = html || '<p class="text-slate-500">無內容</p>';
