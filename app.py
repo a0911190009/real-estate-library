@@ -647,16 +647,17 @@ def api_extract_from_url():
         params = {
             "access_key": SCREENSHOTONE_KEY,
             "url": url,
-            "format": "png",
+            "format": "jpg",          # jpg 比 png 小，傳輸更快
+            "image_quality": 80,
             "viewport_width": 1280,
             "viewport_height": 900,
             "full_page": "false",
             "block_ads": "true",
             "block_cookie_banners": "true",
-            "delay": 2,
-            "timeout": 40,
+            "delay": 1,               # 縮短等待時間
+            "timeout": 25,            # 截圖最多等 25 秒
         }
-        resp = _req.get(screenshot_url, params=params, timeout=50)
+        resp = _req.get(screenshot_url, params=params, timeout=35)
         if resp.status_code != 200:
             try:
                 err_msg = resp.json().get("message", "截圖失敗")
