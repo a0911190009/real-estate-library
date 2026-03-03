@@ -626,7 +626,47 @@ def _render_app():
     portal_link = PORTAL_URL or "#"
     is_admin = _is_admin(email)
     fields = _field_key_label()
-    return render_template_string(OBJECTS_APP_HTML, name=name, portal_link=portal_link, is_admin=is_admin, fields=fields)
+
+    # 生成管理員用戶選擇列
+    if is_admin:
+        admin_bar = (
+            '<div class="flex items-center gap-3 px-5 py-2 bg-slate-800 border-b border-slate-700 text-sm text-slate-400">'
+            '<span>查看用戶：</span>'
+            '<select id="userSelect" class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-1 text-slate-200 text-sm focus:outline-none">'
+            '<option value="">載入中…</option>'
+            '</select>'
+            '</div>'
+        )
+    else:
+        admin_bar = ""
+
+    # 生成編輯表單的欄位 HTML
+    wide_keys = ("env_description", "survey_summary", "address")
+    textarea_keys = ("env_description", "survey_summary")
+    fields_html_parts = []
+    for key, label in fields:
+        span_class = "sm:col-span-2" if key in wide_keys else ""
+        div_class = f'<div class="{span_class}">' if span_class else "<div>"
+        lbl = f'<label class="block text-xs text-slate-400 mb-1" for="f_{key}">{label}</label>'
+        if key in textarea_keys:
+            inp = (f'<textarea id="f_{key}" name="{key}" rows="3"'
+                   f' class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 resize-none focus:outline-none focus:border-blue-500"'
+                   f' placeholder="{label}"></textarea>')
+        else:
+            inp = (f'<input type="text" id="f_{key}" name="{key}"'
+                   f' class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500"'
+                   f' placeholder="{label}">')
+        fields_html_parts.append(f"{div_class}{lbl}{inp}</div>")
+    fields_html = "\n        ".join(fields_html_parts)
+
+    # 用 Python 字串替換，完全避免 Jinja2 誤解析 JS {} 語法
+    html = OBJECTS_APP_HTML
+    html = html.replace("__PORTAL_LINK__", portal_link)
+    html = html.replace("__FIELDS_JSON__", json.dumps(fields, ensure_ascii=False))
+    html = html.replace("__IS_ADMIN_JSON__", json.dumps(is_admin))
+    html = html.replace("__ADMIN_BAR__", admin_bar)
+    html = html.replace("__FIELDS_HTML__", fields_html)
+    return html
 
 
 OBJECTS_APP_HTML = """
@@ -654,7 +694,7 @@ OBJECTS_APP_HTML = """
 <header class="sticky top-0 z-50 flex items-center justify-between px-5 py-3 bg-slate-900/95 backdrop-blur border-b border-slate-700 shadow">
   <span class="font-bold text-slate-100">📁 物件庫</span>
   <div class="flex gap-2">
-    <a href="{{ portal_link }}" class="px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm transition">🏠 返回入口</a>
+    <a href="__PORTAL_LINK__" class="px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm transition">🏠 返回入口</a>
     <button type="button" onclick="openNewModal()"
       class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition shadow">
       ＋ 建立物件資訊
@@ -662,14 +702,7 @@ OBJECTS_APP_HTML = """
   </div>
 </header>
 
-{% if is_admin %}
-<div class="flex items-center gap-3 px-5 py-2 bg-slate-800 border-b border-slate-700 text-sm text-slate-400">
-  <span>查看用戶：</span>
-  <select id="userSelect" class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-1 text-slate-200 text-sm focus:outline-none">
-    <option value="">載入中…</option>
-  </select>
-</div>
-{% endif %}
+__ADMIN_BAR__
 
 <div class="max-w-3xl mx-auto px-4 py-6">
   <div id="listPanel" class="space-y-3"></div>
@@ -680,20 +713,7 @@ OBJECTS_APP_HTML = """
     <form id="objForm">
       <input type="hidden" id="objId" name="id">
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {% for key, label in fields %}
-        <div class="{{ 'sm:col-span-2' if key in ('env_description','survey_summary','address') else '' }}">
-          <label class="block text-xs text-slate-400 mb-1" for="f_{{ key }}">{{ label }}</label>
-          {% if key == 'env_description' or key == 'survey_summary' %}
-          <textarea id="f_{{ key }}" name="{{ key }}" rows="3"
-            class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 resize-none focus:outline-none focus:border-blue-500"
-            placeholder="{{ label }}"></textarea>
-          {% else %}
-          <input type="text" id="f_{{ key }}" name="{{ key }}"
-            class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500"
-            placeholder="{{ label }}">
-          {% endif %}
-        </div>
-        {% endfor %}
+        __FIELDS_HTML__
       </div>
       <div class="flex gap-3 mt-4">
         <button type="submit" class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition">儲存</button>
@@ -790,9 +810,8 @@ OBJECTS_APP_HTML = """
 </div>
 
 <script>
-  const fields = {{ fields | tojson }};
-  const isAdmin = {{ is_admin | tojson }};
-{% raw %}
+  const fields = __FIELDS_JSON__;
+  const isAdmin = __IS_ADMIN_JSON__;
   var _libImageFile = null;
 
   // ── Toast ──
@@ -1112,7 +1131,6 @@ OBJECTS_APP_HTML = """
   }
 
   loadUsers(); loadList();
-{% endraw %}
 </script>
 </body>
 </html>
