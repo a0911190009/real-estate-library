@@ -18,6 +18,7 @@ from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
 # Gemini 圖片辨識（直接呼叫，不經由 Portal 代理）
 # 優先用新版 google.genai，fallback 到舊版 google.generativeai
 _GEMINI_KEY = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
+SCREENSHOTONE_KEY = (os.environ.get("SCREENSHOTONE_KEY") or "").strip()
 _genai = None
 _GEMINI_OK = False
 try:
@@ -623,6 +624,60 @@ def api_extract_from_image():
     return jsonify({"ok": True, "extracted": extracted})
 
 
+@app.route("/api/extract-from-url", methods=["POST"])
+def api_extract_from_url():
+    """網址截圖辨識：Screenshotone 截圖 → Gemini 辨識 → 回傳 extracted。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    if not SCREENSHOTONE_KEY:
+        return jsonify({"error": "未設定截圖服務 API Key"}), 503
+    if not _GEMINI_OK:
+        return jsonify({"error": "未設定 GOOGLE_API_KEY，無法辨識"}), 503
+    data = request.get_json() or {}
+    url = (data.get("url") or "").strip()
+    if not url:
+        return jsonify({"error": "請提供網址"}), 400
+    if not url.startswith("http://") and not url.startswith("https://"):
+        return jsonify({"error": "網址須為 http:// 或 https://"}), 400
+    import requests as _req
+    # 呼叫 Screenshotone API 截圖（回傳 PNG）
+    try:
+        screenshot_url = "https://api.screenshotone.com/take"
+        params = {
+            "access_key": SCREENSHOTONE_KEY,
+            "url": url,
+            "format": "png",
+            "viewport_width": 1280,
+            "viewport_height": 900,
+            "full_page": "false",
+            "block_ads": "true",
+            "block_cookie_banners": "true",
+            "delay": 2,
+            "timeout": 40,
+        }
+        resp = _req.get(screenshot_url, params=params, timeout=50)
+        if resp.status_code != 200:
+            try:
+                err_msg = resp.json().get("message", "截圖失敗")
+            except Exception:
+                err_msg = f"截圖服務回傳 {resp.status_code}"
+            return jsonify({"error": err_msg}), 502
+        raw_bytes = resp.content
+        if not raw_bytes:
+            return jsonify({"error": "截圖無內容"}), 502
+    except Exception as e:
+        return jsonify({"error": f"截圖失敗：{e}"}), 502
+    # 用 Gemini 辨識截圖
+    try:
+        extracted = _gemini_extract_image(raw_bytes, "image/png")
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 503
+    except Exception as e:
+        return jsonify({"error": f"辨識失敗：{e}"}), 502
+    return jsonify({"ok": True, "extracted": extracted})
+
+
 # ── AD 歷史代理（資料在 AD 服務，保留代理） ──
 
 def _portal_api_get(path, email):
@@ -832,13 +887,13 @@ __ADMIN_BAR__
             class="px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed">辨識並帶入（2 點）</button>
         </div>
         <p class="text-xs text-slate-500 mt-2 min-h-[1em]" id="lib-extract-status"></p>
-        <div class="mt-3 pt-3 border-t border-slate-600 opacity-50">
-          <p class="text-xs text-slate-400 mb-2">或輸入物件網址（截圖辨識，功能即將推出）</p>
+        <div class="mt-3 pt-3 border-t border-slate-600">
+          <p class="text-xs text-slate-400 mb-2">或輸入物件網址（自動截圖後辨識）</p>
           <div class="flex gap-2 items-center">
-            <input type="url" id="lib-url-input" placeholder="https:// 房仲或售屋網頁" disabled
-              class="flex-1 min-w-0 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-500 cursor-not-allowed" />
-            <button type="button" id="lib-url-btn" disabled
-              class="px-3 py-2 rounded-lg bg-slate-600 text-slate-500 text-sm font-medium whitespace-nowrap cursor-not-allowed">截圖辨識（即將開放）</button>
+            <input type="url" id="lib-url-input" placeholder="https:// 房仲或售屋網頁"
+              class="flex-1 min-w-0 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500" />
+            <button type="button" id="lib-url-btn" onclick="runLibExtractFromUrl()"
+              class="px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium whitespace-nowrap transition">截圖並辨識</button>
           </div>
           <p class="text-xs text-slate-500 mt-2 min-h-[1em]" id="lib-url-status"></p>
         </div>
@@ -1075,17 +1130,17 @@ __ADMIN_BAR__
     if (!url) { document.getElementById('lib-url-status').textContent = '請輸入網址'; return; }
     var statusEl = document.getElementById('lib-url-status');
     var btn = document.getElementById('lib-url-btn');
-    statusEl.textContent = '截圖與辨識中…（約 10–30 秒）';
+    statusEl.textContent = '截圖與辨識中…（約 15–30 秒）';
     statusEl.className = 'text-xs text-slate-400 mt-2 min-h-[1em]';
     btn.disabled = true;
     try {
-      var r = await fetch('/api/proxy/extract-from-url', {
+      var r = await fetch('/api/extract-from-url', {
         method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ url: url }),
       });
       var d = await r.json();
       if (d.ok && d.extracted) {
         fillLibForm(d.extracted);
-        statusEl.textContent = '已帶入欄位，剩餘 ' + (d.points ?? '') + ' 點';
+        statusEl.textContent = '✅ 辨識完成，欄位已帶入';
         statusEl.className = 'text-xs text-emerald-400 mt-2 min-h-[1em]';
       } else {
         statusEl.textContent = d.error || '截圖或辨識失敗';
