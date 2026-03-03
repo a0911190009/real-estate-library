@@ -7,12 +7,25 @@
 import os
 import json
 import re
+import base64
 import urllib.request
 import urllib.error
 from datetime import datetime
 
 from flask import Flask, request, session, redirect, jsonify, render_template_string
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
+
+# Gemini 圖片辨識（直接呼叫，不經由 Portal 代理）
+try:
+    import google.generativeai as _genai
+    # 同時支援 GEMINI_API_KEY 和 GOOGLE_API_KEY（與 AD 服務一致）
+    _GEMINI_KEY = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
+    if _GEMINI_KEY:
+        _genai.configure(api_key=_GEMINI_KEY)
+    _GEMINI_OK = bool(_GEMINI_KEY)
+except ImportError:
+    _genai = None
+    _GEMINI_OK = False
 
 try:
     from dotenv import load_dotenv
@@ -509,9 +522,61 @@ def _field_key_label():
     return [(k, l) for k, l, _ in PROPERTY_FIELDS + EXTRA_FIELDS]
 
 
-# ── Portal API 代理（圖片辨識、截圖辨識、AD歷史） ──
-# Library 使用者已透過 Portal token 登入，這些代理路由以後端身份
-# 帶 X-Service-Key 向 Portal 發請求，Portal 以 email query param 識別使用者。
+# ── Gemini 圖片辨識（直接呼叫） ──
+_EXTRACT_SYSTEM = (
+    "你是房產截圖分析專家。"
+    "規則：輸出格式僅 JSON；語言繁體中文（台灣）；"
+    "數值欄位（price、building_ping、land_ping、authority_ping）必須為純數字。"
+    "請只回傳 JSON，不要 markdown 標記。"
+)
+_EXTRACT_PROMPT = (
+    '請從圖片中擷取房產物件資訊，輸出以下 JSON 格式（若無資料則留空字串或 null）：\n'
+    '{"project_name":"物件名稱","address":"完整地址","price":1800,"building_ping":10.5,'
+    '"land_ping":15.2,"authority_ping":25.7,"layout":"3房2廳2衛","floor":"3樓/共5樓",'
+    '"age":"5年","parking":"有","case_number":"A123456","location_area":"台東縣"}\n'
+    '注意：price、building_ping、land_ping、authority_ping 必須是純數字。'
+    '請務必使用真實的物件名稱，不要輸出「物件名稱」這四個字。'
+)
+
+
+def _gemini_extract_image(raw_bytes, mime):
+    """用 Gemini 辨識圖片，回傳 extracted dict。失敗拋 RuntimeError。"""
+    if not _GEMINI_OK or not _genai:
+        raise RuntimeError("未設定 GEMINI_API_KEY，無法使用圖片辨識")
+    prompt = _EXTRACT_SYSTEM + "\n\n" + _EXTRACT_PROMPT
+    b64 = base64.b64encode(raw_bytes).decode("utf-8")
+    image_data = _genai.types.Part.from_data(data=raw_bytes, mime_type=mime or "image/jpeg")
+    model = _genai.GenerativeModel("gemini-2.0-flash")
+    cfg = _genai.types.GenerationConfig(response_mime_type="application/json")
+    resp = model.generate_content([prompt, image_data], generation_config=cfg)
+    parsed = json.loads(resp.text)
+    if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+        parsed = parsed[0]
+    return parsed
+
+
+@app.route("/api/extract-from-image", methods=["POST"])
+def api_extract_from_image():
+    """圖片辨識：直接呼叫 Gemini，回傳 extracted 物件欄位。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    f = request.files.get("image")
+    if not f or f.filename == "":
+        return jsonify({"error": "請上傳或貼上圖片"}), 400
+    raw = f.read()
+    if not raw:
+        return jsonify({"error": "圖片為空"}), 400
+    try:
+        extracted = _gemini_extract_image(raw, f.mimetype or "image/jpeg")
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 503
+    except Exception as e:
+        return jsonify({"error": f"辨識失敗：{e}"}), 502
+    return jsonify({"ok": True, "extracted": extracted})
+
+
+# ── AD 歷史代理（資料在 AD 服務，保留代理） ──
 
 def _portal_api_get(path, email):
     """後端代理 GET Portal API，回傳 (data_dict, status_code)。"""
@@ -553,46 +618,9 @@ def _portal_api_post_json(path, email, payload):
         return {"error": f"連線失敗：{e}"}, 502
 
 
-@app.route("/api/proxy/extract-from-image", methods=["POST"])
-def proxy_extract_from_image():
-    """代理：上傳圖片 → Portal 圖片辨識 → 回傳 extracted。"""
-    email, err = _require_user()
-    if err:
-        return jsonify({"error": err[0]}), err[1]
-    if not PORTAL_URL:
-        return jsonify({"error": "未設定 PORTAL_URL"}), 503
-    # 以 multipart 直接轉發給 Portal
-    import requests as _req
-    try:
-        f = request.files.get("image")
-        if not f:
-            return jsonify({"error": "未提供圖片"}), 400
-        resp = _req.post(
-            PORTAL_URL.rstrip("/") + "/api/properties/extract-from-image?email=" + urllib.request.quote(email),
-            files={"image": (f.filename or "image.png", f.stream, f.mimetype or "image/png")},
-            headers={"X-Service-Key": SERVICE_API_KEY},
-            timeout=60,
-        )
-        return jsonify(resp.json()), resp.status_code
-    except Exception as e:
-        return jsonify({"error": f"代理失敗：{e}"}), 502
-
-
-@app.route("/api/proxy/extract-from-url", methods=["POST"])
-def proxy_extract_from_url():
-    """代理：網址截圖辨識 → Portal → 回傳 extracted。"""
-    email, err = _require_user()
-    if err:
-        return jsonify({"error": err[0]}), err[1]
-    data, code = _portal_api_post_json(
-        "/api/properties/extract-from-url", email, request.get_json() or {}
-    )
-    return jsonify(data), code
-
-
 @app.route("/api/proxy/ad-history-list", methods=["GET"])
 def proxy_ad_history_list():
-    """代理：取得 AD 歷史列表（供匯入使用）。"""
+    """代理：取得 AD 歷史列表（AD 歷史資料在 AD 服務，保留代理）。"""
     email, err = _require_user()
     if err:
         return jsonify({"error": err[0]}), err[1]
@@ -602,7 +630,7 @@ def proxy_ad_history_list():
 
 @app.route("/api/proxy/import-from-ad-history", methods=["POST"])
 def proxy_import_from_ad_history():
-    """代理：從 AD 歷史匯入為物件。"""
+    """代理：從 AD 歷史匯入為物件（AD 歷史資料在 AD 服務，保留代理）。"""
     email, err = _require_user()
     if err:
         return jsonify({"error": err[0]}), err[1]
@@ -757,15 +785,14 @@ __ADMIN_BAR__
             class="px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed">辨識並帶入（2 點）</button>
         </div>
         <p class="text-xs text-slate-500 mt-2 min-h-[1em]" id="lib-extract-status"></p>
-        <div class="mt-3 pt-3 border-t border-slate-600">
-          <p class="text-xs text-slate-400 mb-2">或輸入物件網址（全頁截圖後辨識，扣 2 點）</p>
+        <div class="mt-3 pt-3 border-t border-slate-600 opacity-50">
+          <p class="text-xs text-slate-400 mb-2">或輸入物件網址（截圖辨識，功能即將推出）</p>
           <div class="flex gap-2 items-center">
-            <input type="url" id="lib-url-input" placeholder="https:// 房仲或售屋網頁"
-              class="flex-1 min-w-0 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500" />
-            <button type="button" id="lib-url-btn" onclick="runLibExtractFromUrl()"
-              class="px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium whitespace-nowrap">截圖並辨識（2 點）</button>
+            <input type="url" id="lib-url-input" placeholder="https:// 房仲或售屋網頁" disabled
+              class="flex-1 min-w-0 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-500 cursor-not-allowed" />
+            <button type="button" id="lib-url-btn" disabled
+              class="px-3 py-2 rounded-lg bg-slate-600 text-slate-500 text-sm font-medium whitespace-nowrap cursor-not-allowed">截圖辨識（即將開放）</button>
           </div>
-          <p class="text-xs text-slate-500 mt-2 min-h-[1em]" id="lib-url-status"></p>
         </div>
       </div>
       <!-- 從 AD 歷史匯入 -->
@@ -977,7 +1004,7 @@ __ADMIN_BAR__
     try {
       var fd = new FormData();
       fd.append('image', _libImageFile);
-      var r = await fetch('/api/proxy/extract-from-image', { method: 'POST', body: fd });
+      var r = await fetch('/api/extract-from-image', { method: 'POST', body: fd });
       var d = await r.json();
       if (d.ok && d.extracted) {
         fillLibForm(d.extracted);
