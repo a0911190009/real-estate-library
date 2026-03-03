@@ -478,6 +478,29 @@ def api_objects_from_service():
     return jsonify({"error": "儲存失敗"}), 500
 
 
+@app.route("/api/objects/<obj_id>/ad-outputs", methods=["PATCH"])
+def api_objects_update_ad_outputs(obj_id):
+    """由 AD 服務以 X-Service-Key 更新指定物件的 ad_outputs（不動其他欄位）。
+    Body: { "email": "user@example.com", "ad_outputs": [...] }"""
+    if not _verify_service_key():
+        return jsonify({"error": "需要有效的 X-Service-Key"}), 401
+    data = request.get_json() or {}
+    email = (data.get("email") or "").strip()
+    if not email or "@" not in email:
+        return jsonify({"error": "缺少有效的 email"}), 400
+    ad_outputs = data.get("ad_outputs")
+    if not isinstance(ad_outputs, list):
+        return jsonify({"error": "ad_outputs 必須為陣列"}), 400
+    obj = _load_object(email, obj_id)
+    if not obj:
+        return jsonify({"error": "物件不存在"}), 404
+    obj[AD_OUTPUTS_KEY] = ad_outputs
+    obj["updated_at"] = datetime.now().isoformat()
+    if _save_object(email, obj_id, obj):
+        return jsonify({"ok": True, "id": obj_id})
+    return jsonify({"error": "儲存失敗"}), 500
+
+
 @app.route("/api/objects/<obj_id>", methods=["GET"])
 def api_objects_get(obj_id):
     email, err = _require_user()
