@@ -817,6 +817,7 @@ __ADMIN_BAR__
             <button type="button" id="lib-url-btn" disabled
               class="px-3 py-2 rounded-lg bg-slate-600 text-slate-500 text-sm font-medium whitespace-nowrap cursor-not-allowed">截圖辨識（即將開放）</button>
           </div>
+          <p class="text-xs text-slate-500 mt-2 min-h-[1em]" id="lib-url-status"></p>
         </div>
       </div>
       <!-- 從 AD 歷史匯入 -->
