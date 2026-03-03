@@ -834,19 +834,56 @@ __ADMIN_BAR__
     fetch(apiUrl('/api/objects')).then(r => r.json()).then(data => {
       if (data.error) { toast(data.error, 'error'); return; }
       var el = document.getElementById('listPanel');
-      el.innerHTML = (data.items || []).map(o => {
+      el.innerHTML = '';
+      var items = data.items || [];
+      if (!items.length) {
+        el.innerHTML = '<p class="text-slate-500 text-center py-8">尚無物件，點「＋ 建立物件資訊」開始建立。</p>';
+        return;
+      }
+      items.forEach(function(o) {
         var title = o.custom_title || o.project_name || o.address || o.id || '未命名';
         var meta = [o.address, o.updated_at ? o.updated_at.slice(0,10) : ''].filter(Boolean).join(' · ');
         var id = o.id;
-        return '<div class="bg-slate-800 border border-slate-600 rounded-xl px-4 py-3 flex justify-between items-center gap-3 flex-wrap">' +
-          '<div><div class="font-semibold text-slate-100">' + escapeHtml(title) + '</div><div class="text-xs text-slate-400 mt-0.5">' + escapeHtml(meta) + '</div></div>' +
-          '<div class="flex gap-2">' +
-          '<button class="px-3 py-1.5 rounded-lg bg-slate-600 hover:bg-slate-500 text-slate-200 text-xs transition" onclick=\'viewDetail("' + id.replace(/\\/g,'\\\\').replace(/"/g,'\\"') + '")\'>查看</button>' +
-          '<button class="px-3 py-1.5 rounded-lg bg-slate-600 hover:bg-slate-500 text-slate-200 text-xs transition" onclick=\'editObj("' + id.replace(/\\/g,'\\\\').replace(/"/g,'\\"') + '")\'>編輯</button>' +
-          '<button class="px-3 py-1.5 rounded-lg bg-rose-700 hover:bg-rose-600 text-white text-xs transition" onclick=\'delObj("' + id.replace(/\\/g,'\\\\').replace(/"/g,'\\"') + '")\'>刪除</button>' +
-          '</div></div>';
-      }).join('') || '<p class="text-slate-500 text-center py-8">尚無物件，點「＋ 建立物件資訊」開始建立。</p>';
-    }).catch(() => { toast('載入失敗', 'error'); });
+
+        var wrap = document.createElement('div');
+        wrap.className = 'bg-slate-800 border border-slate-600 rounded-xl px-4 py-3 flex justify-between items-center gap-3 flex-wrap';
+
+        var info = document.createElement('div');
+        var titleEl = document.createElement('div');
+        titleEl.className = 'font-semibold text-slate-100';
+        titleEl.textContent = title;
+        var metaEl = document.createElement('div');
+        metaEl.className = 'text-xs text-slate-400 mt-0.5';
+        metaEl.textContent = meta;
+        info.appendChild(titleEl);
+        info.appendChild(metaEl);
+
+        var btns = document.createElement('div');
+        btns.className = 'flex gap-2';
+
+        var bView = document.createElement('button');
+        bView.className = 'px-3 py-1.5 rounded-lg bg-slate-600 hover:bg-slate-500 text-slate-200 text-xs transition';
+        bView.textContent = '查看';
+        bView.onclick = function() { viewDetail(id); };
+
+        var bEdit = document.createElement('button');
+        bEdit.className = 'px-3 py-1.5 rounded-lg bg-slate-600 hover:bg-slate-500 text-slate-200 text-xs transition';
+        bEdit.textContent = '編輯';
+        bEdit.onclick = function() { editObj(id); };
+
+        var bDel = document.createElement('button');
+        bDel.className = 'px-3 py-1.5 rounded-lg bg-rose-700 hover:bg-rose-600 text-white text-xs transition';
+        bDel.textContent = '刪除';
+        bDel.onclick = function() { delObj(id); };
+
+        btns.appendChild(bView);
+        btns.appendChild(bEdit);
+        btns.appendChild(bDel);
+        wrap.appendChild(info);
+        wrap.appendChild(btns);
+        el.appendChild(wrap);
+      });
+    }).catch(function() { toast('載入失敗', 'error'); });
   }
 
   function loadUsers() {
