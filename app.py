@@ -16,16 +16,25 @@ from flask import Flask, request, session, redirect, jsonify, render_template_st
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
 
 # Gemini 圖片辨識（直接呼叫，不經由 Portal 代理）
+# 優先用新版 google.genai，fallback 到舊版 google.generativeai
+_GEMINI_KEY = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
+_genai = None
+_GEMINI_OK = False
 try:
-    import google.generativeai as _genai
-    # 同時支援 GEMINI_API_KEY 和 GOOGLE_API_KEY（與 AD 服務一致）
-    _GEMINI_KEY = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
-    if _GEMINI_KEY:
-        _genai.configure(api_key=_GEMINI_KEY)
+    import google.genai as _genai_new
+    _genai = _genai_new
     _GEMINI_OK = bool(_GEMINI_KEY)
+    _GEMINI_SDK = "new"
 except ImportError:
-    _genai = None
-    _GEMINI_OK = False
+    try:
+        import google.generativeai as _genai_old
+        if _GEMINI_KEY:
+            _genai_old.configure(api_key=_GEMINI_KEY)
+        _genai = _genai_old
+        _GEMINI_OK = bool(_GEMINI_KEY)
+        _GEMINI_SDK = "old"
+    except ImportError:
+        _GEMINI_SDK = None
 
 try:
     from dotenv import load_dotenv
@@ -542,14 +551,29 @@ _EXTRACT_PROMPT = (
 def _gemini_extract_image(raw_bytes, mime):
     """用 Gemini 辨識圖片，回傳 extracted dict。失敗拋 RuntimeError。"""
     if not _GEMINI_OK or not _genai:
-        raise RuntimeError("未設定 GEMINI_API_KEY，無法使用圖片辨識")
+        raise RuntimeError("未設定 GOOGLE_API_KEY，無法使用圖片辨識")
     prompt = _EXTRACT_SYSTEM + "\n\n" + _EXTRACT_PROMPT
-    b64 = base64.b64encode(raw_bytes).decode("utf-8")
-    image_data = _genai.types.Part.from_data(data=raw_bytes, mime_type=mime or "image/jpeg")
-    model = _genai.GenerativeModel("gemini-2.0-flash")
-    cfg = _genai.types.GenerationConfig(response_mime_type="application/json")
-    resp = model.generate_content([prompt, image_data], generation_config=cfg)
-    parsed = json.loads(resp.text)
+    mime = mime or "image/jpeg"
+
+    if _GEMINI_SDK == "new":
+        # 新版 google.genai SDK
+        client = _genai.Client(api_key=_GEMINI_KEY)
+        image_part = _genai.types.Part.from_bytes(data=raw_bytes, mime_type=mime)
+        resp = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[prompt, image_part],
+            config=_genai.types.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        text = resp.text
+    else:
+        # 舊版 google.generativeai SDK
+        image_part = _genai.types.Part.from_data(data=raw_bytes, mime_type=mime)
+        model = _genai.GenerativeModel("gemini-2.0-flash")
+        cfg = _genai.types.GenerationConfig(response_mime_type="application/json")
+        resp = model.generate_content([prompt, image_part], generation_config=cfg)
+        text = resp.text
+
+    parsed = json.loads(text)
     if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
         parsed = parsed[0]
     return parsed
