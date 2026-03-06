@@ -1158,6 +1158,87 @@ def api_buyers_match(buyer_id):
     })
 
 
+# ── 戰況版 API（Firestore war_room/{email}/items 集合） ──
+
+@app.route("/api/war-room", methods=["GET"])
+def api_war_room_list():
+    """列出個人斡旋記錄（按更新時間降冪）。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    db = _get_db()
+    if db is None:
+        return jsonify([])
+    try:
+        docs = db.collection("war_room").document(email).collection("items")\
+                 .order_by("updated_at", direction="DESCENDING").stream()
+        items = [{"id": d.id, **d.to_dict()} for d in docs]
+        return jsonify(items)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/war-room", methods=["POST"])
+def api_war_room_create():
+    """新增一筆斡旋記錄。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    data = request.get_json(silent=True) or {}
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "prop_id":     data.get("prop_id", ""),
+        "prop_name":   data.get("prop_name", ""),
+        "my_price":    data.get("my_price", ""),
+        "owner_floor": data.get("owner_floor", ""),
+        "status":      data.get("status", "談判中"),
+        "note":        data.get("note", ""),
+        "created_at":  now,
+        "updated_at":  now,
+    }
+    ref = db.collection("war_room").document(email).collection("items").document()
+    ref.set(doc)
+    return jsonify({"id": ref.id, **doc})
+
+
+@app.route("/api/war-room/<item_id>", methods=["PUT"])
+def api_war_room_update(item_id):
+    """更新斡旋記錄。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    data = request.get_json(silent=True) or {}
+    now = datetime.now(timezone.utc).isoformat()
+    updates = {
+        "my_price":    data.get("my_price", ""),
+        "owner_floor": data.get("owner_floor", ""),
+        "status":      data.get("status", "談判中"),
+        "note":        data.get("note", ""),
+        "updated_at":  now,
+    }
+    db.collection("war_room").document(email).collection("items").document(item_id).update(updates)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/war-room/<item_id>", methods=["DELETE"])
+def api_war_room_delete(item_id):
+    """刪除斡旋記錄。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    db.collection("war_room").document(email).collection("items").document(item_id).delete()
+    return jsonify({"ok": True})
+
+
 # ── 公司物件庫搜尋 API（Firestore company_properties 集合） ──
 
 @app.route("/api/company-properties/search", methods=["GET"])
@@ -1968,6 +2049,10 @@ OBJECTS_APP_HTML = """
       class="tab-btn flex-1 py-2 text-sm font-medium text-slate-400 border-b-2 border-transparent hover:text-slate-200 transition">
       👥 買方需求
     </button>
+    <button id="tab-war" onclick="switchTab('war')"
+      class="tab-btn flex-1 py-2 text-sm font-medium text-slate-400 border-b-2 border-transparent hover:text-slate-200 transition">
+      ⚔️ 戰況版
+    </button>
   </div>
 </header>
 
@@ -2125,6 +2210,78 @@ OBJECTS_APP_HTML = """
   </div>
   <div id="buyer-list" class="space-y-3">
     <p class="text-slate-500 text-center py-10">載入中…</p>
+  </div>
+</div>
+
+<!-- ══ 戰況版分頁 ══ -->
+<div id="pane-war" style="display:none" class="max-w-4xl mx-auto px-4 py-6">
+  <div class="flex items-center justify-between mb-4">
+    <div>
+      <h2 class="font-bold text-slate-100 text-lg">⚔️ 斡旋戰況版</h2>
+      <p class="text-xs text-slate-400 mt-0.5">正在斡旋的物件，個人私用，跨裝置同步</p>
+    </div>
+  </div>
+  <!-- 戰況列表 -->
+  <div id="war-list" class="space-y-3">
+    <p class="text-slate-500 text-center py-10">載入中…</p>
+  </div>
+  <div id="war-empty" class="hidden text-center py-16 text-slate-500">
+    <div class="text-5xl mb-3">🕊️</div>
+    <p class="text-lg font-medium text-slate-400">目前沒有斡旋物件</p>
+    <p class="text-sm mt-1">在公司物件庫的卡片上按「⚔️ 加入戰況」</p>
+  </div>
+</div>
+
+<!-- 戰況 Modal（新增/編輯） -->
+<div id="war-modal" role="dialog" aria-modal="true"
+  class="hidden fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+  onclick="if(event.target===this)warCloseModal()">
+  <div class="w-full max-w-md rounded-2xl bg-slate-800 border border-slate-600 shadow-2xl flex flex-col max-h-[90vh]"
+    onclick="event.stopPropagation()">
+    <div class="flex items-center justify-between px-6 py-4 border-b border-slate-700 shrink-0">
+      <h3 id="war-modal-title" class="font-bold text-slate-100">斡旋記錄</h3>
+      <button onclick="warCloseModal()" class="text-slate-400 hover:text-slate-200 text-xl leading-none">✕</button>
+    </div>
+    <div class="overflow-y-auto px-6 py-5 space-y-4">
+      <input type="hidden" id="war-item-id">
+      <input type="hidden" id="war-prop-id">
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">物件案名</label>
+        <p id="war-prop-name" class="text-slate-100 font-semibold text-sm"></p>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">我的出價（萬）</label>
+          <input id="war-my-price" type="number" placeholder="例：500"
+            class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">屋主底價（萬）</label>
+          <input id="war-owner-floor" type="number" placeholder="例：480"
+            class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
+        </div>
+      </div>
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">目前狀態</label>
+        <select id="war-status"
+          class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none">
+          <option value="談判中">談判中 🔥</option>
+          <option value="等回覆">等回覆 ⏳</option>
+          <option value="已破局">已破局 💔</option>
+          <option value="已成交">已成交 🎉</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">備註（作戰策略等）</label>
+        <textarea id="war-note" rows="3" placeholder="例：屋主說最低480，但感覺還有空間…"
+          class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500 resize-none"></textarea>
+      </div>
+    </div>
+    <div class="flex gap-3 px-6 py-4 border-t border-slate-700 shrink-0">
+      <button onclick="warSave()" class="flex-1 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition">儲存</button>
+      <button id="war-delete-btn" onclick="warDelete()" class="px-4 py-2 rounded-lg bg-red-700 hover:bg-red-600 text-white text-sm transition hidden">刪除</button>
+      <button onclick="warCloseModal()" class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm transition">取消</button>
+    </div>
   </div>
 </div>
 
@@ -2758,6 +2915,8 @@ OBJECTS_APP_HTML = """
     paneMyEl.style.display      = 'none';
     paneCompanyEl.style.display = 'none';
     paneBuyersEl.style.display  = 'none';
+    var paneWarEl = document.getElementById('pane-war');
+    if (paneWarEl) paneWarEl.style.display = 'none';
     if (btnNewObj) btnNewObj.style.display = 'none';
 
     if (tab === 'my') {
@@ -2767,6 +2926,8 @@ OBJECTS_APP_HTML = """
       paneCompanyEl.style.display = 'block';
     } else if (tab === 'buyers') {
       paneBuyersEl.style.display = 'block';
+    } else if (tab === 'war') {
+      if (paneWarEl) paneWarEl.style.display = 'block';
     }
 
     // 分頁按鈕樣式
@@ -2796,6 +2957,10 @@ OBJECTS_APP_HTML = """
     // 切換到買方需求時：載入列表
     if (tab === 'buyers') {
       buyerLoadList();
+    }
+    // 切換到戰況版時：載入列表
+    if (tab === 'war') {
+      warLoadList();
     }
   }
 
@@ -3135,18 +3300,24 @@ OBJECTS_APP_HTML = """
             }
           }
 
-          html += '<div class="bg-slate-800 border border-slate-700 hover:border-slate-500 rounded-xl p-4 cursor-pointer transition" onclick="cpOpenDetail(\'' + safeId + '\')">';
+          html += '<div class="bg-slate-800 border border-slate-700 hover:border-slate-500 rounded-xl p-4 transition relative group">';
           html += '<div class="flex items-start justify-between gap-2">';
-          html += '<div class="min-w-0"><p class="font-semibold text-slate-100 truncate">' + name + '</p>';
+          html += '<div class="min-w-0 cursor-pointer flex-1" onclick="cpOpenDetail(\'' + safeId + '\')">';
+          html += '<p class="font-semibold text-slate-100 truncate">' + name + '</p>';
           html += '<p class="text-xs text-slate-400 truncate mt-0.5">' + addr + '</p></div>';
           // price 若含 HTML 標籤（售價對比）則直接插入，否則 escape
           var priceHtml = (price.indexOf('<') >= 0) ? price : '<span class="font-bold text-blue-300 text-sm">' + escapeHtml(price) + '</span>';
           html += '<div class="shrink-0 text-right"><p class="text-sm leading-tight">' + priceHtml + '</p>' + statusBadge + '</div>';
           html += '</div>';
-          html += '<div class="flex gap-3 mt-2 flex-wrap items-center">' + cat;
+          html += '<div class="flex gap-3 mt-2 flex-wrap items-center justify-between">';
+          html += '<div class="flex gap-3 flex-wrap items-center">' + cat;
           html += buildPing ? '<span class="text-xs text-slate-400">' + escapeHtml(buildPing) + '</span>' : '';
-          html += agent;
-          html += expiryBadge + '</div></div>';
+          html += agent + expiryBadge + '</div>';
+          // 加入戰況按鈕
+          html += '<button onclick="event.stopPropagation();warOpenNew(\'' + safeId + '\',' + JSON.stringify(item['案名']||'') + ')" '
+                + 'class="text-xs text-slate-500 hover:text-orange-400 transition px-2 py-0.5 rounded border border-slate-700 hover:border-orange-500" '
+                + 'title="加入斡旋戰況版">⚔️</button>';
+          html += '</div></div>';
         }
         list.innerHTML = html;
     });
@@ -3198,6 +3369,111 @@ OBJECTS_APP_HTML = """
 
   function closeCpDetail() {
     document.getElementById('cp-detail-modal').classList.add('hidden');
+  }
+
+  // ══ 戰況版 ══
+  var _warCurrentId = null;
+
+  function warLoadList() {
+    var listEl = document.getElementById('war-list');
+    var emptyEl = document.getElementById('war-empty');
+    listEl.innerHTML = '<p class="text-slate-400 text-center py-8">載入中…</p>';
+    fetch('/api/war-room').then(r => r.json()).then(function(items) {
+      if (!Array.isArray(items) || !items.length) {
+        listEl.innerHTML = '';
+        if (emptyEl) emptyEl.classList.remove('hidden');
+        return;
+      }
+      if (emptyEl) emptyEl.classList.add('hidden');
+      var statusColor = { '談判中':'bg-orange-800 text-orange-200', '等回覆':'bg-blue-800 text-blue-200',
+                          '已破局':'bg-slate-700 text-slate-400', '已成交':'bg-green-800 text-green-200' };
+      var statusIcon  = { '談判中':'🔥', '等回覆':'⏳', '已破局':'💔', '已成交':'🎉' };
+      var html = '';
+      items.forEach(function(item) {
+        var sc = statusColor[item.status] || 'bg-slate-700 text-slate-400';
+        var si = statusIcon[item.status] || '';
+        var badge = '<span class="text-xs px-2 py-0.5 rounded-full ' + sc + '">' + si + ' ' + escapeHtml(item.status) + '</span>';
+        var myP   = item.my_price    ? '<span class="text-blue-300">我出：' + escapeHtml(String(item.my_price)) + '萬</span>' : '';
+        var floorP = item.owner_floor ? '<span class="text-amber-400">底：' + escapeHtml(String(item.owner_floor)) + '萬</span>' : '';
+        var note  = item.note ? '<p class="text-xs text-slate-400 mt-1 line-clamp-2">' + escapeHtml(item.note) + '</p>' : '';
+        var upd   = item.updated_at ? new Date(item.updated_at).toLocaleDateString('zh-TW') : '';
+        html += '<div class="bg-slate-800 border border-slate-700 rounded-xl p-4 cursor-pointer hover:border-orange-500 transition" onclick="warOpenEdit(' + JSON.stringify(item) + ')">';
+        html += '<div class="flex items-start justify-between gap-2 mb-2">';
+        html += '<p class="font-semibold text-slate-100">' + escapeHtml(item.prop_name||'（無案名）') + '</p>';
+        html += badge + '</div>';
+        html += '<div class="flex gap-3 text-sm flex-wrap">' + myP + floorP + '</div>';
+        html += note;
+        html += '<p class="text-xs text-slate-600 mt-1">' + upd + '</p>';
+        html += '</div>';
+      });
+      listEl.innerHTML = html;
+    }).catch(function() {
+      listEl.innerHTML = '<p class="text-red-400 text-center py-8">載入失敗</p>';
+    });
+  }
+
+  function warOpenNew(propId, propName) {
+    _warCurrentId = null;
+    document.getElementById('war-item-id').value  = '';
+    document.getElementById('war-prop-id').value  = propId;
+    document.getElementById('war-prop-name').textContent = propName || propId;
+    document.getElementById('war-my-price').value  = '';
+    document.getElementById('war-owner-floor').value = '';
+    document.getElementById('war-status').value    = '談判中';
+    document.getElementById('war-note').value      = '';
+    document.getElementById('war-modal-title').textContent = '加入斡旋戰況';
+    document.getElementById('war-delete-btn').classList.add('hidden');
+    document.getElementById('war-modal').classList.remove('hidden');
+  }
+
+  function warOpenEdit(item) {
+    _warCurrentId = item.id;
+    document.getElementById('war-item-id').value   = item.id;
+    document.getElementById('war-prop-id').value   = item.prop_id || '';
+    document.getElementById('war-prop-name').textContent = item.prop_name || '';
+    document.getElementById('war-my-price').value   = item.my_price || '';
+    document.getElementById('war-owner-floor').value = item.owner_floor || '';
+    document.getElementById('war-status').value     = item.status || '談判中';
+    document.getElementById('war-note').value       = item.note || '';
+    document.getElementById('war-modal-title').textContent = '編輯斡旋記錄';
+    document.getElementById('war-delete-btn').classList.remove('hidden');
+    document.getElementById('war-modal').classList.remove('hidden');
+  }
+
+  function warSave() {
+    var itemId  = document.getElementById('war-item-id').value;
+    var payload = {
+      prop_id:     document.getElementById('war-prop-id').value,
+      prop_name:   document.getElementById('war-prop-name').textContent,
+      my_price:    document.getElementById('war-my-price').value,
+      owner_floor: document.getElementById('war-owner-floor').value,
+      status:      document.getElementById('war-status').value,
+      note:        document.getElementById('war-note').value,
+    };
+    var url    = itemId ? '/api/war-room/' + itemId : '/api/war-room';
+    var method = itemId ? 'PUT' : 'POST';
+    fetch(url, { method:method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) })
+      .then(r => r.json()).then(function(data) {
+        if (data.error) { toast(data.error, 'error'); return; }
+        toast('已儲存', 'success');
+        warCloseModal();
+        if (document.getElementById('pane-war').style.display !== 'none') warLoadList();
+      }).catch(function(e) { toast('儲存失敗：' + e, 'error'); });
+  }
+
+  function warDelete() {
+    var itemId = document.getElementById('war-item-id').value;
+    if (!itemId || !confirm('確定要刪除這筆斡旋記錄？')) return;
+    fetch('/api/war-room/' + itemId, { method:'DELETE' }).then(r => r.json()).then(function(data) {
+      if (data.error) { toast(data.error, 'error'); return; }
+      toast('已刪除', 'success');
+      warCloseModal();
+      warLoadList();
+    });
+  }
+
+  function warCloseModal() {
+    document.getElementById('war-modal').classList.add('hidden');
   }
 
   // ══ 買方需求 ══
