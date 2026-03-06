@@ -3313,13 +3313,21 @@ OBJECTS_APP_HTML = """
           html += '<div class="flex gap-3 flex-wrap items-center">' + cat;
           html += buildPing ? '<span class="text-xs text-slate-400">' + escapeHtml(buildPing) + '</span>' : '';
           html += agent + expiryBadge + '</div>';
-          // 加入戰況按鈕
-          html += '<button onclick="event.stopPropagation();warOpenNew(\'' + safeId + '\',' + JSON.stringify(item['案名']||'') + ')" '
-                + 'class="text-xs text-slate-500 hover:text-orange-400 transition px-2 py-0.5 rounded border border-slate-700 hover:border-orange-500" '
+          // 加入戰況按鈕：用 data-* 屬性避免引號衝突
+          var propNameEsc = escapeHtml(item['案名'] || '');
+          html += '<button data-prop-id="' + safeId + '" data-prop-name="' + propNameEsc + '" '
+                + 'class="war-btn text-xs text-slate-500 hover:text-orange-400 transition px-2 py-0.5 rounded border border-slate-700 hover:border-orange-500" '
                 + 'title="加入斡旋戰況版">⚔️</button>';
           html += '</div></div>';
         }
         list.innerHTML = html;
+        // 戰況按鈕事件委派（避免 onclick 引號問題）
+        list.querySelectorAll('.war-btn').forEach(function(btn) {
+          btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            warOpenNew(this.dataset.propId, this.dataset.propName);
+          });
+        });
     });
   }
 
@@ -3389,7 +3397,9 @@ OBJECTS_APP_HTML = """
                           '已破局':'bg-slate-700 text-slate-400', '已成交':'bg-green-800 text-green-200' };
       var statusIcon  = { '談判中':'🔥', '等回覆':'⏳', '已破局':'💔', '已成交':'🎉' };
       var html = '';
-      items.forEach(function(item) {
+      // 用 data-idx 存 index，避免 JSON.stringify 放進 onclick 的引號問題
+      var _warItems = items;
+      items.forEach(function(item, idx) {
         var sc = statusColor[item.status] || 'bg-slate-700 text-slate-400';
         var si = statusIcon[item.status] || '';
         var badge = '<span class="text-xs px-2 py-0.5 rounded-full ' + sc + '">' + si + ' ' + escapeHtml(item.status) + '</span>';
@@ -3397,7 +3407,7 @@ OBJECTS_APP_HTML = """
         var floorP = item.owner_floor ? '<span class="text-amber-400">底：' + escapeHtml(String(item.owner_floor)) + '萬</span>' : '';
         var note  = item.note ? '<p class="text-xs text-slate-400 mt-1 line-clamp-2">' + escapeHtml(item.note) + '</p>' : '';
         var upd   = item.updated_at ? new Date(item.updated_at).toLocaleDateString('zh-TW') : '';
-        html += '<div class="bg-slate-800 border border-slate-700 rounded-xl p-4 cursor-pointer hover:border-orange-500 transition" onclick="warOpenEdit(' + JSON.stringify(item) + ')">';
+        html += '<div class="war-card bg-slate-800 border border-slate-700 rounded-xl p-4 cursor-pointer hover:border-orange-500 transition" data-idx="' + idx + '">';
         html += '<div class="flex items-start justify-between gap-2 mb-2">';
         html += '<p class="font-semibold text-slate-100">' + escapeHtml(item.prop_name||'（無案名）') + '</p>';
         html += badge + '</div>';
@@ -3407,6 +3417,12 @@ OBJECTS_APP_HTML = """
         html += '</div>';
       });
       listEl.innerHTML = html;
+      // 事件委派綁定，避免 onclick 引號問題
+      listEl.querySelectorAll('.war-card').forEach(function(card) {
+        card.addEventListener('click', function() {
+          warOpenEdit(_warItems[parseInt(this.dataset.idx)]);
+        });
+      });
     }).catch(function() {
       listEl.innerHTML = '<p class="text-red-400 text-center py-8">載入失敗</p>';
     });
