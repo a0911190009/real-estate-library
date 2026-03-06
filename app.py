@@ -1295,6 +1295,215 @@ def api_company_properties_search():
         return jsonify({"error": str(e)}), 500
 
 
+# ══════════════════════════════════════════════
+# Word 物件總表 Snapshot — 解析 & 上傳
+# ══════════════════════════════════════════════
+
+def _parse_word_prices(file_bytes):
+    """
+    解析 .doc 二進位，呼叫 export_word_table.py 完整解析邏輯，
+    回傳 {normalized案名: {案名, 委託號碼, 售價萬}} 供售價對比使用。
+    """
+    import subprocess, tempfile, os as _os, sys as _sys
+
+    # 把檔案寫到暫存
+    with tempfile.NamedTemporaryFile(suffix='.doc', delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+
+    try:
+        # 取得純文字（textutil on macOS / antiword on Linux）
+        r = subprocess.run(["textutil", "-convert", "txt", "-stdout", tmp_path],
+                           capture_output=True, timeout=60)
+        if r.returncode != 0 or not r.stdout.strip():
+            r = subprocess.run(["antiword", tmp_path],
+                               capture_output=True, timeout=60)
+        text = r.stdout.decode("utf-8", errors="replace")
+    except Exception as e:
+        return None, f"文字擷取失敗：{e}"
+    finally:
+        _os.unlink(tmp_path)
+
+    if not text.strip():
+        return None, "無法從 Word 檔案擷取文字（可能是 .docx 格式，請另存為 .doc）"
+
+    # 動態載入 export_word_table.py 的解析函數
+    try:
+        _proj = "/Users/chenweiliang/Projects"
+        if _proj not in _sys.path:
+            _sys.path.insert(0, _proj)
+        import importlib
+        ewt = importlib.import_module("export_word_table")
+    except ImportError:
+        # Cloud Run 上沒有本地腳本，改用內建精簡解析
+        ewt = None
+
+    results = {}
+
+    def _norm(s):
+        s = re.sub(r'\s+', '', str(s))
+        s = re.sub(r'(?<!\d)\d{5,6}(?!\d)', '', s)
+        return s.strip()
+
+    if ewt:
+        # 使用完整解析器，精度最高
+        try:
+            all_entries = []
+            all_entries += ewt.parse_condo_section(text)
+            for st in ["住家", "別墅", "店住"]:
+                all_entries += ewt.parse_house_section(text, st)
+            all_entries += ewt.parse_farm_entries(text)
+            all_entries += ewt.parse_build_entries(text)
+
+            for e in all_entries:
+                name = e.get("案名","").strip()
+                price = e.get("售價萬","")
+                comm  = str(e.get("委託號碼","") or "").zfill(6) if e.get("委託號碼") else ""
+                if not name or not price:
+                    continue
+                try:
+                    price_f = float(str(price).replace(",",""))
+                except Exception:
+                    continue
+                key = _norm(name)
+                if not key:
+                    continue
+                existing = results.get(key)
+                # 保留委託號碼較大（較新）的
+                if not existing or comm > existing.get("委託號碼",""):
+                    results[key] = {"案名": name, "委託號碼": comm, "售價萬": price_f}
+        except Exception as ex:
+            return None, f"解析失敗：{ex}"
+    else:
+        # Cloud Run 精簡版：逐行掃描案名 + 售價（準確度較低但可用）
+        def _parse_p(s):
+            s = str(s).strip()
+            m = re.search(r'([\d,\.]+)\s*億\s*([\d,\.]*)\s*萬', s)
+            if m:
+                try: return float(m.group(1).replace(',',''))*10000 + (float(m.group(2).replace(',','')) if m.group(2) else 0)
+                except Exception: pass
+            m = re.search(r'([\d,\.]+)\s*萬', s)
+            if m:
+                try: return float(m.group(1).replace(',',''))
+                except Exception: pass
+            return None
+
+        _SKIP = re.compile(r'^[\d,\.]+\s*(分|坪|萬|億)|網路沒上|不上網|到期|押金|租金|編號|地址|格局|現況|樓層|座向|完成日|業務')
+        lines = text.split('\n')
+        current_name, current_comm = "", ""
+        for raw in lines:
+            line = raw.strip()
+            if not line: continue
+            cm = re.search(r'(?<!\d)(\d{5,6})(?!\d)', line)
+            if cm: current_comm = cm.group(1).zfill(6)
+            p = _parse_p(line)
+            if p and p > 50 and current_name and not _SKIP.search(current_name):
+                key = _norm(current_name)
+                if key:
+                    existing = results.get(key)
+                    if not existing or current_comm > existing.get("委託號碼",""):
+                        results[key] = {"案名": current_name, "委託號碼": current_comm, "售價萬": p}
+            elif re.search(r'[\u4e00-\u9fff]', line) and not re.search(r'萬', line):
+                name_c = re.sub(r'(?<!\d)\d{5,6}(?!\d)','',line).strip()
+                if 2 <= len(name_c) <= 20 and not _SKIP.search(name_c):
+                    current_name = name_c
+
+    return results, None
+
+
+@app.route("/api/word-snapshot/upload", methods=["POST"])
+def api_word_snapshot_upload():
+    """上傳 .doc 物件總表，解析後存入 Firestore word_snapshot 集合。僅管理員可用。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email):
+        return jsonify({"error": "僅管理員可上傳"}), 403
+
+    if 'file' not in request.files:
+        return jsonify({"error": "請選擇 .doc 檔案"}), 400
+    f = request.files['file']
+    if not f.filename.lower().endswith('.doc'):
+        return jsonify({"error": "僅支援 .doc 格式"}), 400
+
+    file_bytes = f.read()
+    if len(file_bytes) < 1000:
+        return jsonify({"error": "檔案太小，可能不是有效的 Word 文件"}), 400
+
+    # 解析售價
+    price_map, parse_err = _parse_word_prices(file_bytes)
+    if parse_err:
+        return jsonify({"error": "解析失敗：" + parse_err}), 500
+
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+
+    # 存入 Firestore（單一文件，記錄上傳時間與解析結果）
+    now_str = datetime.now(timezone.utc).isoformat()
+    doc_ref = db.collection("word_snapshot").document("latest")
+    doc_ref.set({
+        "uploaded_at": now_str,
+        "uploaded_by": email,
+        "filename":    f.filename,
+        "count":       len(price_map),
+        "prices":      price_map,   # {normalized案名: {案名, 委託號碼, 售價萬}}
+    })
+
+    return jsonify({
+        "ok": True,
+        "uploaded_at": now_str,
+        "count": len(price_map),
+        "message": f"解析完成，共 {len(price_map)} 筆物件售價已更新"
+    })
+
+
+@app.route("/api/word-snapshot/status", methods=["GET"])
+def api_word_snapshot_status():
+    """回傳目前 Word snapshot 的版本資訊。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+
+    db = _get_db()
+    if db is None:
+        return jsonify({"status": "no_db"}), 200
+
+    try:
+        doc = db.collection("word_snapshot").document("latest").get()
+        if not doc.exists:
+            return jsonify({"status": "none"})
+        d = doc.to_dict()
+        return jsonify({
+            "status":      "ok",
+            "uploaded_at": d.get("uploaded_at", ""),
+            "filename":    d.get("filename", ""),
+            "count":       d.get("count", 0),
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
+@app.route("/api/word-snapshot/prices", methods=["GET"])
+def api_word_snapshot_prices():
+    """回傳目前 snapshot 的售價字典，供前端卡片對比用。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+
+    db = _get_db()
+    if db is None:
+        return jsonify({}), 200
+
+    try:
+        doc = db.collection("word_snapshot").document("latest").get()
+        if not doc.exists:
+            return jsonify({})
+        return jsonify(doc.to_dict().get("prices", {}))
+    except Exception:
+        return jsonify({})
+
+
 @app.route("/api/company-properties/<prop_id>", methods=["GET"])
 def api_company_property_get(prop_id):
     """取得單筆公司物件完整資料。"""
@@ -1863,13 +2072,20 @@ OBJECTS_APP_HTML = """
     </div>
   </div>
 
-  <!-- 管理員同步列（只有管理員看得到） -->
-  <div id="cp-sync-bar" class="hidden mb-3 flex items-center gap-3 bg-slate-800/60 border border-slate-700 rounded-xl px-4 py-2">
+  <!-- 管理員工具列（只有管理員看得到） -->
+  <div id="cp-sync-bar" class="hidden mb-3 flex flex-wrap items-center gap-3 bg-slate-800/60 border border-slate-700 rounded-xl px-4 py-2">
     <span class="text-xs text-slate-400 flex-1">上次同步：<span id="cp-last-sync" class="text-slate-300">讀取中…</span></span>
     <button id="cp-sync-btn" onclick="cpTriggerSync()"
       class="px-4 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold transition">
-      🔄 立即同步 Sheets
+      🔄 同步 Sheets
     </button>
+    <!-- Word 物件總表上傳 -->
+    <label class="flex items-center gap-1 px-4 py-1.5 rounded-lg bg-purple-700 hover:bg-purple-600 text-white text-xs font-semibold transition cursor-pointer"
+      title="上傳最新 Word 物件總表，自動解析售價並顯示在卡片上">
+      📄 上傳物件總表
+      <input type="file" accept=".doc,.docx" class="hidden" onchange="cpUploadWordSnapshot(this)">
+    </label>
+    <span id="cp-word-status" class="text-xs text-slate-400"></span>
   </div>
 
   <!-- 結果資訊列 -->
@@ -2566,13 +2782,15 @@ OBJECTS_APP_HTML = """
       activeBtn.style.fontWeight   = '600';
     }
 
-    // 切換到公司物件時：載入篩選選項 + 自動以登入者×銷售中搜尋 + 顯示管理員同步列
+    // 切換到公司物件時：載入篩選選項 + 自動以登入者×銷售中搜尋 + 顯示管理員工具列
     if (tab === 'company') {
       if (!window._cpOptionsLoaded) { cpLoadOptions(); }
       if (!window._cpSearched) { window._cpSearched = true; cpLoadMe(); }
+      if (!window._cpWordLoaded) { window._cpWordLoaded = true; cpLoadWordSnapshot(); }
       if (isAdmin) {
         document.getElementById('cp-sync-bar').style.display = 'flex';
         cpLoadSyncStatus();
+        cpLoadWordSnapshotStatus();
       }
     }
     // 切換到買方需求時：載入列表
@@ -2758,6 +2976,59 @@ OBJECTS_APP_HTML = """
     window.scrollTo(0, 0);
   }
 
+  // ══ Word Snapshot 售價對比 ══
+  var _cpWordPrices = {};   // {normalized案名: {案名, 委託號碼, 售價萬}}
+
+  // 正規化案名（和後端一致）
+  function _normName(s) {
+    return String(s || '').replace(/\s+/g, '').replace(/(?<!\d)\d{5,6}(?!\d)/g, '').trim();
+  }
+
+  // 載入目前 snapshot 的售價字典
+  function cpLoadWordSnapshot() {
+    fetch('/api/word-snapshot/prices').then(r => r.json()).then(function(data) {
+      _cpWordPrices = data || {};
+    }).catch(function() { _cpWordPrices = {}; });
+  }
+
+  // 顯示 Word snapshot 狀態（管理員）
+  function cpLoadWordSnapshotStatus() {
+    fetch('/api/word-snapshot/status').then(r => r.json()).then(function(data) {
+      var el = document.getElementById('cp-word-status');
+      if (!el) return;
+      if (data.status === 'none' || data.status === 'no_db') {
+        el.textContent = '尚無物件總表';
+      } else if (data.status === 'ok') {
+        var dt = data.uploaded_at ? new Date(data.uploaded_at).toLocaleDateString('zh-TW') : '';
+        el.textContent = '總表：' + (data.filename || '') + '（' + dt + '，' + (data.count||0) + '筆）';
+      }
+    }).catch(function() {});
+  }
+
+  // 上傳 Word 物件總表
+  function cpUploadWordSnapshot(input) {
+    if (!input.files || !input.files[0]) return;
+    var file = input.files[0];
+    var el = document.getElementById('cp-word-status');
+    if (el) el.textContent = '解析中…';
+    var fd = new FormData();
+    fd.append('file', file);
+    fetch('/api/word-snapshot/upload', { method:'POST', body:fd })
+      .then(r => r.json()).then(function(data) {
+        if (data.error) { toast(data.error, 'error'); if(el) el.textContent = '上傳失敗'; return; }
+        toast(data.message || '物件總表更新完成', 'success');
+        if (el) el.textContent = '剛剛上傳（' + (data.count||0) + '筆）';
+        // 重新載入售價字典並刷新列表
+        cpLoadWordSnapshot();
+        setTimeout(function(){ cpFetch(); }, 800);
+        // 清除 input 讓下次可重新選同一檔
+        input.value = '';
+      }).catch(function(e) {
+        toast('上傳失敗：' + e, 'error');
+        if (el) el.textContent = '上傳失敗';
+      });
+  }
+
   function cpFetch() {
     var list = document.getElementById('cp-list');
     list.innerHTML = '<p class="text-slate-400 text-center py-8">載入中…</p>';
@@ -2821,7 +3092,27 @@ OBJECTS_APP_HTML = """
           } else {
             statusBadge = '<span class="text-xs bg-green-700 text-green-200 px-2 py-0.5 rounded-full">銷售中</span>';
           }
-          var price = item['售價(萬)'] ? item['售價(萬)'] + ' 萬' : '-';
+          // 售價對比：從 Word snapshot 找最新售價
+          var dbPrice = item['售價(萬)'];
+          var normKey = _normName(item['案名']);
+          var wordHit = _cpWordPrices[normKey];
+          // 也嘗試用委託號碼比對
+          if (!wordHit && item['委託編號']) {
+            for (var wk in _cpWordPrices) {
+              if (_cpWordPrices[wk]['委託號碼'] === String(item['委託編號'])) {
+                wordHit = _cpWordPrices[wk]; break;
+              }
+            }
+          }
+          var price;
+          if (wordHit && wordHit['售價萬'] && String(wordHit['售價萬']) !== String(dbPrice)) {
+            // 有新售價且不同 → 顯示對比
+            price = '<span class="line-through text-slate-500 text-xs">' + escapeHtml(String(dbPrice||'-')) + '萬</span>'
+                  + ' <span class="text-yellow-300 font-bold">' + escapeHtml(String(wordHit['售價萬'])) + '萬</span>'
+                  + '<span class="text-xs text-yellow-500 ml-0.5">↑Word</span>';
+          } else {
+            price = dbPrice ? dbPrice + ' 萬' : '-';
+          }
           var buildPing = item['建坪'] ? item['建坪'] + ' 坪' : (item['地坪'] ? item['地坪'] + ' 坪地' : '');
           var cat = item['物件類別'] ? '<span class="text-xs text-amber-400">' + escapeHtml(item['物件類別']) + '</span>' : '';
           var agent = item['經紀人'] ? '<span class="text-xs text-slate-500">' + escapeHtml(item['經紀人']) + '</span>' : '';
@@ -2848,7 +3139,9 @@ OBJECTS_APP_HTML = """
           html += '<div class="flex items-start justify-between gap-2">';
           html += '<div class="min-w-0"><p class="font-semibold text-slate-100 truncate">' + name + '</p>';
           html += '<p class="text-xs text-slate-400 truncate mt-0.5">' + addr + '</p></div>';
-          html += '<div class="shrink-0 text-right"><p class="font-bold text-blue-300 text-sm">' + escapeHtml(price) + '</p>' + statusBadge + '</div>';
+          // price 若含 HTML 標籤（售價對比）則直接插入，否則 escape
+          var priceHtml = (price.indexOf('<') >= 0) ? price : '<span class="font-bold text-blue-300 text-sm">' + escapeHtml(price) + '</span>';
+          html += '<div class="shrink-0 text-right"><p class="text-sm leading-tight">' + priceHtml + '</p>' + statusBadge + '</div>';
           html += '</div>';
           html += '<div class="flex gap-3 mt-2 flex-wrap items-center">' + cat;
           html += buildPing ? '<span class="text-xs text-slate-400">' + escapeHtml(buildPing) + '</span>' : '';
