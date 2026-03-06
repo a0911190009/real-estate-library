@@ -412,6 +412,20 @@ def auth_logout():
     return redirect(PORTAL_URL or "/")
 
 
+@app.route("/api/me", methods=["GET"])
+def api_me():
+    """回傳目前登入者基本資訊（供前端預設篩選用）。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    return jsonify({
+        "email":   email,
+        "name":    session.get("user_name", ""),
+        "picture": session.get("user_picture", ""),
+        "is_admin": _is_admin(email),
+    })
+
+
 @app.route("/api/objects", methods=["GET"])
 def api_objects_list():
     email, err = _require_user()
@@ -1157,46 +1171,59 @@ def api_company_properties_search():
     if db is None:
         return jsonify({"error": "Firestore 未連線"}), 503
 
-    # 取得查詢參數
-    keyword   = request.args.get("keyword", "").strip()    # 關鍵字（案名/地址）
-    category  = request.args.get("category", "").strip()   # 物件類別
-    area      = request.args.get("area", "").strip()       # 鄉/市/鎮
-    price_min = request.args.get("price_min", "").strip()  # 最低售價（萬）
-    price_max = request.args.get("price_max", "").strip()  # 最高售價（萬）
-    status    = request.args.get("status", "").strip()     # "selling"=銷售中, "sold"=已成交, ""=全部
-    agent     = request.args.get("agent", "").strip()      # 經紀人
-    page      = max(1, int(request.args.get("page", 1)))
-    per_page  = 20
+    # 取得查詢參數（category/area/agent 支援多選，以逗號分隔）
+    keyword    = request.args.get("keyword", "").strip()
+    categories = [c for c in request.args.get("category", "").split(",") if c.strip()]
+    areas      = [a for a in request.args.get("area", "").split(",") if a.strip()]
+    price_min  = request.args.get("price_min", "").strip()
+    price_max  = request.args.get("price_max", "").strip()
+    status     = request.args.get("status", "").strip()  # "selling"/"sold"/"delisted"/""
+    agents     = [a for a in request.args.get("agent", "").split(",") if a.strip()]
+    page       = max(1, int(request.args.get("page", 1)))
+    per_page   = 20
 
     try:
         col = db.collection("company_properties")
         query = col
 
-        # 展開大類 → 原始類別 list
-        is_other_group = (category == _OTHER_GROUP)
-        cat_list = _expand_category_group(category) if category else []
-        # 所有已歸類的原始類別集合（用於「其他」反向過濾）
+        # 展開大類 → 原始類別 set（支援多選）
         all_known_cats = {c for cats in CATEGORY_GROUPS.values() for c in cats}
+        has_other_group = _OTHER_GROUP in categories
+        # 展開所有選取的大類成原始類別
+        expanded_cats = set()
+        for cat in categories:
+            if cat == _OTHER_GROUP:
+                continue
+            for c in _expand_category_group(cat):
+                expanded_cats.add(c)
 
-        # Firestore 只能單欄位 == 過濾；大類改在 Python 端過濾
-        # 只有單一原始類別（非大類）時才下推到 Firestore
-        if cat_list and len(cat_list) == 1 and cat_list[0] == category:
-            query = query.where("物件類別", "==", category)
-        if area:
-            query = query.where("鄉/市/鎮", "==", area)
+        # Firestore 只能單欄位 == 過濾，全量讀取後在 Python 端過濾
+        # 只有選單一地區且無其他地區複選時才下推到 Firestore
+        if len(areas) == 1:
+            query = query.where("鄉/市/鎮", "==", areas[0])
 
-        # 全量讀取，不設上限
+        # 全量讀取
         docs = list(query.stream())
         results = [{"id": d.id, **d.to_dict()} for d in docs]
 
-        # Python 端類別過濾
-        if is_other_group:
-            # 「其他」= 不屬於任何大類的原始類別
-            results = [r for r in results if r.get("物件類別") not in all_known_cats]
-        elif cat_list and not (len(cat_list) == 1 and cat_list[0] == category):
-            results = [r for r in results if r.get("物件類別") in cat_list]
+        # Python 端：類別過濾（支援多選 + 「其他」群組）
+        if categories:
+            def _cat_match(r):
+                rc = r.get("物件類別")
+                # 選了「其他」且物件不屬於任何大類
+                if has_other_group and rc not in all_known_cats:
+                    return True
+                # 展開的原始類別命中
+                if expanded_cats and rc in expanded_cats:
+                    return True
+                return False
+            results = [r for r in results if _cat_match(r)]
 
-        # Python 端其他過濾
+        # Python 端：地區多選（已有單選下推，這裡補多選情況）
+        if len(areas) > 1:
+            results = [r for r in results if r.get("鄉/市/鎮") in set(areas)]
+
+        # Python 端：關鍵字
         if keyword:
             kw = keyword.lower()
             results = [r for r in results if
@@ -1204,6 +1231,7 @@ def api_company_properties_search():
                        kw in str(r.get("物件地址", "")).lower() or
                        kw in str(r.get("委託編號", "")).lower()]
 
+        # Python 端：售價區間
         if price_min:
             try:
                 pmin = float(price_min)
@@ -1211,7 +1239,6 @@ def api_company_properties_search():
                            and _parse_price(r.get("售價(萬)")) >= pmin]
             except Exception:
                 pass
-
         if price_max:
             try:
                 pmax = float(price_max)
@@ -1220,13 +1247,21 @@ def api_company_properties_search():
             except Exception:
                 pass
 
+        # Python 端：狀態（銷售中 / 已成交 / 已下架）
+        # Firestore 中：銷售中=True 或無此欄位、已成交=False 且有成交日期、已下架=False 且無成交日期
         if status == "selling":
             results = [r for r in results if r.get("銷售中") is not False]
         elif status == "sold":
-            results = [r for r in results if r.get("銷售中") is False]
+            results = [r for r in results if r.get("銷售中") is False and r.get("成交日期")]
+        elif status == "delisted":
+            results = [r for r in results if r.get("銷售中") is False and not r.get("成交日期")]
 
-        if agent:
-            results = [r for r in results if agent in str(r.get("經紀人", ""))]
+        # Python 端：經紀人多選（包含比對，應對多人合寫情況）
+        if agents:
+            def _agent_match(r):
+                raw = str(r.get("經紀人", ""))
+                return any(ag in raw for ag in agents)
+            results = [r for r in results if _agent_match(r)]
 
         # 排序：資料序號降冪（新資料在前）
         results.sort(key=lambda r: -int(r.get("資料序號", 0) or 0))
@@ -1235,21 +1270,23 @@ def api_company_properties_search():
         start = (page - 1) * per_page
         page_data = results[start:start + per_page]
 
-        # 移除敏感欄位（個資）
-        sensitive = {"身份証字號", "室內電話1", "行動電話1",
-                     "連絡人室內電話2", "連絡人行動電話2",
-                     "買方電話", "買方生日", "賣方生日",
-                     "買方姓名", "買方住址", "_imported"}
-        for r in page_data:
-            for k in sensitive:
-                r.pop(k, None)
+        # 列表只回傳卡片需要的欄位（減少傳輸量）
+        card_fields = {
+            "id", "案名", "物件地址", "物件類別", "售價(萬)",
+            "建坪", "地坪", "經紀人", "銷售中", "成交日期", "委託到期日",
+            "資料序號", "鄉/市/鎮"
+        }
+        slim = [{k: r[k] for k in card_fields if k in r} for r in page_data]
+        # 補上 id（已在 card_fields，但確保有）
+        for orig, s in zip(page_data, slim):
+            s["id"] = orig["id"]
 
         return jsonify({
             "total": total,
             "page": page,
             "per_page": per_page,
             "pages": (total + per_page - 1) // per_page,
-            "items": page_data
+            "items": slim
         })
 
     except Exception as e:
@@ -1683,9 +1720,13 @@ OBJECTS_APP_HTML = """
     .toast-error{background:#dc2626;color:#fff}
     .toast-info{background:#2563eb;color:#fff}
     .toast-out{opacity:0}
-    /* 經紀人選單分組樣式 */
-    #cp-agent optgroup{font-weight:600;color:#94a3b8;font-size:.75rem}
-    #cp-agent optgroup option{font-weight:400;color:#e2e8f0;padding-left:.5rem}
+    /* 複選下拉面板 */
+    #cp-cat-panel,#cp-area-panel,#cp-agent-panel{scrollbar-width:thin;scrollbar-color:#475569 transparent}
+    #cp-cat-panel::-webkit-scrollbar,#cp-area-panel::-webkit-scrollbar,#cp-agent-panel::-webkit-scrollbar{width:4px}
+    #cp-cat-panel::-webkit-scrollbar-thumb,#cp-area-panel::-webkit-scrollbar-thumb,#cp-agent-panel::-webkit-scrollbar-thumb{background:#475569;border-radius:2px}
+    /* 到期警示動畫 */
+    @keyframes pulse-warn{0%,100%{opacity:1}50%{opacity:.6}}
+    .animate-pulse{animation:pulse-warn 2s ease-in-out infinite}
   </style>
 </head>
 <body class="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-slate-100 font-sans antialiased">
@@ -1757,32 +1798,62 @@ OBJECTS_APP_HTML = """
 
   <!-- 搜尋條件列 -->
   <div class="bg-slate-800 rounded-2xl border border-slate-700 p-4 mb-4">
-    <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-3">
+    <!-- 第一列：關鍵字 + 售價 + 狀態 -->
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
       <input id="cp-keyword" type="text" placeholder="🔍 案名 / 地址 / 委託編號"
-        class="col-span-2 sm:col-span-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500"
+        class="col-span-2 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500"
         onkeydown="if(event.key==='Enter')cpSearch()">
-      <select id="cp-category"
-        class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none">
-        <option value="">全部類別</option>
-      </select>
-      <select id="cp-area"
-        class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none">
-        <option value="">全部地區</option>
-      </select>
       <input id="cp-price-min" type="number" placeholder="最低售價（萬）"
         class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
       <input id="cp-price-max" type="number" placeholder="最高售價（萬）"
         class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
+    </div>
+    <!-- 第二列：狀態（單選）+ 複選下拉觸發器 -->
+    <div class="flex flex-wrap gap-2 mb-3 items-center">
+      <!-- 狀態（保留 select，不需複選） -->
       <select id="cp-status"
         class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none">
-        <option value="">全部狀態</option>
         <option value="selling">銷售中</option>
+        <option value="">全部狀態</option>
         <option value="sold">已成交</option>
+        <option value="delisted">已下架</option>
       </select>
-      <select id="cp-agent"
-        class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none">
-        <option value="">全部經紀人</option>
-      </select>
+      <!-- 類別複選按鈕 -->
+      <div class="relative">
+        <button id="cp-cat-btn" onclick="cpToggleDropdown('cat')"
+          class="flex items-center gap-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 hover:border-slate-400 transition">
+          <span id="cp-cat-label">全部類別</span>
+          <svg class="w-3 h-3 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+        </button>
+        <div id="cp-cat-panel" class="hidden absolute left-0 top-full mt-1 z-50 bg-slate-800 border border-slate-600 rounded-xl shadow-2xl p-3 min-w-[180px] max-h-72 overflow-y-auto">
+          <div id="cp-cat-list" class="space-y-1"></div>
+        </div>
+      </div>
+      <!-- 地區複選按鈕 -->
+      <div class="relative">
+        <button id="cp-area-btn" onclick="cpToggleDropdown('area')"
+          class="flex items-center gap-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 hover:border-slate-400 transition">
+          <span id="cp-area-label">全部地區</span>
+          <svg class="w-3 h-3 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+        </button>
+        <div id="cp-area-panel" class="hidden absolute left-0 top-full mt-1 z-50 bg-slate-800 border border-slate-600 rounded-xl shadow-2xl p-3 min-w-[200px] max-h-72 overflow-y-auto">
+          <div id="cp-area-list" class="space-y-1"></div>
+        </div>
+      </div>
+      <!-- 經紀人複選按鈕 -->
+      <div class="relative">
+        <button id="cp-agent-btn" onclick="cpToggleDropdown('agent')"
+          class="flex items-center gap-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 hover:border-slate-400 transition">
+          <span id="cp-agent-label">全部經紀人</span>
+          <svg class="w-3 h-3 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+        </button>
+        <div id="cp-agent-panel" class="hidden absolute left-0 top-full mt-1 z-50 bg-slate-800 border border-slate-600 rounded-xl shadow-2xl p-3 min-w-[180px] max-h-72 overflow-y-auto">
+          <p class="text-xs text-slate-500 mb-2">── 在線人員 ──</p>
+          <div id="cp-agent-active-list" class="space-y-1 mb-2"></div>
+          <p class="text-xs text-slate-500 mb-2">── 其他 ──</p>
+          <div id="cp-agent-inactive-list" class="space-y-1"></div>
+        </div>
+      </div>
     </div>
     <div class="flex gap-2">
       <button onclick="cpSearch()"
@@ -2495,10 +2566,10 @@ OBJECTS_APP_HTML = """
       activeBtn.style.fontWeight   = '600';
     }
 
-    // 切換到公司物件時：載入篩選選項 + 自動執行一次搜尋 + 顯示管理員同步列
+    // 切換到公司物件時：載入篩選選項 + 自動以登入者×銷售中搜尋 + 顯示管理員同步列
     if (tab === 'company') {
-      if (!window._cpOptionsLoaded) cpLoadOptions();
-      if (!window._cpSearched) { window._cpSearched = true; cpSearch(); }
+      if (!window._cpOptionsLoaded) { cpLoadOptions(); }
+      if (!window._cpSearched) { window._cpSearched = true; cpLoadMe(); }
       if (isAdmin) {
         document.getElementById('cp-sync-bar').style.display = 'flex';
         cpLoadSyncStatus();
@@ -2514,47 +2585,132 @@ OBJECTS_APP_HTML = """
   var _cpPage = 1;
   var _cpLastQuery = {};
 
+  // ══ 複選狀態管理 ══
+  var _cpSelected = { cat: new Set(), area: new Set(), agent: new Set() };
+  var _cpOptionsData = {};  // 儲存 options 供重建 label 用
+
+  // 開關複選面板，點外部關閉
+  function cpToggleDropdown(type) {
+    var panel = document.getElementById('cp-' + type + '-panel');
+    var isHidden = panel.classList.contains('hidden');
+    // 先關所有面板
+    ['cat','area','agent'].forEach(function(t) {
+      document.getElementById('cp-' + t + '-panel').classList.add('hidden');
+    });
+    if (isHidden) panel.classList.remove('hidden');
+  }
+  document.addEventListener('click', function(e) {
+    ['cat','area','agent'].forEach(function(t) {
+      var btn = document.getElementById('cp-' + t + '-btn');
+      var panel = document.getElementById('cp-' + t + '-panel');
+      if (btn && panel && !btn.contains(e.target) && !panel.contains(e.target)) {
+        panel.classList.add('hidden');
+      }
+    });
+  });
+
+  // 建立勾選框項目
+  function _cpMakeCheckbox(type, value, label) {
+    var wrap = document.createElement('label');
+    wrap.className = 'flex items-center gap-2 text-sm text-slate-200 cursor-pointer hover:text-white py-0.5';
+    var cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.value = value;
+    cb.className = 'w-3.5 h-3.5 rounded accent-blue-500';
+    cb.checked = _cpSelected[type].has(value);
+    cb.addEventListener('change', function() {
+      if (this.checked) _cpSelected[type].add(value);
+      else _cpSelected[type].delete(value);
+      _cpUpdateLabel(type);
+    });
+    wrap.appendChild(cb);
+    wrap.appendChild(document.createTextNode(label));
+    return wrap;
+  }
+
+  // 更新按鈕標籤文字
+  function _cpUpdateLabel(type) {
+    var sel = _cpSelected[type];
+    var labelEl = document.getElementById('cp-' + type + '-label');
+    if (!sel.size) {
+      var defaults = {cat:'全部類別', area:'全部地區', agent:'全部經紀人'};
+      labelEl.textContent = defaults[type];
+      labelEl.className = '';
+    } else {
+      var vals = Array.from(sel);
+      // 地區要顯示完整名稱
+      if (type === 'area' && _cpOptionsData.areas) {
+        vals = vals.map(function(v) {
+          var found = (_cpOptionsData.areas || []).find(function(a) { return a.value === v; });
+          return found ? found.label.split(' ').pop() : v;  // 取最後一段（市/鄉/鎮）
+        });
+      }
+      labelEl.textContent = vals.length <= 2 ? vals.join('、') : vals[0] + ' 等' + vals.length + '項';
+      labelEl.className = 'text-blue-300 font-semibold';
+    }
+  }
+
   function cpLoadOptions() {
     fetch('/api/company-properties/options').then(r => r.json()).then(function(data) {
       if (data.error) return;
       window._cpOptionsLoaded = true;
-      var cat = document.getElementById('cp-category');
+      _cpOptionsData = data;
+
+      // 類別複選面板
+      var catList = document.getElementById('cp-cat-list');
       (data.categories || []).forEach(function(c) {
-        var o = document.createElement('option'); o.value = c; o.textContent = c; cat.appendChild(o);
+        catList.appendChild(_cpMakeCheckbox('cat', c, c));
       });
-      var area = document.getElementById('cp-area');
+
+      // 地區複選面板
+      var areaList = document.getElementById('cp-area-list');
       (data.areas || []).forEach(function(a) {
-        var o = document.createElement('option');
-        // areas 現在是 [{value: 簡寫, label: 完整名稱}] 格式
-        if (typeof a === 'object') {
-          o.value = a.value; o.textContent = a.label;
-        } else {
-          o.value = a; o.textContent = a;
-        }
-        area.appendChild(o);
+        var val = (typeof a === 'object') ? a.value : a;
+        var lbl = (typeof a === 'object') ? a.label : a;
+        areaList.appendChild(_cpMakeCheckbox('area', val, lbl));
       });
-      var ag = document.getElementById('cp-agent');
-      // agents 現在是 {active: [...], inactive: [...]} 格式，用 optgroup 分組
-      var agentData = data.agents || {};
-      var activeList   = Array.isArray(agentData) ? agentData : (agentData.active   || []);
-      var inactiveList = Array.isArray(agentData) ? []        : (agentData.inactive || []);
-      if (activeList.length) {
-        var grp1 = document.createElement('optgroup');
-        grp1.label = '── 在線人員 ──';
-        activeList.forEach(function(a) {
-          var o = document.createElement('option'); o.value = a; o.textContent = a;
-          grp1.appendChild(o);
+
+      // 經紀人複選面板（在線 + 其他分群）
+      var agentData   = data.agents || {};
+      var activeList  = Array.isArray(agentData) ? agentData : (agentData.active   || []);
+      var inactList   = Array.isArray(agentData) ? []        : (agentData.inactive || []);
+      var activePanel = document.getElementById('cp-agent-active-list');
+      var inactPanel  = document.getElementById('cp-agent-inactive-list');
+      activeList.forEach(function(a) { activePanel.appendChild(_cpMakeCheckbox('agent', a, a)); });
+      inactList.forEach(function(a)  { inactPanel.appendChild(_cpMakeCheckbox('agent', a, a)); });
+    });
+  }
+
+  // 從 session 預設帶入登入者姓名，並預設銷售中
+  function cpLoadMe() {
+    fetch('/api/me').then(r => r.json()).then(function(data) {
+      if (data.error || !data.name) return;
+      var name = data.name;
+      // 等 options 載入完成後再勾選
+      var tryCheck = function() {
+        var panel = document.getElementById('cp-agent-active-list');
+        var inact = document.getElementById('cp-agent-inactive-list');
+        if (!panel) { setTimeout(tryCheck, 200); return; }
+        // 找對應 checkbox 打勾
+        var allCbs = panel.querySelectorAll('input[type=checkbox]');
+        var found = false;
+        allCbs.forEach(function(cb) {
+          if (cb.value === name) { cb.checked = true; _cpSelected.agent.add(name); found = true; }
         });
-        ag.appendChild(grp1);
-      }
-      if (inactiveList.length) {
-        var grp2 = document.createElement('optgroup');
-        grp2.label = '── 其他 ──';
-        inactiveList.forEach(function(a) {
-          var o = document.createElement('option'); o.value = a; o.textContent = a;
-          grp2.appendChild(o);
-        });
-        ag.appendChild(grp2);
+        if (!found) {
+          // 不在在線名單，找其他群
+          inact.querySelectorAll('input[type=checkbox]').forEach(function(cb) {
+            if (cb.value === name) { cb.checked = true; _cpSelected.agent.add(name); }
+          });
+        }
+        _cpUpdateLabel('agent');
+        cpSearch();  // 帶入姓名後自動搜尋
+      };
+      // options 可能還沒載入，稍等
+      if (window._cpOptionsLoaded) tryCheck();
+      else {
+        var wait = setInterval(function() {
+          if (window._cpOptionsLoaded) { clearInterval(wait); tryCheck(); }
+        }, 150);
       }
     });
   }
@@ -2563,24 +2719,31 @@ OBJECTS_APP_HTML = """
     _cpPage = 1;
     _cpLastQuery = {
       keyword:   document.getElementById('cp-keyword').value.trim(),
-      category:  document.getElementById('cp-category').value,
-      area:      document.getElementById('cp-area').value,
+      category:  Array.from(_cpSelected.cat).join(','),
+      area:      Array.from(_cpSelected.area).join(','),
       price_min: document.getElementById('cp-price-min').value,
       price_max: document.getElementById('cp-price-max').value,
       status:    document.getElementById('cp-status').value,
-      agent:     document.getElementById('cp-agent').value,
+      agent:     Array.from(_cpSelected.agent).join(','),
     };
     cpFetch();
   }
 
   function cpReset() {
     document.getElementById('cp-keyword').value = '';
-    document.getElementById('cp-category').value = '';
-    document.getElementById('cp-area').value = '';
     document.getElementById('cp-price-min').value = '';
     document.getElementById('cp-price-max').value = '';
-    document.getElementById('cp-status').value = '';
-    document.getElementById('cp-agent').value = '';
+    document.getElementById('cp-status').value = 'selling';
+    // 清除複選
+    ['cat','area','agent'].forEach(function(t) {
+      _cpSelected[t].clear();
+      _cpUpdateLabel(t);
+      var panels = ['cp-'+t+'-list','cp-'+t+'-active-list','cp-'+t+'-inactive-list'];
+      panels.forEach(function(pid) {
+        var el = document.getElementById(pid);
+        if (el) el.querySelectorAll('input[type=checkbox]').forEach(function(cb){ cb.checked=false; });
+      });
+    });
     _cpPage = 1;
     _cpLastQuery = {};
     document.getElementById('cp-list').innerHTML = '';
@@ -2627,30 +2790,70 @@ OBJECTS_APP_HTML = """
         document.getElementById('cp-prev').disabled = data.page <= 1;
         document.getElementById('cp-next').disabled = data.page >= data.pages;
 
+        // 計算委託到期日剩餘天數
+        function calcDaysLeft(dateStr) {
+          if (!dateStr) return null;
+          // 支援「115年6月30日」民國格式
+          var m = String(dateStr).match(/(\d+)\s*年\s*(\d+)\s*月\s*(\d+)\s*日/);
+          var d;
+          if (m) {
+            var year = parseInt(m[1]) + (parseInt(m[1]) < 1000 ? 1911 : 0);
+            d = new Date(year, parseInt(m[2])-1, parseInt(m[3]));
+          } else {
+            d = new Date(dateStr);
+          }
+          if (isNaN(d)) return null;
+          var now = new Date(); now.setHours(0,0,0,0);
+          return Math.round((d - now) / 86400000);
+        }
+
         // 渲染列表
         var html = '';
         for (var i = 0; i < items.length; i++) {
           var item = items[i];
-          var isSold = item['\u9500\u552e\u4e2d'] === false;
-          var statusBadge = isSold
-            ? '<span class="text-xs bg-slate-600 text-slate-300 px-2 py-0.5 rounded-full">\u5df2\u6210\u4ea4</span>'
-            : '<span class="text-xs bg-green-700 text-green-200 px-2 py-0.5 rounded-full">\u9500\u552e\u4e2d</span>';
-          var price = item['\u552e\u50f9(\u842c)'] ? item['\u552e\u50f9(\u842c)'] + ' \u842c' : '-';
-          var buildPing = item['\u5efa\u576a'] ? item['\u5efa\u576a'] + ' \u576a' : (item['\u5730\u576a'] ? item['\u5730\u576a'] + ' \u576a\u5730' : '');
-          var cat = item['\u7269\u4ef6\u985e\u5225'] ? '<span class="text-xs text-amber-400">' + escapeHtml(item['\u7269\u4ef6\u985e\u5225']) + '</span>' : '';
-          var agent = item['\u7d93\u7d00\u4eba'] ? '<span class="text-xs text-slate-500">' + escapeHtml(item['\u7d93\u7d00\u4eba']) + '</span>' : '';
+          var selling = item['銷售中'];
+          var hasDeal = !!item['成交日期'];
+          var statusBadge;
+          if (selling === false && hasDeal) {
+            statusBadge = '<span class="text-xs bg-blue-900 text-blue-300 px-2 py-0.5 rounded-full">已成交</span>';
+          } else if (selling === false && !hasDeal) {
+            statusBadge = '<span class="text-xs bg-slate-600 text-slate-400 px-2 py-0.5 rounded-full">已下架</span>';
+          } else {
+            statusBadge = '<span class="text-xs bg-green-700 text-green-200 px-2 py-0.5 rounded-full">銷售中</span>';
+          }
+          var price = item['售價(萬)'] ? item['售價(萬)'] + ' 萬' : '-';
+          var buildPing = item['建坪'] ? item['建坪'] + ' 坪' : (item['地坪'] ? item['地坪'] + ' 坪地' : '');
+          var cat = item['物件類別'] ? '<span class="text-xs text-amber-400">' + escapeHtml(item['物件類別']) + '</span>' : '';
+          var agent = item['經紀人'] ? '<span class="text-xs text-slate-500">' + escapeHtml(item['經紀人']) + '</span>' : '';
           var safeId = String(item.id).replace(/'/g, '');
-          var name = escapeHtml(item['\u6848\u540d'] || '\uff08\u7121\u6848\u540d\uff09');
-          var addr = escapeHtml(item['\u7269\u4ef6\u5730\u5740'] || '-');
-          html += '<div class="bg-slate-800 border border-slate-700 hover:border-slate-500 rounded-xl p-4 cursor-pointer transition" onclick="cpOpenDetail(' + "'" + safeId + "'" + ')">';
+          var name = escapeHtml(item['案名'] || '（無案名）');
+          var addr = escapeHtml(item['物件地址'] || '-');
+
+          // 委託到期日剩餘天數標示
+          var expiryBadge = '';
+          if (selling !== false) {  // 銷售中才顯示到期警示
+            var daysLeft = calcDaysLeft(item['委託到期日']);
+            if (daysLeft !== null) {
+              if (daysLeft < 0) {
+                expiryBadge = '<span class="text-xs bg-red-900 text-red-300 px-2 py-0.5 rounded-full">⚠️ 已到期 ' + Math.abs(daysLeft) + '天</span>';
+              } else if (daysLeft <= 15) {
+                expiryBadge = '<span class="text-xs bg-orange-800 text-orange-200 px-2 py-0.5 rounded-full animate-pulse">⏰ 剩 ' + daysLeft + ' 天</span>';
+              } else {
+                expiryBadge = '<span class="text-xs text-slate-500">到期：剩' + daysLeft + '天</span>';
+              }
+            }
+          }
+
+          html += '<div class="bg-slate-800 border border-slate-700 hover:border-slate-500 rounded-xl p-4 cursor-pointer transition" onclick="cpOpenDetail(\'' + safeId + '\')">';
           html += '<div class="flex items-start justify-between gap-2">';
           html += '<div class="min-w-0"><p class="font-semibold text-slate-100 truncate">' + name + '</p>';
           html += '<p class="text-xs text-slate-400 truncate mt-0.5">' + addr + '</p></div>';
           html += '<div class="shrink-0 text-right"><p class="font-bold text-blue-300 text-sm">' + escapeHtml(price) + '</p>' + statusBadge + '</div>';
           html += '</div>';
-          html += '<div class="flex gap-3 mt-2 flex-wrap">' + cat;
+          html += '<div class="flex gap-3 mt-2 flex-wrap items-center">' + cat;
           html += buildPing ? '<span class="text-xs text-slate-400">' + escapeHtml(buildPing) + '</span>' : '';
-          html += agent + '</div></div>';
+          html += agent;
+          html += expiryBadge + '</div></div>';
         }
         list.innerHTML = html;
     });
