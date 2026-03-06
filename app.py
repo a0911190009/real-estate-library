@@ -8,9 +8,12 @@ import os
 import json
 import re
 import base64
+import uuid
+import threading
 import urllib.request
 import urllib.error
-from datetime import datetime
+import urllib.parse
+from datetime import datetime, timezone
 
 from flask import Flask, request, session, redirect, jsonify, render_template_string
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
@@ -46,6 +49,30 @@ try:
             break
 except Exception:
     pass
+
+# Firestore（有環境就啟用，否則 None）
+try:
+    from google.cloud import firestore as _firestore
+    _db = None  # 延遲初始化
+except ImportError:
+    _firestore = None
+    _db = None
+
+
+def _get_db():
+    """取得 Firestore client（延遲初始化）"""
+    global _db
+    if _db is not None:
+        return _db
+    if _firestore is None:
+        return None
+    try:
+        _db = _firestore.Client(project=os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCLOUD_PROJECT"))
+        return _db
+    except Exception as e:
+        import logging
+        logging.warning("Library: Firestore 初始化失敗，使用 GCS/本地 fallback: %s", e)
+        return None
 
 app = Flask(__name__)
 _secret = os.environ.get("FLASK_SECRET_KEY", "")
@@ -147,6 +174,7 @@ def _gcs_list_prefix(prefix):
 
 
 def _objects_dir(email):
+    """本地/GCS fallback 目錄（Firestore 優先時不會用到）"""
     safe = _safe_email(email)
     if not safe:
         return None, None
@@ -158,6 +186,16 @@ def _objects_dir(email):
 
 
 def _list_user_ids(email):
+    """列出用戶所有物件 ID。優先 Firestore，否則 GCS/本地。"""
+    db = _get_db()
+    if db and email:
+        try:
+            docs = db.collection("users").document(email).collection("objects").select([]).stream()
+            return [doc.id for doc in docs]
+        except Exception as e:
+            import logging
+            logging.warning("Library: Firestore 列出物件失敗: %s", e)
+
     local_dir, gcs_prefix = _objects_dir(email)
     if local_dir:
         if not os.path.isdir(local_dir):
@@ -170,10 +208,27 @@ def _list_user_ids(email):
 
 
 def _load_object(email, obj_id):
-    safe = _safe_email(email)
-    if not safe or not obj_id:
+    """讀取一筆物件。優先 Firestore，否則 GCS/本地。"""
+    if not email or not obj_id:
         return None
     obj_id = os.path.basename(obj_id).replace("..", "")
+
+    db = _get_db()
+    if db:
+        try:
+            doc = db.collection("users").document(email).collection("objects").document(obj_id).get()
+            if doc.exists:
+                data = doc.to_dict()
+                data.pop("_id", None)
+                return data
+        except Exception as e:
+            import logging
+            logging.warning("Library: Firestore 讀取物件失敗: %s", e)
+
+    # Fallback：GCS / 本地
+    safe = _safe_email(email)
+    if not safe:
+        return None
     local_dir, gcs_prefix = _objects_dir(email)
     if local_dir:
         fpath = os.path.join(local_dir, f"{obj_id}.json")
@@ -196,14 +251,28 @@ def _load_object(email, obj_id):
 
 
 def _save_object(email, obj_id, data):
-    safe = _safe_email(email)
-    if not safe or not obj_id:
+    """儲存物件。優先 Firestore，否則 GCS/本地。"""
+    if not email or not obj_id:
         return False
     obj_id = os.path.basename(obj_id).replace("..", "")
-    data["updated_at"] = datetime.now().isoformat()
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
     data["owner_email"] = email
     if "id" not in data:
         data["id"] = obj_id
+
+    db = _get_db()
+    if db:
+        try:
+            db.collection("users").document(email).collection("objects").document(obj_id).set(data)
+            return True
+        except Exception as e:
+            import logging
+            logging.warning("Library: Firestore 儲存物件失敗，改用 GCS/本地: %s", e)
+
+    # Fallback
+    safe = _safe_email(email)
+    if not safe:
+        return False
     data_str = json.dumps(data, ensure_ascii=False, indent=2)
     local_dir, gcs_prefix = _objects_dir(email)
     if local_dir:
@@ -221,10 +290,24 @@ def _save_object(email, obj_id, data):
 
 
 def _delete_object(email, obj_id):
-    safe = _safe_email(email)
-    if not safe or not obj_id:
+    """刪除物件。優先 Firestore，否則 GCS/本地。"""
+    if not email or not obj_id:
         return False
     obj_id = os.path.basename(obj_id).replace("..", "")
+
+    db = _get_db()
+    if db:
+        try:
+            db.collection("users").document(email).collection("objects").document(obj_id).delete()
+            return True
+        except Exception as e:
+            import logging
+            logging.warning("Library: Firestore 刪除物件失敗，改用 GCS/本地: %s", e)
+
+    # Fallback
+    safe = _safe_email(email)
+    if not safe:
+        return False
     local_dir, gcs_prefix = _objects_dir(email)
     if local_dir:
         fpath = os.path.join(local_dir, f"{obj_id}.json")
@@ -247,6 +330,17 @@ def _delete_object(email, obj_id):
 
 
 def _list_users_with_objects():
+    """列出所有有物件的用戶（管理員用）。優先 Firestore，否則 GCS/本地。"""
+    db = _get_db()
+    if db:
+        try:
+            # 列出 users 集合的所有 document（每個 document 代表一個用戶）
+            users = [doc.id for doc in db.collection("users").select([]).stream()]
+            return sorted(users)
+        except Exception as e:
+            import logging
+            logging.warning("Library: Firestore 列出用戶失敗，改用 GCS: %s", e)
+
     if GCS_BUCKET:
         blobs = list(_get_gcs_bucket().list_blobs(prefix="users/"))
         prefixes = set()
@@ -555,6 +649,737 @@ def _field_key_label():
     return [(k, l) for k, l, _ in PROPERTY_FIELDS + EXTRA_FIELDS]
 
 
+# ── Sheets → Firestore 同步邏輯 ──
+
+SHEET_ID = os.environ.get("PROPERTY_SHEET_ID", "1Gm9FYLgYcyQHhiLMD_bmABKXvl-bPDJQeN-46DUxyjU")
+SHEET_NAME = os.environ.get("PROPERTY_SHEET_NAME", "主頁")
+GCP_PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCLOUD_PROJECT") or "gen-lang-client-0393195862"
+
+# 數字欄位（自動轉 float）
+_NUMERIC_FIELDS = {"地坪", "建坪", "管理費(元)", "委託價(萬)", "售價(萬)", "現有貸款(萬)", "成交金額(萬)"}
+
+_sync_lock = threading.Lock()   # 避免同時多次同步
+_sync_status = {"running": False, "last_run": None, "last_result": None}
+
+
+def _sheets_read_all():
+    """用 ADC 讀取整張 Sheets，回傳 (headers, data_rows)。"""
+    import google.auth
+    from googleapiclient.discovery import build
+    creds, _ = google.auth.default(scopes=[
+        "https://www.googleapis.com/auth/cloud-platform",
+        "https://www.googleapis.com/auth/spreadsheets.readonly"
+    ])
+    service = build("sheets", "v4", credentials=creds, cache_discovery=False)
+    result = service.spreadsheets().values().get(
+        spreadsheetId=SHEET_ID,
+        range=f"{SHEET_NAME}!A1:AZ9999"
+    ).execute()
+    all_rows = result.get("values", [])
+    if len(all_rows) < 4:
+        return [], []
+
+    headers = all_rows[1]   # 第2行是欄位名
+
+    def is_header_row(row):
+        return bool(row) and row[0].strip() == headers[0]
+
+    # 第4行起為資料，過濾空行和重複標題行
+    data_rows = [r for r in all_rows[3:] if any(c.strip() for c in r) and not is_header_row(r)]
+    return headers, data_rows
+
+
+def _parse_price_num(val):
+    if val is None:
+        return None
+    try:
+        return float(str(val).replace(",", "").strip())
+    except Exception:
+        return val
+
+
+def _row_to_doc(headers, row):
+    """把一行資料轉成 Firestore document dict。"""
+    data = {}
+    for i, h in enumerate(headers):
+        if not h or not h.strip():
+            continue
+        val = row[i].strip() if i < len(row) else ""
+        if not val:
+            continue
+        if h in _NUMERIC_FIELDS:
+            data[h] = _parse_price_num(val)
+        elif h == "銷售中":
+            data["銷售中"] = str(val).strip().lower() not in ("no", "否", "false", "0")
+        else:
+            data[h] = val
+    return data
+
+
+def _do_sync():
+    """執行同步（在背景執行緒中跑）。回傳結果 dict。"""
+    import logging
+    log = logging.getLogger("sync-properties")
+    started = datetime.now(timezone.utc).isoformat()
+
+    try:
+        log.info("開始同步 Sheets → Firestore")
+        headers, data_rows = _sheets_read_all()
+        log.info(f"讀到 {len(data_rows)} 筆資料")
+
+        db = _get_db()
+        if db is None:
+            return {"ok": False, "error": "Firestore 未連線", "started": started}
+
+        col = db.collection("company_properties")
+
+        # 讀取現有 Firestore 文件 ID 集合，用來偵測已刪除的資料
+        existing_ids = {doc.id for doc in col.select([]).stream()}
+
+        written = skipped = deleted = 0
+        seen_ids = set()
+
+        for row in data_rows:
+            d = _row_to_doc(headers, row)
+            seq = str(d.get("資料序號", "")).strip()
+            if not seq or not seq.isdigit():
+                skipped += 1
+                continue
+
+            doc_id = seq
+            seen_ids.add(doc_id)
+            d["_synced_at"] = started
+            col.document(doc_id).set(d)
+            written += 1
+            if written % 200 == 0:
+                log.info(f"進度：{written}/{len(data_rows)}")
+
+        # 刪除 Firestore 中已不存在於 Sheets 的文件（避免髒資料）
+        to_delete = existing_ids - seen_ids
+        for doc_id in to_delete:
+            col.document(doc_id).delete()
+            deleted += 1
+
+        result = {
+            "ok": True,
+            "written": written,
+            "skipped": skipped,
+            "deleted": deleted,
+            "started": started,
+            "finished": datetime.now(timezone.utc).isoformat()
+        }
+        log.info(f"同步完成：{result}")
+        return result
+
+    except Exception as e:
+        log.exception("同步失敗")
+        return {"ok": False, "error": str(e), "started": started}
+
+
+@app.route("/api/sync-properties", methods=["POST"])
+def api_sync_properties():
+    """
+    觸發 Sheets → Firestore 同步。
+    - 管理員登入後可呼叫（前端按鈕）
+    - Cloud Scheduler 用 X-Sync-Key header 驗證（不需登入）
+    """
+    # 驗證方式1：管理員 session
+    is_admin_user = False
+    email = session.get("user_email")
+    if email and _is_admin(email):
+        is_admin_user = True
+
+    # 驗證方式2：Cloud Scheduler 傳來的 Sync Key
+    sync_key = os.environ.get("SYNC_SECRET_KEY", "")
+    req_key = request.headers.get("X-Sync-Key", "")
+    is_scheduler = bool(sync_key and req_key and sync_key == req_key)
+
+    if not is_admin_user and not is_scheduler:
+        return jsonify({"error": "無權限"}), 403
+
+    # 避免重複同步
+    if _sync_status["running"]:
+        return jsonify({"error": "同步正在執行中，請稍後再試"}), 429
+
+    # 背景執行（避免 Cloud Scheduler timeout）
+    def run():
+        _sync_status["running"] = True
+        try:
+            result = _do_sync()
+            _sync_status["last_result"] = result
+            _sync_status["last_run"] = result.get("finished") or result.get("started")
+        finally:
+            _sync_status["running"] = False
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+
+    return jsonify({"ok": True, "message": "同步已在背景啟動，約需 1-2 分鐘完成"})
+
+
+@app.route("/api/sync-properties/status", methods=["GET"])
+def api_sync_properties_status():
+    """查詢同步狀態（管理員用）。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email):
+        return jsonify({"error": "無權限"}), 403
+    return jsonify({
+        "running": _sync_status["running"],
+        "last_run": _sync_status["last_run"],
+        "last_result": _sync_status["last_result"]
+    })
+
+
+# ── 物件類別大類對應表（不影響 Sheets 原始資料） ──
+# 搜尋時選大類 → 自動展開成多個原始類別進行過濾
+CATEGORY_GROUPS = {
+    "住宅類": ["住家", "住宅", "套房", "華廈", "平房", "透天", "透住",
+              "透天+農地", "透天 建地", "建地 住家", "建地+住家",
+              "建地+平房", "平房+承租地"],
+    "公寓類": ["公寓", "公寓/套房"],
+    "別墅類": ["別墅", "別墅+建地", "別墅店住", "農地+別墅", "店面+別墅"],
+    "店面/商用": ["店住", "店面", "店面 建地", "店面+建地", "攤位", "辦公大樓",
+                "民宿", "廠房", "廠辦"],
+    "農地類": ["農地", "農舍", "農建地", "農建", "農+建", "農地+建地",
+              "建地+農地", "農地+農舍", "農地+住家", "農地/建地",
+              "農地 資材室", "農地+別墅"],
+    "建地類": ["建地", "建農地", "土地", "林地", "國有農地+建地",
+              "建地+廠房", "農建", "農建地"],
+}
+
+# ── 地區簡寫 → 完整縣市鄉鎮名稱對應表 ──
+# 排序原則：台東縣在最前，台東市第一；花蓮縣次之；其他縣市最後
+AREA_DISPLAY = {
+    # ── 台東縣（主要業務區） ──
+    "台東":   "台東縣 台東市",
+    "卑南":   "台東縣 卑南鄉",
+    "鹿野":   "台東縣 鹿野鄉",
+    "關山":   "台東縣 關山鎮",
+    "池上":   "台東縣 池上鄉",
+    "東河":   "台東縣 東河鄉",
+    "成功":   "台東縣 成功鎮",
+    "長濱":   "台東縣 長濱鄉",
+    "太麻里": "台東縣 太麻里鄉",
+    "大武":   "台東縣 大武鄉",
+    "延平":   "台東縣 延平鄉",
+    "海端":   "台東縣 海端鄉",
+    "金峯":   "台東縣 金峰鄉",
+    "金鋒":   "台東縣 金峰鄉",   # 同鄉不同寫法
+    "獅子鄉": "屏東縣 獅子鄉",   # 屏東（接近台東）
+    "綠島":   "台東縣 綠島鄉",
+    # ── 花蓮縣 ──
+    "花蓮":       "花蓮縣 花蓮市",
+    "壽豐":       "花蓮縣 壽豐鄉",
+    "光復":       "花蓮縣 光復鄉",
+    "玉里":       "花蓮縣 玉里鎮",
+    "富里":       "花蓮縣 富里鄉",
+    "花蓮富里":   "花蓮縣 富里鄉",
+    "鳳林":       "花蓮縣 鳳林鎮",
+    "花蓮豐濱":   "花蓮縣 豐濱鄉",
+    "花蓮縣.豐濱市": "花蓮縣 豐濱鄉",
+    # ── 其他縣市 ──
+    "台中大里區": "台中市 大里區",
+    "台南":   "台南市",
+    "彰化":   "彰化縣",
+    "高雄":   "高雄市",
+    "新營":   "台南市 新營區",
+    "潮州":   "屏東縣 潮州鎮",
+    "枋寮":   "屏東縣 枋寮鄉",
+}
+
+# 地區排序順序（台東縣優先、台東市最前；其他依縣市分組）
+_AREA_SORT_ORDER = [
+    "台東", "卑南", "鹿野", "關山", "池上", "東河", "成功", "長濱",
+    "太麻里", "大武", "延平", "海端", "金峯", "金鋒", "綠島",
+    "花蓮", "壽豐", "光復", "玉里", "富里", "花蓮富里", "鳳林",
+    "花蓮豐濱", "花蓮縣.豐濱市",
+    "獅子鄉", "潮州", "枋寮",
+    "台中大里區", "台南", "新營", "彰化", "高雄",
+]
+
+def _area_sort_key(raw_area):
+    """地區排序鍵：依 _AREA_SORT_ORDER 排序，不在表中的排最後"""
+    try:
+        return _AREA_SORT_ORDER.index(raw_area)
+    except ValueError:
+        return len(_AREA_SORT_ORDER)
+# 反查：原始類別 → 大類名稱（不在表中的 → 自動歸「其他」）
+_CAT_REVERSE = {}
+for _grp, _cats in CATEGORY_GROUPS.items():
+    for _c in _cats:
+        _CAT_REVERSE[_c] = _grp
+
+# 「其他」包含所有不在上述大類的原始類別（動態判斷，不需列舉）
+_OTHER_GROUP = "其他"
+
+# 公司目前在線人員（置頂顯示）
+ACTIVE_AGENTS = ["張文澤", "陳威良", "雷文海", "歐芷妤", "許荺芯", "蔡秀芳", "李振迎"]
+
+
+def _expand_category_group(name):
+    """輸入大類名稱，回傳原始類別 list；若不是大類則回傳 [name]。
+    「其他」特殊處理：回傳空 list（代表「不在任何大類」的類別）。
+    """
+    if name == _OTHER_GROUP:
+        return []   # 由呼叫端特殊處理
+    return CATEGORY_GROUPS.get(name, [name])
+
+
+# ── 買方需求 CRUD API（Firestore buyers 集合） ──
+
+def _buyers_col():
+    """取得 buyers Firestore 集合參照。"""
+    db = _get_db()
+    if db is None:
+        return None
+    return db.collection("buyers")
+
+
+@app.route("/api/buyers", methods=["GET"])
+def api_buyers_list():
+    """列出所有買方需求（管理員可看全部，一般用戶只看自己）。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    col = _buyers_col()
+    if col is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    try:
+        if _is_admin(email):
+            docs = list(col.limit(200).stream())
+        else:
+            # 不加 order_by 避免需要複合索引，用 Python 端排序
+            docs = list(col.where("created_by", "==", email).limit(200).stream())
+        items = [{"id": d.id, **d.to_dict()} for d in docs]
+        # Python 端依 created_at 降冪排序（新的在前）
+        items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        return jsonify({"items": items})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/buyers", methods=["POST"])
+def api_buyers_create():
+    """新增買方需求。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    col = _buyers_col()
+    if col is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    data = request.get_json() or {}
+    if not data.get("name"):
+        return jsonify({"error": "買方姓名必填"}), 400
+    now = datetime.now(timezone.utc).isoformat()
+    data["created_by"] = email
+    data["created_at"] = now
+    data["updated_at"] = now
+    ref = col.document()
+    ref.set(data)
+    return jsonify({"id": ref.id, **data}), 201
+
+
+@app.route("/api/buyers/<buyer_id>", methods=["GET"])
+def api_buyers_get(buyer_id):
+    """取得單筆買方需求。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    col = _buyers_col()
+    if col is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    doc = col.document(buyer_id).get()
+    if not doc.exists:
+        return jsonify({"error": "找不到此買方"}), 404
+    d = doc.to_dict()
+    if not _is_admin(email) and d.get("created_by") != email:
+        return jsonify({"error": "無權限"}), 403
+    return jsonify({"id": doc.id, **d})
+
+
+@app.route("/api/buyers/<buyer_id>", methods=["PUT"])
+def api_buyers_update(buyer_id):
+    """更新買方需求。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    col = _buyers_col()
+    if col is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    doc = col.document(buyer_id).get()
+    if not doc.exists:
+        return jsonify({"error": "找不到此買方"}), 404
+    d = doc.to_dict()
+    if not _is_admin(email) and d.get("created_by") != email:
+        return jsonify({"error": "無權限"}), 403
+    data = request.get_json() or {}
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    col.document(buyer_id).update(data)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/buyers/<buyer_id>", methods=["DELETE"])
+def api_buyers_delete(buyer_id):
+    """刪除買方需求。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    col = _buyers_col()
+    if col is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    doc = col.document(buyer_id).get()
+    if not doc.exists:
+        return jsonify({"error": "找不到此買方"}), 404
+    d = doc.to_dict()
+    if not _is_admin(email) and d.get("created_by") != email:
+        return jsonify({"error": "無權限"}), 403
+    col.document(buyer_id).delete()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/buyers/<buyer_id>/match", methods=["GET"])
+def api_buyers_match(buyer_id):
+    """根據買方需求條件，配對公司物件庫。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+
+    buyers_col = _buyers_col()
+    db = _get_db()
+    if buyers_col is None or db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+
+    # 取得買方資料
+    bdoc = buyers_col.document(buyer_id).get()
+    if not bdoc.exists:
+        return jsonify({"error": "找不到此買方"}), 404
+    buyer = bdoc.to_dict()
+    if not _is_admin(email) and buyer.get("created_by") != email:
+        return jsonify({"error": "無權限"}), 403
+
+    # 從 Firestore 取物件（先用可索引條件縮小範圍）
+    prop_col = db.collection("company_properties")
+    query = prop_col
+
+    areas = [a.strip() for a in str(buyer.get("areas", "")).split(",") if a.strip()]
+    # 將類別展開（支援大類，「其他」特殊處理）
+    raw_cats = [c.strip() for c in str(buyer.get("categories", "")).split(",") if c.strip()]
+    categories = []
+    has_other_cat = False
+    for c in raw_cats:
+        if c == _OTHER_GROUP:
+            has_other_cat = True
+        else:
+            categories.extend(_expand_category_group(c))
+
+    # Firestore 只能單欄位 ==，多條件用 Python 端過濾
+    if len(areas) == 1:
+        query = query.where("鄉/市/鎮", "==", areas[0])
+    # 類別展開後可能多個，統一在 Python 端過濾
+
+    # 全量讀取，不設上限
+    docs = list(query.stream())
+    results = [{"id": d.id, **d.to_dict()} for d in docs]
+
+    # Python 端多條件過濾
+    price_min = buyer.get("price_min")
+    price_max = buyer.get("price_max")
+    ping_min  = buyer.get("ping_min")
+    ping_max  = buyer.get("ping_max")
+    status_req = buyer.get("status", "selling")  # selling / sold / all
+
+    all_known_cats_match = {c for cats in CATEGORY_GROUPS.values() for c in cats}
+
+    def match(r):
+        # 地區過濾
+        if areas:
+            if r.get("鄉/市/鎮") not in areas:
+                return False
+        # 類別過濾（已展開為原始類別 list）
+        if categories or has_other_cat:
+            rc = r.get("物件類別")
+            in_expanded = rc in categories if categories else False
+            in_other = (rc not in all_known_cats_match) if has_other_cat else False
+            if not in_expanded and not in_other:
+                return False
+        # 銷售狀態
+        if status_req == "selling" and r.get("銷售中") is False:
+            return False
+        if status_req == "sold" and r.get("銷售中") is not False:
+            return False
+        # 售價範圍
+        price = _parse_price(r.get("售價(萬)"))
+        if price_min and price is not None and price < float(price_min):
+            return False
+        if price_max and price is not None and price > float(price_max):
+            return False
+        # 坪數範圍（優先建坪，次選地坪）
+        ping = _parse_price(r.get("建坪") or r.get("地坪"))
+        if ping_min and ping is not None and ping < float(ping_min):
+            return False
+        if ping_max and ping is not None and ping > float(ping_max):
+            return False
+        return True
+
+    matched = [r for r in results if match(r)]
+
+    # 排序：售價升冪
+    matched.sort(key=lambda r: (_parse_price(r.get("售價(萬)")) or 99999))
+
+    # 移除個資欄位
+    sensitive = {"身份証字號", "室內電話1", "行動電話1",
+                 "連絡人室內電話2", "連絡人行動電話2",
+                 "買方電話", "買方生日", "賣方生日",
+                 "買方姓名", "買方住址", "_imported", "_synced_at"}
+    for r in matched:
+        for k in sensitive:
+            r.pop(k, None)
+
+    return jsonify({
+        "total": len(matched),
+        "buyer_name": buyer.get("name", ""),
+        "items": matched[:50]   # 最多回傳50筆
+    })
+
+
+# ── 公司物件庫搜尋 API（Firestore company_properties 集合） ──
+
+@app.route("/api/company-properties/search", methods=["GET"])
+def api_company_properties_search():
+    """搜尋公司物件庫，支援多條件篩選。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+
+    # 取得查詢參數
+    keyword   = request.args.get("keyword", "").strip()    # 關鍵字（案名/地址）
+    category  = request.args.get("category", "").strip()   # 物件類別
+    area      = request.args.get("area", "").strip()       # 鄉/市/鎮
+    price_min = request.args.get("price_min", "").strip()  # 最低售價（萬）
+    price_max = request.args.get("price_max", "").strip()  # 最高售價（萬）
+    status    = request.args.get("status", "").strip()     # "selling"=銷售中, "sold"=已成交, ""=全部
+    agent     = request.args.get("agent", "").strip()      # 經紀人
+    page      = max(1, int(request.args.get("page", 1)))
+    per_page  = 20
+
+    try:
+        col = db.collection("company_properties")
+        query = col
+
+        # 展開大類 → 原始類別 list
+        is_other_group = (category == _OTHER_GROUP)
+        cat_list = _expand_category_group(category) if category else []
+        # 所有已歸類的原始類別集合（用於「其他」反向過濾）
+        all_known_cats = {c for cats in CATEGORY_GROUPS.values() for c in cats}
+
+        # Firestore 只能單欄位 == 過濾；大類改在 Python 端過濾
+        # 只有單一原始類別（非大類）時才下推到 Firestore
+        if cat_list and len(cat_list) == 1 and cat_list[0] == category:
+            query = query.where("物件類別", "==", category)
+        if area:
+            query = query.where("鄉/市/鎮", "==", area)
+
+        # 全量讀取，不設上限
+        docs = list(query.stream())
+        results = [{"id": d.id, **d.to_dict()} for d in docs]
+
+        # Python 端類別過濾
+        if is_other_group:
+            # 「其他」= 不屬於任何大類的原始類別
+            results = [r for r in results if r.get("物件類別") not in all_known_cats]
+        elif cat_list and not (len(cat_list) == 1 and cat_list[0] == category):
+            results = [r for r in results if r.get("物件類別") in cat_list]
+
+        # Python 端其他過濾
+        if keyword:
+            kw = keyword.lower()
+            results = [r for r in results if
+                       kw in str(r.get("案名", "")).lower() or
+                       kw in str(r.get("物件地址", "")).lower() or
+                       kw in str(r.get("委託編號", "")).lower()]
+
+        if price_min:
+            try:
+                pmin = float(price_min)
+                results = [r for r in results if _parse_price(r.get("售價(萬)")) is not None
+                           and _parse_price(r.get("售價(萬)")) >= pmin]
+            except Exception:
+                pass
+
+        if price_max:
+            try:
+                pmax = float(price_max)
+                results = [r for r in results if _parse_price(r.get("售價(萬)")) is not None
+                           and _parse_price(r.get("售價(萬)")) <= pmax]
+            except Exception:
+                pass
+
+        if status == "selling":
+            results = [r for r in results if r.get("銷售中") is not False]
+        elif status == "sold":
+            results = [r for r in results if r.get("銷售中") is False]
+
+        if agent:
+            results = [r for r in results if agent in str(r.get("經紀人", ""))]
+
+        # 排序：資料序號降冪（新資料在前）
+        results.sort(key=lambda r: -int(r.get("資料序號", 0) or 0))
+
+        total = len(results)
+        start = (page - 1) * per_page
+        page_data = results[start:start + per_page]
+
+        # 移除敏感欄位（個資）
+        sensitive = {"身份証字號", "室內電話1", "行動電話1",
+                     "連絡人室內電話2", "連絡人行動電話2",
+                     "買方電話", "買方生日", "賣方生日",
+                     "買方姓名", "買方住址", "_imported"}
+        for r in page_data:
+            for k in sensitive:
+                r.pop(k, None)
+
+        return jsonify({
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "pages": (total + per_page - 1) // per_page,
+            "items": page_data
+        })
+
+    except Exception as e:
+        import logging
+        logging.exception("company-properties search 失敗")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/company-properties/<prop_id>", methods=["GET"])
+def api_company_property_get(prop_id):
+    """取得單筆公司物件完整資料。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+
+    try:
+        doc = db.collection("company_properties").document(prop_id).get()
+        if not doc.exists:
+            return jsonify({"error": "找不到物件"}), 404
+
+        data = {"id": doc.id, **doc.to_dict()}
+
+        # 只有管理員才能看敏感欄位
+        if not _is_admin(email):
+            sensitive = {"身份証字號", "室內電話1", "行動電話1",
+                         "連絡人室內電話2", "連絡人行動電話2",
+                         "買方電話", "買方生日", "賣方生日",
+                         "買方姓名", "買方住址"}
+            for k in sensitive:
+                data.pop(k, None)
+
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/company-properties/options", methods=["GET"])
+def api_company_properties_options():
+    """回傳搜尋用的篩選選項（類別清單、地區清單、經紀人清單）。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+
+    try:
+        col = db.collection("company_properties")
+        raw_categories = set()
+        areas = set()
+        agents = set()
+        for doc in col.stream():
+            d = doc.to_dict()
+            if d.get("物件類別"):
+                raw_categories.add(d["物件類別"])
+            if d.get("鄉/市/鎮"):
+                areas.add(d["鄉/市/鎮"])
+            # 拆分多人合寫（各種分隔符），取出個別姓名，排除委託編號
+            import re as _re
+            raw_ag = str(d.get("經紀人", ""))
+            # 先用明確分隔符切割
+            parts = _re.split(r'[/．、,，\s]+', raw_ag)
+            for ag in parts:
+                ag = ag.strip()
+                # 排除含數字（委託編號）、超過4字（多半是合寫）、少於2字的
+                if ag and 2 <= len(ag) <= 4 and not _re.search(r'\d', ag):
+                    # 再用已知在線名單試拆（無分隔符的合寫）
+                    matched = False
+                    for known in ACTIVE_AGENTS:
+                        if known in ag and len(ag) > len(known):
+                            agents.add(known)
+                            matched = True
+                    if not matched:
+                        agents.add(ag)
+
+        # 把原始類別對應到大類
+        # 有對應大類 → 顯示大類；不在任何大類 → 歸入「其他」
+        all_known_cats = {c for cats in CATEGORY_GROUPS.values() for c in cats}
+        display_categories = set(CATEGORY_GROUPS.keys())  # 固定顯示所有大類
+        has_other = any(c not in all_known_cats for c in raw_categories)
+        if has_other:
+            display_categories.add(_OTHER_GROUP)
+
+        # 大類固定順序，「其他」排最後
+        group_order = list(CATEGORY_GROUPS.keys())
+        def cat_sort_key(c):
+            if c in group_order:
+                return (0, group_order.index(c))
+            if c == _OTHER_GROUP:
+                return (2, c)
+            return (1, c)
+
+        # 地區：依排序表排序，並附上完整顯示名稱
+        sorted_raw_areas = sorted(areas, key=_area_sort_key)
+        area_options = [
+            {"value": a, "label": AREA_DISPLAY.get(a, a)}
+            for a in sorted_raw_areas
+        ]
+
+        # 經紀人：在線人員置頂，其他排後
+        active_found   = [a for a in ACTIVE_AGENTS if a in agents]
+        inactive_found = sorted(agents - set(ACTIVE_AGENTS))
+
+        return jsonify({
+            "categories": sorted(display_categories, key=cat_sort_key),
+            "areas": area_options,   # [{value: 簡寫, label: 完整名稱}]
+            "agents": {              # 分群，前端用 <optgroup> 呈現
+                "active":   active_found,    # 在線人員（保持 ACTIVE_AGENTS 順序）
+                "inactive": inactive_found   # 其他人員（字母排序）
+            }
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+def _parse_price(val):
+    """把售價欄位轉為 float，失敗回傳 None。"""
+    if val is None:
+        return None
+    try:
+        return float(str(val).replace(",", "").strip())
+    except Exception:
+        return None
+
+
 # ── Gemini 圖片辨識（直接呼叫） ──
 _EXTRACT_SYSTEM = (
     "你是房產截圖分析專家。"
@@ -566,7 +1391,7 @@ _EXTRACT_PROMPT = (
     '請從圖片中擷取房產物件資訊，輸出以下 JSON 格式（若無資料則留空字串或 null）：\n'
     '{"project_name":"物件名稱","address":"完整地址","price":1800,"building_ping":10.5,'
     '"land_ping":15.2,"authority_ping":25.7,"layout":"3房2廳2衛","floor":"3樓/共5樓",'
-    '"age":"5年","parking":"有","case_number":"A123456","location_area":"台東縣"}\n'
+    '"age":"5年","parking":"有","case_number":"A123456","location_area":"台北市"}\n'
     '注意：price、building_ping、land_ping、authority_ping 必須是純數字。'
     '請務必使用真實的物件名稱，不要輸出「物件名稱」這四個字。'
 )
@@ -624,9 +1449,72 @@ def api_extract_from_image():
     return jsonify({"ok": True, "extracted": extracted})
 
 
+# 儲存非同步截圖工作結果（記憶體，重啟即清空）
+_screenshot_jobs: dict = {}
+
+
+def _decode_punycode_url(url: str) -> str:
+    """將 punycode 域名（xn--xxx）轉回 Unicode（中文域名），避免 Screenshotone 拒絕。"""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        host = parsed.hostname or ""
+        # 若域名含 xn-- 段落才需要轉換
+        if "xn--" in host:
+            decoded_host = host.encode("ascii").decode("idna")
+            # 重組 URL，替換 host 部分
+            netloc = parsed.netloc.replace(host, decoded_host)
+            url = urllib.parse.urlunparse(parsed._replace(netloc=netloc))
+    except Exception:
+        pass  # 轉換失敗就用原始 URL
+    return url
+
+
+def _run_screenshot_job(job_id: str, url: str):
+    """背景執行截圖 + Gemini 辨識，結果存入 _screenshot_jobs。"""
+    import requests as _req
+    url = _decode_punycode_url(url)  # 確保域名是 Unicode 格式
+    try:
+        params = {
+            "access_key": SCREENSHOTONE_KEY,
+            "url": url,
+            "format": "jpg",
+            "image_quality": 85,
+            "viewport_width": 1280,
+            "viewport_height": 1800,   # 加高，截到更多內容
+            "full_page": "true",        # 完整頁面截圖
+            "block_ads": "true",
+            "block_cookie_banners": "true",
+            "ignore_host_errors": "true",
+            "delay": 4,                 # 等待 JS 渲染（網頁動態內容需要時間）
+            "timeout": 40,
+        }
+        resp = _req.get("https://api.screenshotone.com/take", params=params, timeout=35)
+        if resp.status_code != 200:
+            try:
+                msg = resp.json().get("message", "截圖失敗")
+            except Exception:
+                msg = f"截圖服務回傳 {resp.status_code}"
+            _screenshot_jobs[job_id] = {"done": True, "error": msg}
+            return
+        raw_bytes = resp.content
+        if not raw_bytes:
+            _screenshot_jobs[job_id] = {"done": True, "error": "截圖無內容"}
+            return
+    except Exception as e:
+        _screenshot_jobs[job_id] = {"done": True, "error": f"截圖失敗：{e}"}
+        return
+    try:
+        extracted = _gemini_extract_image(raw_bytes, "image/jpeg")
+        # 把截圖 base64 也存入，前端 console 可用 img.src = 'data:image/jpeg;base64,...' 查看
+        img_b64 = base64.b64encode(raw_bytes).decode()
+        _screenshot_jobs[job_id] = {"done": True, "ok": True, "extracted": extracted, "debug_img": img_b64}
+    except Exception as e:
+        _screenshot_jobs[job_id] = {"done": True, "error": f"辨識失敗：{e}"}
+
+
 @app.route("/api/extract-from-url", methods=["POST"])
 def api_extract_from_url():
-    """網址截圖辨識：Screenshotone 截圖 → Gemini 辨識 → 回傳 extracted。"""
+    """網址截圖辨識（非同步）：立即回傳 job_id，前端輪詢 /api/extract-from-url/poll/<job_id>。"""
     email, err = _require_user()
     if err:
         return jsonify({"error": err[0]}), err[1]
@@ -640,44 +1528,23 @@ def api_extract_from_url():
         return jsonify({"error": "請提供網址"}), 400
     if not url.startswith("http://") and not url.startswith("https://"):
         return jsonify({"error": "網址須為 http:// 或 https://"}), 400
-    import requests as _req
-    # 呼叫 Screenshotone API 截圖（回傳 PNG）
-    try:
-        screenshot_url = "https://api.screenshotone.com/take"
-        params = {
-            "access_key": SCREENSHOTONE_KEY,
-            "url": url,
-            "format": "jpg",
-            "image_quality": 80,
-            "viewport_width": 1280,
-            "viewport_height": 900,
-            "full_page": "false",
-            "block_ads": "true",
-            "block_cookie_banners": "true",
-            "ignore_host_errors": "true",   # 即使目標網站回 4xx/5xx 也強制截圖
-            "delay": 1,
-            "timeout": 25,
-        }
-        resp = _req.get(screenshot_url, params=params, timeout=35)
-        if resp.status_code != 200:
-            try:
-                err_msg = resp.json().get("message", "截圖失敗")
-            except Exception:
-                err_msg = f"截圖服務回傳 {resp.status_code}"
-            return jsonify({"error": err_msg}), 502
-        raw_bytes = resp.content
-        if not raw_bytes:
-            return jsonify({"error": "截圖無內容"}), 502
-    except Exception as e:
-        return jsonify({"error": f"截圖失敗：{e}"}), 502
-    # 用 Gemini 辨識截圖
-    try:
-        extracted = _gemini_extract_image(raw_bytes, "image/png")
-    except RuntimeError as e:
-        return jsonify({"error": str(e)}), 503
-    except Exception as e:
-        return jsonify({"error": f"辨識失敗：{e}"}), 502
-    return jsonify({"ok": True, "extracted": extracted})
+    job_id = str(uuid.uuid4())
+    _screenshot_jobs[job_id] = {"done": False}
+    t = threading.Thread(target=_run_screenshot_job, args=(job_id, url), daemon=True)
+    t.start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/extract-from-url/poll/<job_id>", methods=["GET"])
+def api_extract_from_url_poll(job_id):
+    """輪詢截圖辨識工作結果。"""
+    _, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    job = _screenshot_jobs.get(job_id)
+    if job is None:
+        return jsonify({"error": "工作不存在或已過期"}), 404
+    return jsonify(job)
 
 
 # ── AD 歷史代理（資料在 AD 服務，保留代理） ──
@@ -762,7 +1629,7 @@ def _render_app():
     # 生成管理員用戶選擇列
     if is_admin:
         admin_bar = (
-            '<div class="flex items-center gap-3 px-5 py-2 bg-slate-800 border-b border-slate-700 text-sm text-slate-400">'
+            '<div class="flex items-center gap-3 px-2 py-2 mb-3 bg-slate-800/60 rounded-xl border border-slate-700 text-sm text-slate-400">'
             '<span>查看用戶：</span>'
             '<select id="userSelect" class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-1 text-slate-200 text-sm focus:outline-none">'
             '<option value="">載入中…</option>'
@@ -816,6 +1683,9 @@ OBJECTS_APP_HTML = """
     .toast-error{background:#dc2626;color:#fff}
     .toast-info{background:#2563eb;color:#fff}
     .toast-out{opacity:0}
+    /* 經紀人選單分組樣式 */
+    #cp-agent optgroup{font-weight:600;color:#94a3b8;font-size:.75rem}
+    #cp-agent optgroup option{font-weight:400;color:#e2e8f0;padding-left:.5rem}
   </style>
 </head>
 <body class="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-slate-100 font-sans antialiased">
@@ -823,20 +1693,37 @@ OBJECTS_APP_HTML = """
 <div id="toast-container"></div>
 
 <!-- 頂部導覽 -->
-<header class="sticky top-0 z-50 flex items-center justify-between px-5 py-3 bg-slate-900/95 backdrop-blur border-b border-slate-700 shadow">
-  <span class="font-bold text-slate-100">📁 物件庫</span>
-  <div class="flex gap-2">
-    <a href="__PORTAL_LINK__" class="px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm transition">🏠 返回入口</a>
-    <button type="button" onclick="openNewModal()"
-      class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition shadow">
-      ＋ 建立物件資訊
+<header class="sticky top-0 z-50 bg-slate-900/95 backdrop-blur border-b border-slate-700 shadow z-50">
+  <div class="flex items-center justify-between px-5 py-3">
+    <span class="font-bold text-slate-100">📁 物件庫</span>
+    <div class="flex gap-2">
+      <a href="__PORTAL_LINK__" target="tool-portal" class="px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm transition">🏠 返回入口</a>
+      <button type="button" id="btn-new-obj" onclick="openNewModal()"
+        class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition shadow">
+        ＋ 建立物件資訊
+      </button>
+    </div>
+  </div>
+  <!-- 分頁標籤 -->
+  <div class="flex border-t border-slate-700/60">
+    <button id="tab-my" onclick="switchTab('my')"
+      class="tab-btn flex-1 py-2 text-sm font-medium text-blue-400 border-b-2 border-blue-500 transition">
+      📂 我的物件
+    </button>
+    <button id="tab-company" onclick="switchTab('company')"
+      class="tab-btn flex-1 py-2 text-sm font-medium text-slate-400 border-b-2 border-transparent hover:text-slate-200 transition">
+      🏢 公司物件庫
+    </button>
+    <button id="tab-buyers" onclick="switchTab('buyers')"
+      class="tab-btn flex-1 py-2 text-sm font-medium text-slate-400 border-b-2 border-transparent hover:text-slate-200 transition">
+      👥 買方需求
     </button>
   </div>
 </header>
 
-__ADMIN_BAR__
-
-<div class="max-w-3xl mx-auto px-4 py-6">
+<!-- ══ 我的物件分頁 ══ -->
+<div id="pane-my" class="max-w-3xl mx-auto px-4 py-6">
+  __ADMIN_BAR__
   <div id="listPanel" class="space-y-3"></div>
 
   <!-- 編輯物件面板（原地編輯用，新增改由 Modal） -->
@@ -861,6 +1748,226 @@ __ADMIN_BAR__
     <div class="flex gap-3 mt-4">
       <button type="button" onclick="editCurrentDetail()" class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition">編輯</button>
       <button type="button" onclick="closeDetail()" class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm transition">關閉</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ 公司物件庫分頁 ══ -->
+<div id="pane-company" style="display:none" class="max-w-4xl mx-auto px-4 py-6">
+
+  <!-- 搜尋條件列 -->
+  <div class="bg-slate-800 rounded-2xl border border-slate-700 p-4 mb-4">
+    <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-3">
+      <input id="cp-keyword" type="text" placeholder="🔍 案名 / 地址 / 委託編號"
+        class="col-span-2 sm:col-span-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500"
+        onkeydown="if(event.key==='Enter')cpSearch()">
+      <select id="cp-category"
+        class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none">
+        <option value="">全部類別</option>
+      </select>
+      <select id="cp-area"
+        class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none">
+        <option value="">全部地區</option>
+      </select>
+      <input id="cp-price-min" type="number" placeholder="最低售價（萬）"
+        class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
+      <input id="cp-price-max" type="number" placeholder="最高售價（萬）"
+        class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
+      <select id="cp-status"
+        class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none">
+        <option value="">全部狀態</option>
+        <option value="selling">銷售中</option>
+        <option value="sold">已成交</option>
+      </select>
+      <select id="cp-agent"
+        class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none">
+        <option value="">全部經紀人</option>
+      </select>
+    </div>
+    <div class="flex gap-2">
+      <button onclick="cpSearch()"
+        class="px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition">搜尋</button>
+      <button onclick="cpReset()"
+        class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm transition">重設</button>
+    </div>
+  </div>
+
+  <!-- 管理員同步列（只有管理員看得到） -->
+  <div id="cp-sync-bar" class="hidden mb-3 flex items-center gap-3 bg-slate-800/60 border border-slate-700 rounded-xl px-4 py-2">
+    <span class="text-xs text-slate-400 flex-1">上次同步：<span id="cp-last-sync" class="text-slate-300">讀取中…</span></span>
+    <button id="cp-sync-btn" onclick="cpTriggerSync()"
+      class="px-4 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold transition">
+      🔄 立即同步 Sheets
+    </button>
+  </div>
+
+  <!-- 結果資訊列 -->
+  <div id="cp-info" class="text-sm text-slate-400 mb-3 hidden">
+    共 <span id="cp-total" class="font-bold text-slate-200">0</span> 筆，第
+    <span id="cp-page-num" class="font-bold text-slate-200">1</span> /
+    <span id="cp-total-pages" class="font-bold text-slate-200">1</span> 頁
+  </div>
+
+  <!-- 結果列表 -->
+  <div id="cp-list" class="space-y-2"></div>
+
+  <!-- 分頁控制 -->
+  <div id="cp-pagination" class="flex gap-2 justify-center mt-4 hidden">
+    <button id="cp-prev" onclick="cpChangePage(-1)"
+      class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm text-slate-300 transition disabled:opacity-40">← 上一頁</button>
+    <button id="cp-next" onclick="cpChangePage(1)"
+      class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm text-slate-300 transition disabled:opacity-40">下一頁 →</button>
+  </div>
+
+  <!-- 初始提示 -->
+  <div id="cp-placeholder" class="text-center py-16 text-slate-500">
+    <div class="text-5xl mb-3">🏢</div>
+    <p class="text-lg font-medium text-slate-400">公司物件庫</p>
+    <p class="text-sm mt-1">輸入條件後按「搜尋」，或直接按搜尋顯示全部物件</p>
+  </div>
+</div>
+
+<!-- ══ 買方需求分頁 ══ -->
+<div id="pane-buyers" style="display:none" class="max-w-3xl mx-auto px-4 py-6">
+  <div class="flex items-center justify-between mb-4">
+    <h2 class="font-bold text-slate-100 text-lg">👥 買方需求管理</h2>
+    <button onclick="buyerOpenNew()"
+      class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition">
+      ＋ 新增買方
+    </button>
+  </div>
+  <div id="buyer-list" class="space-y-3">
+    <p class="text-slate-500 text-center py-10">載入中…</p>
+  </div>
+</div>
+
+<!-- 新增/編輯買方 Modal -->
+<div id="buyer-modal" role="dialog" aria-modal="true"
+  class="hidden fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+  onclick="if(event.target===this)buyerCloseModal()">
+  <div class="w-full max-w-lg rounded-2xl bg-slate-800 border border-slate-600 shadow-2xl flex flex-col max-h-[90vh]"
+    onclick="event.stopPropagation()">
+    <div class="flex items-center justify-between px-6 py-4 border-b border-slate-700 shrink-0">
+      <h3 id="buyer-modal-title" class="font-bold text-slate-100">新增買方</h3>
+      <button onclick="buyerCloseModal()" class="text-slate-400 hover:text-slate-200 text-xl leading-none">✕</button>
+    </div>
+    <div class="overflow-y-auto px-6 py-5 space-y-4">
+      <input type="hidden" id="buyer-id">
+
+      <!-- 基本資料 -->
+      <div class="grid grid-cols-2 gap-3">
+        <div class="col-span-2">
+          <label class="block text-xs text-slate-400 mb-1">買方姓名 <span class="text-red-400">*</span></label>
+          <input id="buyer-name" type="text" placeholder="例：陳小明"
+            class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">聯絡電話</label>
+          <input id="buyer-phone" type="text" placeholder="0912-345678"
+            class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">負責經紀人</label>
+          <input id="buyer-agent" type="text" placeholder="你的名字"
+            class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
+        </div>
+      </div>
+
+      <!-- 需求條件 -->
+      <div class="bg-slate-700/50 rounded-xl p-4 border border-slate-600 space-y-3">
+        <p class="text-xs font-semibold text-slate-300">📋 購屋需求條件</p>
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">希望地區（可複選，逗號分隔）</label>
+          <input id="buyer-areas" type="text" placeholder="例：台東, 鹿野"
+            class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">物件類別（可複選，逗號分隔）</label>
+          <input id="buyer-categories" type="text" placeholder="例：透天, 公寓, 別墅"
+            class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">最低預算（萬）</label>
+            <input id="buyer-price-min" type="number" placeholder="0"
+              class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
+          </div>
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">最高預算（萬）</label>
+            <input id="buyer-price-max" type="number" placeholder="9999"
+              class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
+          </div>
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">最小坪數</label>
+            <input id="buyer-ping-min" type="number" placeholder="0"
+              class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
+          </div>
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">最大坪數</label>
+            <input id="buyer-ping-max" type="number" placeholder="999"
+              class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">物件狀態</label>
+          <select id="buyer-status"
+            class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none">
+            <option value="selling">僅銷售中</option>
+            <option value="all">銷售中 + 已成交</option>
+            <option value="sold">僅已成交</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- 備註 -->
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">其他備註需求</label>
+        <textarea id="buyer-notes" rows="3" placeholder="例：需要車位，喜歡安靜巷弄，有小孩需近學校…"
+          class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 resize-none focus:outline-none focus:border-blue-500"></textarea>
+      </div>
+    </div>
+    <div class="px-6 py-4 border-t border-slate-700 flex gap-3 shrink-0">
+      <button onclick="buyerSave()"
+        class="px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition">儲存</button>
+      <button onclick="buyerCloseModal()"
+        class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm transition">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- 配對結果 Modal -->
+<div id="match-modal" role="dialog" aria-modal="true"
+  class="hidden fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+  onclick="if(event.target===this)matchClose()">
+  <div class="w-full max-w-2xl rounded-2xl bg-slate-800 border border-slate-600 shadow-2xl flex flex-col max-h-[90vh]"
+    onclick="event.stopPropagation()">
+    <div class="flex items-center justify-between px-6 py-4 border-b border-slate-700 shrink-0">
+      <div>
+        <h3 id="match-title" class="font-bold text-slate-100">配對結果</h3>
+        <p id="match-subtitle" class="text-xs text-slate-400 mt-0.5"></p>
+      </div>
+      <button onclick="matchClose()" class="text-slate-400 hover:text-slate-200 text-xl leading-none">✕</button>
+    </div>
+    <div id="match-body" class="overflow-y-auto px-6 py-4 space-y-3"></div>
+    <div class="px-6 py-4 border-t border-slate-700 shrink-0">
+      <button onclick="matchClose()" class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm transition">關閉</button>
+    </div>
+  </div>
+</div>
+
+<!-- 公司物件詳情 Modal -->
+<div id="cp-detail-modal" role="dialog" aria-modal="true"
+  class="hidden fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+  onclick="if(event.target===this)closeCpDetail()">
+  <div class="w-full max-w-2xl rounded-2xl bg-slate-800 border border-slate-600 shadow-2xl flex flex-col max-h-[90vh]"
+    onclick="event.stopPropagation()">
+    <div class="flex items-center justify-between px-6 py-4 border-b border-slate-700 shrink-0">
+      <h3 id="cp-detail-title" class="font-bold text-slate-100 text-lg">物件詳情</h3>
+      <button onclick="closeCpDetail()" class="text-slate-400 hover:text-slate-200 text-xl leading-none">✕</button>
+    </div>
+    <div id="cp-detail-body" class="overflow-y-auto px-6 py-5 space-y-1 text-sm"></div>
+    <div class="px-6 py-4 border-t border-slate-700 shrink-0">
+      <button onclick="closeCpDetail()" class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm transition">關閉</button>
     </div>
   </div>
 </div>
@@ -890,9 +1997,10 @@ __ADMIN_BAR__
         </div>
         <p class="text-xs text-slate-500 mt-2 min-h-[1em]" id="lib-extract-status"></p>
         <div class="mt-3 pt-3 border-t border-slate-600">
-          <p class="text-xs text-slate-400 mb-2">或輸入物件網址（自動截圖後辨識）</p>
+          <p class="text-xs text-slate-400 mb-1">或輸入物件網址（自動截圖後辨識）</p>
+          <p class="text-xs text-amber-400 mb-2">⚠️ 注意：YES319、591 等網站有 Cloudflare 防護，截圖功能無法使用。請改用上方「選擇圖片／貼上」功能：在瀏覽器按 Cmd+Shift+4 截圖後貼上即可。</p>
           <div class="flex gap-2 items-center">
-            <input type="url" id="lib-url-input" placeholder="https:// 房仲或售屋網頁"
+            <input type="url" id="lib-url-input" placeholder="適用無 Cloudflare 保護的網站"
               class="flex-1 min-w-0 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500" />
             <button type="button" id="lib-url-btn" onclick="runLibExtractFromUrl()"
               class="px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium whitespace-nowrap transition">截圖並辨識</button>
@@ -1085,18 +2193,26 @@ __ADMIN_BAR__
   // ── 將辨識結果填入表單 ──
   function fillLibForm(ext) {
     if (!ext) return;
-    document.getElementById('n-name').value  = ext.project_name || '';
-    document.getElementById('n-price').value = (ext.price != null) ? String(ext.price) : '';
-    document.getElementById('n-area').value  = ext.location_area || '';
-    document.getElementById('n-addr').value  = ext.address || '';
-    document.getElementById('n-bping').value = (ext.building_ping != null) ? String(ext.building_ping) : '';
-    document.getElementById('n-lping').value = (ext.land_ping != null) ? String(ext.land_ping) : '';
-    document.getElementById('n-aping').value = (ext.authority_ping != null) ? String(ext.authority_ping) : '';
-    document.getElementById('n-layout').value  = ext.layout || '';
-    document.getElementById('n-floor').value   = ext.floor || '';
-    document.getElementById('n-age').value     = ext.age || '';
-    document.getElementById('n-parking').value = ext.parking || '';
-    document.getElementById('n-case').value    = ext.case_number || '';
+    // 欄位 ID 與 extracted 欄位對應表
+    var mapping = [
+      ['n-name',    ext.project_name],
+      ['n-price',   ext.price != null ? String(ext.price) : ''],
+      ['n-area',    ext.location_area],
+      ['n-addr',    ext.address],
+      ['n-bping',   ext.building_ping != null ? String(ext.building_ping) : ''],
+      ['n-lping',   ext.land_ping != null ? String(ext.land_ping) : ''],
+      ['n-aping',   ext.authority_ping != null ? String(ext.authority_ping) : ''],
+      ['n-layout',  ext.layout],
+      ['n-floor',   ext.floor],
+      ['n-age',     ext.age],
+      ['n-parking', ext.parking],
+      ['n-case',    ext.case_number],
+    ];
+    mapping.forEach(function(pair) {
+      var el = document.getElementById(pair[0]);
+      if (!el) { console.warn('[fillLibForm] 找不到元素 #' + pair[0]); return; }
+      el.value = pair[1] || '';
+    });
   }
 
   // ── 圖片辨識（透過 Library 代理路由） ──
@@ -1136,18 +2252,56 @@ __ADMIN_BAR__
     statusEl.className = 'text-xs text-slate-400 mt-2 min-h-[1em]';
     btn.disabled = true;
     try {
+      // 1. 送出非同步工作，取得 job_id
       var r = await fetch('/api/extract-from-url', {
         method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ url: url }),
       });
       var d = await r.json();
-      if (d.ok && d.extracted) {
-        fillLibForm(d.extracted);
-        statusEl.textContent = '✅ 辨識完成，欄位已帶入';
-        statusEl.className = 'text-xs text-emerald-400 mt-2 min-h-[1em]';
-      } else {
-        statusEl.textContent = d.error || '截圖或辨識失敗';
+      if (d.error) {
+        statusEl.textContent = d.error;
         statusEl.className = 'text-xs text-rose-400 mt-2 min-h-[1em]';
+        btn.disabled = false;
+        return;
       }
+      var jobId = d.job_id;
+      // 2. 輪詢結果（每 2 秒輪詢一次，最多 60 次 = 2 分鐘）
+      var dots = 0;
+      for (var i = 0; i < 60; i++) {
+        await new Promise(function(res) { setTimeout(res, 2000); });
+        dots = (dots + 1) % 4;
+        statusEl.textContent = '截圖與辨識中' + '.'.repeat(dots + 1) + '（約 15–30 秒）';
+        var pr = await fetch('/api/extract-from-url/poll/' + jobId);
+        var pd = await pr.json();
+        if (pd.error && pd.done === undefined) {
+          // 工作不存在
+          statusEl.textContent = pd.error;
+          statusEl.className = 'text-xs text-rose-400 mt-2 min-h-[1em]';
+          btn.disabled = false;
+          return;
+        }
+        if (pd.done) {
+          if (pd.ok && pd.extracted) {
+            // 顯示截圖預覽（在 console 點圖片可看 Screenshotone 截到什麼）
+            if (pd.debug_img) {
+              var img = new Image(); img.src = 'data:image/jpeg;base64,' + pd.debug_img;
+              console.log('[截圖辨識] 截圖預覽（右鍵另存可查看）:', img);
+            }
+            console.log('[截圖辨識] extracted:', JSON.stringify(pd.extracted));
+            fillLibForm(pd.extracted);
+            // 顯示辨識到的欄位名稱，方便確認
+            var keys = Object.keys(pd.extracted).filter(function(k){ return pd.extracted[k] != null && pd.extracted[k] !== ''; });
+            statusEl.textContent = '✅ 辨識完成，已帶入：' + (keys.length ? keys.join(', ') : '（無資料）');
+            statusEl.className = 'text-xs text-emerald-400 mt-2 min-h-[1em]';
+          } else {
+            statusEl.textContent = pd.error || '截圖或辨識失敗';
+            statusEl.className = 'text-xs text-rose-400 mt-2 min-h-[1em]';
+          }
+          btn.disabled = false;
+          return;
+        }
+      }
+      statusEl.textContent = '辨識逾時，請稍後再試';
+      statusEl.className = 'text-xs text-rose-400 mt-2 min-h-[1em]';
     } catch (e) {
       statusEl.textContent = '連線失敗：' + (e.message || '');
       statusEl.className = 'text-xs text-rose-400 mt-2 min-h-[1em]';
@@ -1306,6 +2460,454 @@ __ADMIN_BAR__
   }
 
   loadUsers(); loadList();
+
+  // ══ 分頁切換 ══
+  function switchTab(tab) {
+    var paneMyEl      = document.getElementById('pane-my');
+    var paneCompanyEl = document.getElementById('pane-company');
+    var paneBuyersEl  = document.getElementById('pane-buyers');
+    var btnNewObj     = document.getElementById('btn-new-obj');
+
+    paneMyEl.style.display      = 'none';
+    paneCompanyEl.style.display = 'none';
+    paneBuyersEl.style.display  = 'none';
+    if (btnNewObj) btnNewObj.style.display = 'none';
+
+    if (tab === 'my') {
+      paneMyEl.style.display = 'block';
+      if (btnNewObj) btnNewObj.style.display = '';
+    } else if (tab === 'company') {
+      paneCompanyEl.style.display = 'block';
+    } else if (tab === 'buyers') {
+      paneBuyersEl.style.display = 'block';
+    }
+
+    // 分頁按鈕樣式
+    document.querySelectorAll('.tab-btn').forEach(function(btn) {
+      btn.style.color        = '#94a3b8';   // slate-400
+      btn.style.borderBottom = '2px solid transparent';
+      btn.style.fontWeight   = '400';
+    });
+    var activeBtn = document.getElementById('tab-' + tab);
+    if (activeBtn) {
+      activeBtn.style.color        = '#60a5fa'; // blue-400
+      activeBtn.style.borderBottom = '2px solid #3b82f6'; // blue-500
+      activeBtn.style.fontWeight   = '600';
+    }
+
+    // 切換到公司物件時：載入篩選選項 + 自動執行一次搜尋 + 顯示管理員同步列
+    if (tab === 'company') {
+      if (!window._cpOptionsLoaded) cpLoadOptions();
+      if (!window._cpSearched) { window._cpSearched = true; cpSearch(); }
+      if (isAdmin) {
+        document.getElementById('cp-sync-bar').style.display = 'flex';
+        cpLoadSyncStatus();
+      }
+    }
+    // 切換到買方需求時：載入列表
+    if (tab === 'buyers') {
+      buyerLoadList();
+    }
+  }
+
+  // ══ 公司物件搜尋 ══
+  var _cpPage = 1;
+  var _cpLastQuery = {};
+
+  function cpLoadOptions() {
+    fetch('/api/company-properties/options').then(r => r.json()).then(function(data) {
+      if (data.error) return;
+      window._cpOptionsLoaded = true;
+      var cat = document.getElementById('cp-category');
+      (data.categories || []).forEach(function(c) {
+        var o = document.createElement('option'); o.value = c; o.textContent = c; cat.appendChild(o);
+      });
+      var area = document.getElementById('cp-area');
+      (data.areas || []).forEach(function(a) {
+        var o = document.createElement('option');
+        // areas 現在是 [{value: 簡寫, label: 完整名稱}] 格式
+        if (typeof a === 'object') {
+          o.value = a.value; o.textContent = a.label;
+        } else {
+          o.value = a; o.textContent = a;
+        }
+        area.appendChild(o);
+      });
+      var ag = document.getElementById('cp-agent');
+      // agents 現在是 {active: [...], inactive: [...]} 格式，用 optgroup 分組
+      var agentData = data.agents || {};
+      var activeList   = Array.isArray(agentData) ? agentData : (agentData.active   || []);
+      var inactiveList = Array.isArray(agentData) ? []        : (agentData.inactive || []);
+      if (activeList.length) {
+        var grp1 = document.createElement('optgroup');
+        grp1.label = '── 在線人員 ──';
+        activeList.forEach(function(a) {
+          var o = document.createElement('option'); o.value = a; o.textContent = a;
+          grp1.appendChild(o);
+        });
+        ag.appendChild(grp1);
+      }
+      if (inactiveList.length) {
+        var grp2 = document.createElement('optgroup');
+        grp2.label = '── 其他 ──';
+        inactiveList.forEach(function(a) {
+          var o = document.createElement('option'); o.value = a; o.textContent = a;
+          grp2.appendChild(o);
+        });
+        ag.appendChild(grp2);
+      }
+    });
+  }
+
+  function cpSearch() {
+    _cpPage = 1;
+    _cpLastQuery = {
+      keyword:   document.getElementById('cp-keyword').value.trim(),
+      category:  document.getElementById('cp-category').value,
+      area:      document.getElementById('cp-area').value,
+      price_min: document.getElementById('cp-price-min').value,
+      price_max: document.getElementById('cp-price-max').value,
+      status:    document.getElementById('cp-status').value,
+      agent:     document.getElementById('cp-agent').value,
+    };
+    cpFetch();
+  }
+
+  function cpReset() {
+    document.getElementById('cp-keyword').value = '';
+    document.getElementById('cp-category').value = '';
+    document.getElementById('cp-area').value = '';
+    document.getElementById('cp-price-min').value = '';
+    document.getElementById('cp-price-max').value = '';
+    document.getElementById('cp-status').value = '';
+    document.getElementById('cp-agent').value = '';
+    _cpPage = 1;
+    _cpLastQuery = {};
+    document.getElementById('cp-list').innerHTML = '';
+    document.getElementById('cp-info').classList.add('hidden');
+    document.getElementById('cp-pagination').classList.add('hidden');
+    document.getElementById('cp-placeholder').classList.remove('hidden');
+  }
+
+  function cpChangePage(dir) {
+    _cpPage = Math.max(1, _cpPage + dir);
+    cpFetch();
+    window.scrollTo(0, 0);
+  }
+
+  function cpFetch() {
+    var list = document.getElementById('cp-list');
+    list.innerHTML = '<p class="text-slate-400 text-center py-8">載入中…</p>';
+    document.getElementById('cp-placeholder').classList.add('hidden');
+
+    var q = Object.assign({}, _cpLastQuery, { page: _cpPage });
+    var params = new URLSearchParams();
+    Object.entries(q).forEach(function([k, v]) { if (v !== '') params.set(k, v); });
+
+    fetch('/api/company-properties/search?' + params.toString())
+      .then(r => r.json()).then(function(data) {
+        if (data.error) { list.innerHTML = '<p class="text-red-400 text-center py-8">' + escapeHtml(data.error) + '</p>'; return; }
+        var items = data.items || [];
+        if (!items.length) {
+          list.innerHTML = '<p class="text-slate-500 text-center py-10">找不到符合條件的物件</p>';
+          document.getElementById('cp-info').classList.add('hidden');
+          document.getElementById('cp-pagination').classList.add('hidden');
+          return;
+        }
+
+        // 更新資訊列
+        document.getElementById('cp-total').textContent = data.total;
+        document.getElementById('cp-page-num').textContent = data.page;
+        document.getElementById('cp-total-pages').textContent = data.pages;
+        document.getElementById('cp-info').classList.remove('hidden');
+
+        // 分頁按鈕
+        var pg = document.getElementById('cp-pagination');
+        pg.classList.remove('hidden');
+        document.getElementById('cp-prev').disabled = data.page <= 1;
+        document.getElementById('cp-next').disabled = data.page >= data.pages;
+
+        // 渲染列表
+        var html = '';
+        for (var i = 0; i < items.length; i++) {
+          var item = items[i];
+          var isSold = item['\u9500\u552e\u4e2d'] === false;
+          var statusBadge = isSold
+            ? '<span class="text-xs bg-slate-600 text-slate-300 px-2 py-0.5 rounded-full">\u5df2\u6210\u4ea4</span>'
+            : '<span class="text-xs bg-green-700 text-green-200 px-2 py-0.5 rounded-full">\u9500\u552e\u4e2d</span>';
+          var price = item['\u552e\u50f9(\u842c)'] ? item['\u552e\u50f9(\u842c)'] + ' \u842c' : '-';
+          var buildPing = item['\u5efa\u576a'] ? item['\u5efa\u576a'] + ' \u576a' : (item['\u5730\u576a'] ? item['\u5730\u576a'] + ' \u576a\u5730' : '');
+          var cat = item['\u7269\u4ef6\u985e\u5225'] ? '<span class="text-xs text-amber-400">' + escapeHtml(item['\u7269\u4ef6\u985e\u5225']) + '</span>' : '';
+          var agent = item['\u7d93\u7d00\u4eba'] ? '<span class="text-xs text-slate-500">' + escapeHtml(item['\u7d93\u7d00\u4eba']) + '</span>' : '';
+          var safeId = String(item.id).replace(/'/g, '');
+          var name = escapeHtml(item['\u6848\u540d'] || '\uff08\u7121\u6848\u540d\uff09');
+          var addr = escapeHtml(item['\u7269\u4ef6\u5730\u5740'] || '-');
+          html += '<div class="bg-slate-800 border border-slate-700 hover:border-slate-500 rounded-xl p-4 cursor-pointer transition" onclick="cpOpenDetail(' + "'" + safeId + "'" + ')">';
+          html += '<div class="flex items-start justify-between gap-2">';
+          html += '<div class="min-w-0"><p class="font-semibold text-slate-100 truncate">' + name + '</p>';
+          html += '<p class="text-xs text-slate-400 truncate mt-0.5">' + addr + '</p></div>';
+          html += '<div class="shrink-0 text-right"><p class="font-bold text-blue-300 text-sm">' + escapeHtml(price) + '</p>' + statusBadge + '</div>';
+          html += '</div>';
+          html += '<div class="flex gap-3 mt-2 flex-wrap">' + cat;
+          html += buildPing ? '<span class="text-xs text-slate-400">' + escapeHtml(buildPing) + '</span>' : '';
+          html += agent + '</div></div>';
+        }
+        list.innerHTML = html;
+    });
+  }
+
+  function cpOpenDetail(id) {
+    fetch('/api/company-properties/' + encodeURIComponent(id)).then(r => r.json()).then(function(data) {
+      if (data.error) { toast(data.error, 'error'); return; }
+
+      document.getElementById('cp-detail-title').textContent = data['案名'] || '物件詳情';
+
+      // 欄位順序與顯示名稱
+      var LABELS = {
+        '委託編號':'委託編號','委託日':'委託日','案名':'案名','所有權人':'所有權人',
+        '物件類別':'類別','物件地址':'地址','鄉/市/鎮':'鄉鎮市',
+        '段別':'段別','地號':'地號','建號':'建號','座向':'座向',
+        '竣工日期':'竣工日期','格局':'格局','現況':'現況',
+        '地坪':'地坪','建坪':'建坪','樓別':'樓別','管理費(元)':'管理費',
+        '車位':'車位','委託價(萬)':'委託價','售價(萬)':'售價',
+        '現有貸款(萬)':'現有貸款','債權人':'債權人','售屋原因':'售屋原因',
+        '委託到期日':'委託到期日','經紀人':'經紀人','契變':'契變',
+        '備註':'備註','成交日期':'成交日期','成交金額(萬)':'成交金額',
+        '連絡人姓名':'連絡人','連絡人與所有權人關係':'與業主關係',
+        '銷售中':'狀態','GOOGLE地圖':'Google地圖','座標':'座標',
+        '資料序號':'資料序號'
+      };
+
+      var html = '';
+      var statusVal = data['銷售中'] === false ? '已成交' : '銷售中';
+      Object.entries(LABELS).forEach(function([key, label]) {
+        var val = data[key];
+        if (key === '銷售中') val = statusVal;
+        if (val == null || val === '' || val === true || val === false && key !== '銷售中') {
+          if (key === '銷售中') {} else return;
+        }
+        var valStr = String(val);
+        var isUrl = valStr.startsWith('http');
+        html += '<div class="flex gap-2 py-1 border-b border-slate-700/50">'
+          + '<span class="text-slate-500 w-24 shrink-0 text-xs mt-0.5">' + escapeHtml(label) + '</span>'
+          + '<span class="text-slate-200 text-sm flex-1">'
+          + (isUrl ? '<a href="' + escapeHtml(valStr) + '" target="_blank" class="text-blue-400 underline hover:text-blue-300">開啟連結</a>' : escapeHtml(valStr))
+          + '</span></div>';
+      });
+
+      document.getElementById('cp-detail-body').innerHTML = html || '<p class="text-slate-500">無資料</p>';
+      document.getElementById('cp-detail-modal').classList.remove('hidden');
+    });
+  }
+
+  function closeCpDetail() {
+    document.getElementById('cp-detail-modal').classList.add('hidden');
+  }
+
+  // ══ 買方需求 ══
+
+  function buyerLoadList() {
+    var el = document.getElementById('buyer-list');
+    el.innerHTML = '<p class="text-slate-400 text-center py-8">\u8f09\u5165\u4e2d\u2026</p>';
+    fetch('/api/buyers').then(function(r){ return r.json(); }).then(function(data) {
+      if (data.error) { el.innerHTML = '<p class="text-red-400 text-center py-8">' + escapeHtml(data.error) + '</p>'; return; }
+      var items = data.items || [];
+      if (!items.length) {
+        el.innerHTML = '<p class="text-slate-500 text-center py-10">\u5c1a\u7121\u8cb7\u65b9\u8cc7\u6599\uff0c\u9ede\u300e\uff0b \u65b0\u589e\u8cb7\u65b9\u300f\u958b\u59cb\u5efa\u7acb</p>';
+        return;
+      }
+      var html = '';
+      for (var i = 0; i < items.length; i++) {
+        var b = items[i];
+        var areas = b.areas || '';
+        var cats = b.categories || '';
+        var budget = (b.price_min || '') + (b.price_min && b.price_max ? ' ~ ' : '') + (b.price_max ? b.price_max + ' \u842c' : '');
+        var ping = (b.ping_min || '') + (b.ping_min && b.ping_max ? ' ~ ' : '') + (b.ping_max ? b.ping_max + ' \u576a' : '');
+        var safeId = String(b.id).replace(/'/g, '');
+        html += '<div class="bg-slate-800 border border-slate-700 rounded-xl p-4">';
+        html += '<div class="flex items-start justify-between gap-2 mb-2">';
+        html += '<div><p class="font-semibold text-slate-100">' + escapeHtml(b.name || '') + '</p>';
+        if (b.phone) html += '<p class="text-xs text-slate-400">' + escapeHtml(b.phone) + '</p>';
+        html += '</div>';
+        html += '<div class="flex gap-2 shrink-0">';
+        html += '<button onclick="buyerMatch(' + "'" + safeId + "'" + ')" class="px-3 py-1.5 rounded-lg bg-green-700 hover:bg-green-600 text-white text-xs font-semibold transition">&#128269; \u914d\u5c0d\u7269\u4ef6</button>';
+        html += '<button onclick="buyerOpenEdit(' + "'" + safeId + "'" + ')" class="px-3 py-1.5 rounded-lg bg-slate-600 hover:bg-slate-500 text-slate-200 text-xs transition">\u7de8\u8f2f</button>';
+        html += '<button onclick="buyerDelete(' + "'" + safeId + "'" + ')" class="px-3 py-1.5 rounded-lg bg-red-800/60 hover:bg-red-700 text-red-300 text-xs transition">\u522a\u9664</button>';
+        html += '</div></div>';
+        html += '<div class="flex flex-wrap gap-2 text-xs">';
+        if (areas) html += '<span class="bg-slate-700 text-slate-300 px-2 py-0.5 rounded-full">&#128205; ' + escapeHtml(areas) + '</span>';
+        if (cats)  html += '<span class="bg-slate-700 text-slate-300 px-2 py-0.5 rounded-full">&#127968; ' + escapeHtml(cats) + '</span>';
+        if (budget) html += '<span class="bg-slate-700 text-slate-300 px-2 py-0.5 rounded-full">&#128176; ' + escapeHtml(budget) + '</span>';
+        if (ping)  html += '<span class="bg-slate-700 text-slate-300 px-2 py-0.5 rounded-full">&#128207; ' + escapeHtml(ping) + '</span>';
+        if (b.notes) html += '<span class="bg-slate-700/50 text-slate-400 px-2 py-0.5 rounded-full">&#128221; ' + escapeHtml(b.notes.substring(0,30)) + (b.notes.length>30?'...':'') + '</span>';
+        html += '</div></div>';
+      }
+      el.innerHTML = html;
+    });
+  }
+
+  function buyerOpenNew() {
+    document.getElementById('buyer-id').value = '';
+    document.getElementById('buyer-modal-title').textContent = '\u65b0\u589e\u8cb7\u65b9';
+    ['name','phone','agent','areas','categories','notes'].forEach(function(f){ document.getElementById('buyer-'+f).value=''; });
+    ['price-min','price-max','ping-min','ping-max'].forEach(function(f){ document.getElementById('buyer-'+f).value=''; });
+    document.getElementById('buyer-status').value = 'selling';
+    document.getElementById('buyer-modal').classList.remove('hidden');
+  }
+
+  function buyerOpenEdit(id) {
+    fetch('/api/buyers/' + encodeURIComponent(id)).then(function(r){ return r.json(); }).then(function(b) {
+      if (b.error) { toast(b.error, 'error'); return; }
+      document.getElementById('buyer-id').value = b.id;
+      document.getElementById('buyer-modal-title').textContent = '\u7de8\u8f2f\u8cb7\u65b9';
+      document.getElementById('buyer-name').value = b.name || '';
+      document.getElementById('buyer-phone').value = b.phone || '';
+      document.getElementById('buyer-agent').value = b.agent || '';
+      document.getElementById('buyer-areas').value = b.areas || '';
+      document.getElementById('buyer-categories').value = b.categories || '';
+      document.getElementById('buyer-price-min').value = b.price_min || '';
+      document.getElementById('buyer-price-max').value = b.price_max || '';
+      document.getElementById('buyer-ping-min').value = b.ping_min || '';
+      document.getElementById('buyer-ping-max').value = b.ping_max || '';
+      document.getElementById('buyer-status').value = b.status || 'selling';
+      document.getElementById('buyer-notes').value = b.notes || '';
+      document.getElementById('buyer-modal').classList.remove('hidden');
+    });
+  }
+
+  function buyerCloseModal() {
+    document.getElementById('buyer-modal').classList.add('hidden');
+  }
+
+  function buyerSave() {
+    var name = document.getElementById('buyer-name').value.trim();
+    if (!name) { toast('\u8acb\u586b\u5beb\u8cb7\u65b9\u59d3\u540d', 'error'); return; }
+    var data = {
+      name: name,
+      phone: document.getElementById('buyer-phone').value.trim(),
+      agent: document.getElementById('buyer-agent').value.trim(),
+      areas: document.getElementById('buyer-areas').value.trim(),
+      categories: document.getElementById('buyer-categories').value.trim(),
+      price_min: document.getElementById('buyer-price-min').value || null,
+      price_max: document.getElementById('buyer-price-max').value || null,
+      ping_min:  document.getElementById('buyer-ping-min').value || null,
+      ping_max:  document.getElementById('buyer-ping-max').value || null,
+      status: document.getElementById('buyer-status').value,
+      notes: document.getElementById('buyer-notes').value.trim()
+    };
+    var id = document.getElementById('buyer-id').value;
+    var url = id ? '/api/buyers/' + encodeURIComponent(id) : '/api/buyers';
+    var method = id ? 'PUT' : 'POST';
+    fetch(url, { method: method, headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) })
+      .then(function(r){ return r.json(); }).then(function(d) {
+        if (d.error) { toast(d.error, 'error'); return; }
+        toast(id ? '\u5df2\u66f4\u65b0' : '\u5df2\u65b0\u589e\u8cb7\u65b9', 'success');
+        buyerCloseModal();
+        buyerLoadList();
+      });
+  }
+
+  function buyerDelete(id) {
+    if (!confirm('\u78ba\u5b9a\u8981\u522a\u9664\u6b64\u8cb7\u65b9\u8cc7\u6599\uff1f')) return;
+    fetch('/api/buyers/' + encodeURIComponent(id), { method: 'DELETE' })
+      .then(function(r){ return r.json(); }).then(function(d) {
+        if (d.error) { toast(d.error, 'error'); return; }
+        toast('\u5df2\u522a\u9664', 'success');
+        buyerLoadList();
+      });
+  }
+
+  // ══ 客戶配對 ══
+
+  function buyerMatch(id) {
+    var body = document.getElementById('match-body');
+    body.innerHTML = '<p class="text-slate-400 text-center py-8">\u914d\u5c0d\u4e2d\uff0c\u8acb\u7a0d\u5019\u2026</p>';
+    document.getElementById('match-title').textContent = '\u914d\u5c0d\u7d50\u679c';
+    document.getElementById('match-subtitle').textContent = '';
+    document.getElementById('match-modal').classList.remove('hidden');
+
+    fetch('/api/buyers/' + encodeURIComponent(id) + '/match')
+      .then(function(r){ return r.json(); }).then(function(data) {
+        if (data.error) { body.innerHTML = '<p class="text-red-400 text-center py-8">' + escapeHtml(data.error) + '</p>'; return; }
+        document.getElementById('match-title').textContent = '\u300c' + escapeHtml(data.buyer_name) + '\u300d\u914d\u5c0d\u7d50\u679c';
+        document.getElementById('match-subtitle').textContent = '\u5171\u627e\u5230 ' + data.total + ' \u7b46\u7b26\u5408\u6761\u4ef6\u7684\u7269\u4ef6';
+        var items = data.items || [];
+        if (!items.length) {
+          body.innerHTML = '<p class="text-slate-500 text-center py-10">\u627e\u4e0d\u5230\u7b26\u5408\u689d\u4ef6\u7684\u7269\u4ef6\uff0c\u8acb\u8abf\u6574\u9700\u6c42\u689d\u4ef6\u5f8c\u518d\u8a66</p>';
+          return;
+        }
+        var html = '';
+        for (var i = 0; i < items.length; i++) {
+          var item = items[i];
+          var isSold = item['\u9500\u552e\u4e2d'] === false;
+          var badge = isSold
+            ? '<span class="text-xs bg-slate-600 text-slate-300 px-2 py-0.5 rounded-full">\u5df2\u6210\u4ea4</span>'
+            : '<span class="text-xs bg-green-700 text-green-200 px-2 py-0.5 rounded-full">\u9500\u552e\u4e2d</span>';
+          var price = item['\u552e\u50f9(\u842c)'] ? item['\u552e\u50f9(\u842c)'] + ' \u842c' : '-';
+          var bping = item['\u5efa\u576a'] ? item['\u5efa\u576a'] + '\u576a' : (item['\u5730\u576a'] ? item['\u5730\u576a'] + '\u576a\u5730' : '');
+          var safeId = String(item.id).replace(/'/g, '');
+          html += '<div class="bg-slate-700/60 border border-slate-600 hover:border-slate-400 rounded-xl p-4 cursor-pointer transition" onclick="cpOpenDetail(' + "'" + safeId + "'" + ')">';
+          html += '<div class="flex items-start justify-between gap-2">';
+          html += '<div class="min-w-0"><p class="font-semibold text-slate-100 truncate">' + escapeHtml(item['\u6848\u540d'] || '\uff08\u7121\u6848\u540d\uff09') + '</p>';
+          html += '<p class="text-xs text-slate-400 truncate mt-0.5">' + escapeHtml(item['\u7269\u4ef6\u5730\u5740'] || '-') + '</p></div>';
+          html += '<div class="shrink-0 text-right"><p class="font-bold text-blue-300 text-sm">' + escapeHtml(price) + '</p>' + badge + '</div>';
+          html += '</div>';
+          html += '<div class="flex gap-2 mt-2 flex-wrap text-xs">';
+          if (item['\u7269\u4ef6\u985e\u5225']) html += '<span class="text-amber-400">' + escapeHtml(item['\u7269\u4ef6\u985e\u5225']) + '</span>';
+          if (bping) html += '<span class="text-slate-400">' + escapeHtml(bping) + '</span>';
+          if (item['\u9109/\u5e02/\u93ae']) html += '<span class="text-slate-400">' + escapeHtml(item['\u9109/\u5e02/\u93ae']) + '</span>';
+          html += '</div></div>';
+        }
+        body.innerHTML = html;
+      });
+  }
+
+  function matchClose() {
+    document.getElementById('match-modal').classList.add('hidden');
+  }
+
+  // ══ 同步功能（管理員） ══
+  function cpLoadSyncStatus() {
+    fetch('/api/sync-properties/status').then(function(r){ return r.json(); }).then(function(d) {
+      if (d.error) return;
+      var el = document.getElementById('cp-last-sync');
+      if (d.running) {
+        el.textContent = '\u540c\u6b65\u4e2d\uff0c\u8acb\u7a0d\u5019…';
+        setTimeout(cpLoadSyncStatus, 3000);
+      } else if (d.last_run) {
+        var dt = new Date(d.last_run);
+        var r = d.last_result || {};
+        el.textContent = dt.toLocaleString('zh-TW') + '\uff08\u5beb\u5165 ' + (r.written||0) + ' \u7b46\uff0c\u522a\u9664 ' + (r.deleted||0) + ' \u7b46\uff09';
+      } else {
+        el.textContent = '\u5c1a\u672a\u540c\u6b65\u904e';
+      }
+    }).catch(function(){});
+  }
+
+  function cpTriggerSync() {
+    var btn = document.getElementById('cp-sync-btn');
+    btn.disabled = true;
+    btn.textContent = '\u540c\u6b65\u4e2d\uff0c\u8acb\u7a0d\u5019…';
+    document.getElementById('cp-last-sync').textContent = '\u624b\u52d5\u540c\u6b65\u4e2d\u2026';
+    fetch('/api/sync-properties', { method: 'POST' }).then(function(r){ return r.json(); }).then(function(d) {
+      if (d.error) { toast(d.error, 'error'); btn.disabled=false; btn.textContent='\u7acb\u5373\u540c\u6b65 Sheets'; return; }
+      toast('\u540c\u6b65\u5df2\u555f\u52d5\uff0c\u7d04 1-2 \u5206\u9418\u5f8c\u5b8c\u6210', 'info');
+      // 每3秒輪詢狀態
+      var poll = setInterval(function() {
+        fetch('/api/sync-properties/status').then(function(r){ return r.json(); }).then(function(s) {
+          if (!s.running) {
+            clearInterval(poll);
+            btn.disabled = false;
+            btn.textContent = '\u7acb\u5373\u540c\u6b65 Sheets';
+            cpLoadSyncStatus();
+            window._cpSearched = false;
+            cpSearch();
+            toast('\u540c\u6b65\u5b8c\u6210\uff01', 'success');
+          }
+        });
+      }, 3000);
+    }).catch(function(e){ toast('\u547c\u53eb\u5931\u6557: ' + e, 'error'); btn.disabled=false; });
+  }
 </script>
 </body>
 </html>
