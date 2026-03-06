@@ -2903,29 +2903,31 @@ OBJECTS_APP_HTML = """
     });
   }
 
-  loadUsers(); loadList();
+  try { loadUsers(); } catch(e) { console.error('loadUsers 失敗:', e); }
+  try { loadList();  } catch(e) { console.error('loadList 失敗:', e); }
 
   // ══ 分頁切換 ══
   function switchTab(tab) {
     var paneMyEl      = document.getElementById('pane-my');
     var paneCompanyEl = document.getElementById('pane-company');
     var paneBuyersEl  = document.getElementById('pane-buyers');
+    var paneWarEl     = document.getElementById('pane-war');
     var btnNewObj     = document.getElementById('btn-new-obj');
 
-    paneMyEl.style.display      = 'none';
-    paneCompanyEl.style.display = 'none';
-    paneBuyersEl.style.display  = 'none';
-    var paneWarEl = document.getElementById('pane-war');
-    if (paneWarEl) paneWarEl.style.display = 'none';
-    if (btnNewObj) btnNewObj.style.display = 'none';
+    // 全部隱藏（加 null check 防止任一元素不存在時崩潰）
+    if (paneMyEl)      paneMyEl.style.display      = 'none';
+    if (paneCompanyEl) paneCompanyEl.style.display = 'none';
+    if (paneBuyersEl)  paneBuyersEl.style.display  = 'none';
+    if (paneWarEl)     paneWarEl.style.display     = 'none';
+    if (btnNewObj)     btnNewObj.style.display     = 'none';
 
     if (tab === 'my') {
-      paneMyEl.style.display = 'block';
+      if (paneMyEl) paneMyEl.style.display = 'block';
       if (btnNewObj) btnNewObj.style.display = '';
     } else if (tab === 'company') {
-      paneCompanyEl.style.display = 'block';
+      if (paneCompanyEl) paneCompanyEl.style.display = 'block';
     } else if (tab === 'buyers') {
-      paneBuyersEl.style.display = 'block';
+      if (paneBuyersEl) paneBuyersEl.style.display = 'block';
     } else if (tab === 'war') {
       if (paneWarEl) paneWarEl.style.display = 'block';
     }
