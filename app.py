@@ -2987,18 +2987,18 @@ OBJECTS_APP_HTML = """
     <!-- 第一列：關鍵字 + 售價 + 狀態 -->
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
       <input id="cp-keyword" type="text" placeholder="🔍 案名 / 地址 / 委託編號"
-        class="col-span-2 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500"
+        class="col-span-2 rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);"
         onkeydown="if(event.key==='Enter')cpSearch()">
       <input id="cp-price-min" type="number" placeholder="最低售價（萬）"
-        class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
+        class="rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
       <input id="cp-price-max" type="number" placeholder="最高售價（萬）"
-        class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
+        class="rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
     </div>
     <!-- 第二列：狀態（單選）+ 複選下拉觸發器 -->
     <div class="flex flex-wrap gap-2 mb-3 items-center">
       <!-- 狀態（保留 select，不需複選） -->
       <select id="cp-status"
-        class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none">
+        class="rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
         <option value="selling">銷售中</option>
         <option value="">全部狀態</option>
         <option value="sold">已成交</option>
@@ -3007,7 +3007,7 @@ OBJECTS_APP_HTML = """
       <!-- 委託到期日篩選（前端過濾） -->
       <select id="cp-expiry"
         onchange="cpFetch()"
-        class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none">
+        class="rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
         <option value="">全部到期日</option>
         <option value="active">委託中（未過期）</option>
         <option value="soon">即將到期（15天內）</option>
@@ -3067,7 +3067,7 @@ OBJECTS_APP_HTML = """
         <span class="text-xs" style="color:var(--txs);">排序：</span>
         <select id="cp-sort"
           onchange="cpSearch()"
-          class="bg-slate-700 border border-slate-600 text-slate-200 text-xs rounded-lg px-2 py-1.5 focus:ring-1 focus:ring-blue-500">
+          class="text-xs rounded-lg px-2 py-1.5 focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
           <option value="price_asc">售價 低→高</option>
           <option value="price_desc">售價 高→低</option>
           <option value="date_desc">委託日 新→舊</option>
@@ -3080,10 +3080,10 @@ OBJECTS_APP_HTML = """
       </div>
       <!-- 情境書籤 -->
       <div class="flex items-center gap-1 ml-2 relative">
-        <span class="text-xs text-slate-400">情境：</span>
+        <span class="text-xs" style="color:var(--txs);">情境：</span>
         <select id="cp-preset-select"
           onchange="cpApplyPreset()"
-          class="bg-slate-700 border border-slate-600 text-slate-200 text-xs rounded-lg px-2 py-1.5 focus:ring-1 focus:ring-purple-500 max-w-[140px]"
+          class="text-xs rounded-lg px-2 py-1.5 focus:outline-none max-w-[140px]" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);"
           title="選擇已儲存的篩選情境">
           <option value="">— 選擇情境 —</option>
         </select>
@@ -3114,7 +3114,7 @@ OBJECTS_APP_HTML = """
     </label>
     <!-- 說明按鈕 -->
     <button onclick="document.getElementById('cp-sync-help-modal').style.display='flex'"
-      class="px-3 py-1.5 rounded-lg bg-slate-600 hover:bg-slate-500 text-white text-xs font-semibold transition"
+      class="px-3 py-1.5 rounded-lg text-xs font-semibold transition" style="background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);"
       title="查看按鈕說明與操作流程">
       ❓ 說明
     </button>
@@ -3126,63 +3126,63 @@ OBJECTS_APP_HTML = """
   <!-- 同步說明 Modal -->
   <div id="cp-sync-help-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:500;align-items:center;justify-content:center;"
     onclick="if(event.target===this)this.style.display='none'">
-    <div style="background:#1e293b;border:1px solid #334155;border-radius:16px;padding:28px 32px;max-width:620px;width:92%;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 8px 40px rgba(0,0,0,.5);position:relative;">
+    <div style="background:var(--bg-s);border:1px solid var(--bd);border-radius:16px;padding:28px 32px;max-width:620px;width:92%;max-height:88vh;display:flex;flex-direction:column;box-shadow:var(--sh);position:relative;">
       <button onclick="document.getElementById('cp-sync-help-modal').style.display='none'"
-        style="position:absolute;top:14px;right:18px;background:none;border:none;color:#94a3b8;font-size:20px;cursor:pointer;line-height:1;">✕</button>
-      <h2 style="color:#f1f5f9;font-size:16px;font-weight:700;margin:0 0 16px;">📋 按鈕說明與操作流程</h2>
+        style="position:absolute;top:14px;right:18px;background:none;border:none;color:var(--txm);font-size:20px;cursor:pointer;line-height:1;">✕</button>
+      <h2 style="color:var(--tx);font-size:16px;font-weight:700;margin:0 0 16px;">📋 按鈕說明與操作流程</h2>
       <div style="overflow-y:auto;flex:1;padding-right:4px;">
 
         <!-- 按鈕說明 -->
         <div style="margin-bottom:20px;">
-          <p style="color:#94a3b8;font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin:0 0 10px;">按鈕功能</p>
+          <p style="color:var(--txm);font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin:0 0 10px;">按鈕功能</p>
           <div style="display:flex;flex-direction:column;gap:10px;">
-            <div style="background:#1a2f1a;border:1px solid #166534;border-radius:10px;padding:12px 14px;">
-              <p style="color:#4ade80;font-weight:700;margin:0 0 4px;font-size:13px;">🔄 同步 Sheets</p>
-              <p style="color:#cbd5e1;font-size:12px;margin:0;">從 Google Sheets 把物件基本資料（案名、地址、類別、經紀人、售價等）同步到 Firestore 資料庫。這是物件資料的<strong style="color:#f1f5f9;">主要來源</strong>，Sheets 有新增/修改物件後要按此更新。</p>
-              <p style="color:#64748b;font-size:11px;margin:6px 0 0;">⏱ 資料量大時需等待 1～10 分鐘，同步中請勿重複點擊。</p>
+            <div style="background:var(--bg-t);border:1px solid var(--bd);border-radius:10px;padding:12px 14px;">
+              <p style="color:var(--ok);font-weight:700;margin:0 0 4px;font-size:13px;">🔄 同步 Sheets</p>
+              <p style="color:var(--txs);font-size:12px;margin:0;">從 Google Sheets 把物件基本資料（案名、地址、類別、經紀人、售價等）同步到 Firestore 資料庫。這是物件資料的<strong style="color:var(--tx);">主要來源</strong>，Sheets 有新增/修改物件後要按此更新。</p>
+              <p style="color:var(--txm);font-size:11px;margin:6px 0 0;">⏱ 資料量大時需等待 1～10 分鐘，同步中請勿重複點擊。</p>
             </div>
-            <div style="background:#0f2a2a;border:1px solid #0f766e;border-radius:10px;padding:12px 14px;">
-              <p style="color:#2dd4bf;font-weight:700;margin:0 0 4px;font-size:13px;">📊 上傳解析 CSV（推薦）</p>
-              <p style="color:#cbd5e1;font-size:12px;margin:0;">上傳由本機工具 <code style="background:#0f172a;padding:1px 5px;border-radius:4px;color:#7dd3fc;">export_word_table.py</code> 解析後產出的 CSV 檔（公寓/房屋/農地/建地）及 <code style="background:#0f172a;padding:1px 5px;border-radius:4px;color:#7dd3fc;">word_meta.json</code>，精確更新 Firestore 的<strong style="color:#f1f5f9;">銷售中狀態、委託到期日、最新售價</strong>。</p>
-              <p style="color:#64748b;font-size:11px;margin:6px 0 0;">💡 一次可選取 4 個 CSV + 1 個 word_meta.json，共 5 個檔案一起上傳。</p>
+            <div style="background:var(--bg-t);border:1px solid var(--bd);border-radius:10px;padding:12px 14px;">
+              <p style="color:var(--ac);font-weight:700;margin:0 0 4px;font-size:13px;">📊 上傳解析 CSV（推薦）</p>
+              <p style="color:var(--txs);font-size:12px;margin:0;">上傳由本機工具 <code style="background:var(--bg-p);padding:1px 5px;border-radius:4px;color:var(--ac);">export_word_table.py</code> 解析後產出的 CSV 檔（公寓/房屋/農地/建地）及 <code style="background:var(--bg-p);padding:1px 5px;border-radius:4px;color:var(--ac);">word_meta.json</code>，精確更新 Firestore 的<strong style="color:var(--tx);">銷售中狀態、委託到期日、最新售價</strong>。</p>
+              <p style="color:var(--txm);font-size:11px;margin:6px 0 0;">💡 一次可選取 4 個 CSV + 1 個 word_meta.json，共 5 個檔案一起上傳。</p>
             </div>
           </div>
         </div>
 
         <!-- 兩條資料來源說明 -->
         <div style="margin-bottom:20px;">
-          <p style="color:#94a3b8;font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin:0 0 10px;">資料來源與分工</p>
-          <div style="background:#0f172a;border:1px solid #334155;border-radius:10px;padding:14px 16px;display:flex;flex-direction:column;gap:8px;">
+          <p style="color:var(--txm);font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin:0 0 10px;">資料來源與分工</p>
+          <div style="background:var(--bg-t);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;display:flex;flex-direction:column;gap:8px;">
             <div style="display:flex;gap:10px;align-items:flex-start;">
-              <span style="background:#f59e0b;color:#000;border-radius:6px;padding:2px 7px;font-size:11px;font-weight:700;white-space:nowrap;">Sheets</span>
-              <span style="color:#cbd5e1;font-size:12px;">物件<strong style="color:#f1f5f9;">基本資料</strong>（案名、地址、類別、經紀人）的主要來源。新增或修改物件後，在此頁按「🔄 同步 Sheets」更新 Firestore。</span>
+              <span style="background:var(--warn);color:#000;border-radius:6px;padding:2px 7px;font-size:11px;font-weight:700;white-space:nowrap;">Sheets</span>
+              <span style="color:var(--txs);font-size:12px;">物件<strong style="color:var(--tx);">基本資料</strong>（案名、地址、類別、經紀人）的主要來源。新增或修改物件後，在此頁按「🔄 同步 Sheets」更新 Firestore。</span>
             </div>
-            <div style="border-top:1px solid #1e293b;"></div>
+            <div style="border-top:1px solid var(--bd);"></div>
             <div style="display:flex;gap:10px;align-items:flex-start;">
-              <span style="background:#0d9488;color:#fff;border-radius:6px;padding:2px 7px;font-size:11px;font-weight:700;white-space:nowrap;">物件總表</span>
-              <span style="color:#cbd5e1;font-size:12px;"><strong style="color:#f1f5f9;">銷售中狀態、委託到期日、最新售價</strong>的來源。Sheets 不含這些資訊，需靠 Word 物件總表補充。由本機工具處理後寫入 Firestore，<strong style="color:#2dd4bf;">不需要回此頁上傳</strong>（除非跳過比對審查，直接上傳 CSV）。</span>
+              <span style="background:var(--ok);color:#fff;border-radius:6px;padding:2px 7px;font-size:11px;font-weight:700;white-space:nowrap;">物件總表</span>
+              <span style="color:var(--txs);font-size:12px;"><strong style="color:var(--tx);">銷售中狀態、委託到期日、最新售價</strong>的來源。Sheets 不含這些資訊，需靠 Word 物件總表補充。由本機工具處理後寫入 Firestore，<strong style="color:var(--ac);">不需要回此頁上傳</strong>（除非跳過比對審查，直接上傳 CSV）。</span>
             </div>
           </div>
 
           <!-- 資料安全說明 -->
-          <div style="background:#0f172a;border:1px solid #854d0e;border-radius:10px;padding:14px 16px;margin-top:10px;">
-            <p style="color:#fbbf24;font-size:12px;font-weight:700;margin:0 0 8px;">🛡️ 資料安全：CSV 上傳只會動哪些欄位？</p>
+          <div style="background:var(--bg-t);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;margin-top:10px;">
+            <p style="color:var(--warn);font-size:12px;font-weight:700;margin:0 0 8px;">🛡️ 資料安全：CSV 上傳只會動哪些欄位？</p>
             <div style="display:flex;flex-direction:column;gap:6px;font-size:12px;">
               <div style="display:flex;gap:8px;align-items:flex-start;">
-                <span style="color:#4ade80;font-weight:700;white-space:nowrap;">只會改</span>
-                <span style="color:#cbd5e1;">銷售中狀態、委託到期日、售價（萬）— 這三個欄位</span>
+                <span style="color:var(--ok);font-weight:700;white-space:nowrap;">只會改</span>
+                <span style="color:var(--txs);">銷售中狀態、委託到期日、售價（萬）— 這三個欄位</span>
               </div>
               <div style="display:flex;gap:8px;align-items:flex-start;">
-                <span style="color:#f87171;font-weight:700;white-space:nowrap;">不會動</span>
-                <span style="color:#cbd5e1;">案名、地址、類別、經紀人、所有權人等基本資料</span>
+                <span style="color:var(--dg);font-weight:700;white-space:nowrap;">不會動</span>
+                <span style="color:var(--txs);">案名、地址、類別、經紀人、所有權人等基本資料</span>
               </div>
-              <div style="border-top:1px solid #1e293b;padding-top:6px;display:flex;gap:8px;align-items:flex-start;">
-                <span style="color:#fbbf24;font-weight:700;white-space:nowrap;">配對邏輯</span>
-                <span style="color:#cbd5e1;">同名物件會同時比對<strong style="color:#f1f5f9;">委託號碼 → 經紀人 → 售價 → 面積</strong>，層層過濾，避免同名不同人的物件互相污染。</span>
+              <div style="border-top:1px solid var(--bd);padding-top:6px;display:flex;gap:8px;align-items:flex-start;">
+                <span style="color:var(--warn);font-weight:700;white-space:nowrap;">配對邏輯</span>
+                <span style="color:var(--txs);">同名物件會同時比對<strong style="color:var(--tx);">委託號碼 → 經紀人 → 售價 → 面積</strong>，層層過濾，避免同名不同人的物件互相污染。</span>
               </div>
-              <div style="border-top:1px solid #1e293b;padding-top:6px;display:flex;gap:8px;align-items:flex-start;">
-                <span style="color:#60a5fa;font-weight:700;white-space:nowrap;">萬一誤改</span>
-                <span style="color:#cbd5e1;">在此頁按「🔄 同步 Sheets」即可將售價還原回 Sheets 的原始值。Sheets 是最終原始依據，永遠可以用來救回資料。</span>
+              <div style="border-top:1px solid var(--bd);padding-top:6px;display:flex;gap:8px;align-items:flex-start;">
+                <span style="color:var(--ac);font-weight:700;white-space:nowrap;">萬一誤改</span>
+                <span style="color:var(--txs);">在此頁按「🔄 同步 Sheets」即可將售價還原回 Sheets 的原始值。Sheets 是最終原始依據，永遠可以用來救回資料。</span>
               </div>
             </div>
           </div>
@@ -3190,50 +3190,50 @@ OBJECTS_APP_HTML = """
 
         <!-- 操作流程 -->
         <div style="margin-bottom:20px;">
-          <p style="color:#94a3b8;font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin:0 0 10px;">操作流程</p>
+          <p style="color:var(--txm);font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin:0 0 10px;">操作流程</p>
 
           <!-- 情境一 -->
-          <div style="background:#0f172a;border:1px solid #334155;border-radius:10px;padding:14px 16px;margin-bottom:10px;">
-            <p style="color:#fbbf24;font-size:12px;font-weight:700;margin:0 0 10px;">📌 情境一：Sheets 有新增或修改物件</p>
+          <div style="background:var(--bg-t);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;margin-bottom:10px;">
+            <p style="color:var(--warn);font-size:12px;font-weight:700;margin:0 0 10px;">📌 情境一：Sheets 有新增或修改物件</p>
             <div style="display:flex;flex-direction:column;gap:6px;">
-              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:#f59e0b;color:#000;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">1</span><span style="color:#cbd5e1;font-size:12px;">在此頁按「<strong style="color:#fbbf24;">🔄 同步 Sheets</strong>」→ 等待完成（約 1～10 分鐘）</span></div>
-              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:#334155;color:#94a3b8;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">✓</span><span style="color:#94a3b8;font-size:12px;">基本資料更新完成。<em>銷售中狀態/到期日/售價</em>若需同步，請另跑物件總表流程（情境二）。</span></div>
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--warn);color:#000;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">1</span><span style="color:var(--txs);font-size:12px;">在此頁按「<strong style="color:var(--warn);">🔄 同步 Sheets</strong>」→ 等待完成（約 1～10 分鐘）</span></div>
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--bg-h);color:var(--txs);border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">✓</span><span style="color:var(--txm);font-size:12px;">基本資料更新完成。<em>銷售中狀態/到期日/售價</em>若需同步，請另跑物件總表流程（情境二）。</span></div>
             </div>
           </div>
 
           <!-- 情境二 -->
-          <div style="background:#0f172a;border:1px solid #334155;border-radius:10px;padding:14px 16px;margin-bottom:10px;">
-            <p style="color:#2dd4bf;font-size:12px;font-weight:700;margin:0 0 10px;">📌 情境二：公司發下新版物件總表 Word 檔（完整流程）</p>
+          <div style="background:var(--bg-t);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;margin-bottom:10px;">
+            <p style="color:var(--ac);font-size:12px;font-weight:700;margin:0 0 10px;">📌 情境二：公司發下新版物件總表 Word 檔（完整流程）</p>
             <div style="display:flex;flex-direction:column;gap:7px;">
-              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:#374151;color:#e5e7eb;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">1</span><span style="color:#cbd5e1;font-size:12px;">把新 Word 檔存至：<br><code style="background:#1e293b;padding:1px 6px;border-radius:4px;color:#7dd3fc;font-size:11px;">/Users/chenweiliang/Documents/日盛同步/物件總表/</code></span></div>
-              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:#374151;color:#e5e7eb;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">2</span><span style="color:#cbd5e1;font-size:12px;">本機開啟<strong style="color:#c084fc;">物件總表比對審查</strong>：<code style="background:#1e293b;padding:1px 6px;border-radius:4px;color:#7dd3fc;font-size:11px;">python3 review_v2.py</code><br>瀏覽器開 <code style="background:#1e293b;padding:1px 6px;border-radius:4px;color:#7dd3fc;font-size:11px;">localhost:5100</code></span></div>
-              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:#374151;color:#e5e7eb;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">3</span><span style="color:#cbd5e1;font-size:12px;">在比對審查頁面依序按完所有按鈕（解析 Word → 套用高信心 → 送出決定 → 完成審查）</span></div>
-              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:#0d9488;color:#fff;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">✓</span><span style="color:#4ade80;font-size:12px;"><strong>完成！已直接寫入 Firestore，不需要回此頁再按任何按鈕。</strong></span></div>
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--bg-h);color:var(--tx);border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">1</span><span style="color:var(--txs);font-size:12px;">把新 Word 檔存至：<br><code style="background:var(--bg-p);padding:1px 6px;border-radius:4px;color:var(--ac);font-size:11px;">/Users/chenweiliang/Documents/日盛同步/物件總表/</code></span></div>
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--bg-h);color:var(--tx);border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">2</span><span style="color:var(--txs);font-size:12px;">本機開啟<strong style="color:var(--tx);">物件總表比對審查</strong>：<code style="background:var(--bg-p);padding:1px 6px;border-radius:4px;color:var(--ac);font-size:11px;">python3 review_v2.py</code><br>瀏覽器開 <code style="background:var(--bg-p);padding:1px 6px;border-radius:4px;color:var(--ac);font-size:11px;">localhost:5100</code></span></div>
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--bg-h);color:var(--tx);border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">3</span><span style="color:var(--txs);font-size:12px;">在比對審查頁面依序按完所有按鈕（解析 Word → 套用高信心 → 送出決定 → 完成審查）</span></div>
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--ok);color:#fff;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">✓</span><span style="color:var(--ok);font-size:12px;"><strong>完成！已直接寫入 Firestore，不需要回此頁再按任何按鈕。</strong></span></div>
             </div>
           </div>
 
           <!-- 情境三（快速流程） -->
-          <div style="background:#0f172a;border:1px solid #334155;border-radius:10px;padding:14px 16px;">
+          <div style="background:var(--bg-t);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;">
             <p style="color:#a78bfa;font-size:12px;font-weight:700;margin:0 0 10px;">📌 情境三：快速更新（跳過比對審查）</p>
             <div style="display:flex;flex-direction:column;gap:6px;">
-              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:#374151;color:#e5e7eb;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">1</span><span style="color:#cbd5e1;font-size:12px;">本機執行：<code style="background:#1e293b;padding:1px 6px;border-radius:4px;color:#7dd3fc;font-size:11px;">python3 export_word_table.py</code><br><span style="color:#64748b;font-size:11px;">→ 產出 4 個 CSV + word_meta.json</span></span></div>
-              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:#0d9488;color:#fff;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">2</span><span style="color:#cbd5e1;font-size:12px;">回此頁按「<strong style="color:#2dd4bf;">📊 上傳解析 CSV</strong>」，選取 5 個檔案一次上傳</span></div>
-              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:#78350f;color:#fbbf24;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">!</span><span style="color:#94a3b8;font-size:12px;">跳過了人工比對確認，若 Word 有解析錯誤可能造成資料不準確，建議定期仍做完整流程（情境二）。</span></div>
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--bg-h);color:var(--tx);border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">1</span><span style="color:var(--txs);font-size:12px;">本機執行：<code style="background:var(--bg-p);padding:1px 6px;border-radius:4px;color:var(--ac);font-size:11px;">python3 export_word_table.py</code><br><span style="color:var(--txm);font-size:11px;">→ 產出 4 個 CSV + word_meta.json</span></span></div>
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--ok);color:#fff;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">2</span><span style="color:var(--txs);font-size:12px;">回此頁按「<strong style="color:var(--ac);">📊 上傳解析 CSV</strong>」，選取 5 個檔案一次上傳</span></div>
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:#78350f;color:#fbbf24;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">!</span><span style="color:var(--txs);font-size:12px;">跳過了人工比對確認，若 Word 有解析錯誤可能造成資料不準確，建議定期仍做完整流程（情境二）。</span></div>
             </div>
           </div>
         </div>
 
         <!-- 本機工具說明 -->
         <div>
-          <p style="color:#94a3b8;font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin:0 0 10px;">本機工具說明</p>
-          <div style="background:#0f172a;border:1px solid #334155;border-radius:10px;padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
+          <p style="color:var(--txm);font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin:0 0 10px;">本機工具說明</p>
+          <div style="background:var(--bg-t);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
             <div>
-              <p style="color:#7dd3fc;font-weight:600;font-size:12px;margin:0 0 3px;"><code style="background:#1e293b;padding:1px 5px;border-radius:4px;">export_word_table.py</code></p>
-              <p style="color:#cbd5e1;font-size:12px;margin:0;">讀取 Word 物件總表，精確解析各類型（公寓/房屋/農地/建地）的欄位，輸出 CSV 檔。解析規則經過多次磨合，是目前最精確的版本。<br>路徑：<code style="background:#1e293b;padding:1px 5px;border-radius:4px;color:#7dd3fc;font-size:11px;">/Users/chenweiliang/Projects/export_word_table.py</code></p>
+              <p style="color:var(--ac);font-weight:600;font-size:12px;margin:0 0 3px;"><code style="background:var(--bg-p);padding:1px 5px;border-radius:4px;">export_word_table.py</code></p>
+              <p style="color:var(--txs);font-size:12px;margin:0;">讀取 Word 物件總表，精確解析各類型（公寓/房屋/農地/建地）的欄位，輸出 CSV 檔。解析規則經過多次磨合，是目前最精確的版本。<br>路徑：<code style="background:var(--bg-p);padding:1px 5px;border-radius:4px;color:var(--ac);font-size:11px;">/Users/chenweiliang/Projects/export_word_table.py</code></p>
             </div>
-            <div style="border-top:1px solid #1e293b;padding-top:10px;">
-              <p style="color:#c084fc;font-weight:600;font-size:12px;margin:0 0 3px;"><code style="background:#1e293b;padding:1px 5px;border-radius:4px;">review_v2.py</code>（物件總表比對審查）</p>
-              <p style="color:#cbd5e1;font-size:12px;margin:0;">比對 Word 解析結果與 Firestore 現有資料，找出案名異動的物件、確認低/高信心配對，<strong style="color:#f1f5f9;">審查確認後直接寫回 Firestore</strong>（不需再回此頁上傳 CSV）。已確認的配對會記憶，下次自動套用。<br>路徑：<code style="background:#1e293b;padding:1px 5px;border-radius:4px;color:#7dd3fc;font-size:11px;">/Users/chenweiliang/Projects/review_v2.py</code></p>
+            <div style="border-top:1px solid var(--bd);padding-top:10px;">
+              <p style="color:#a78bfa;font-weight:600;font-size:12px;margin:0 0 3px;"><code style="background:var(--bg-p);padding:1px 5px;border-radius:4px;">review_v2.py</code>（物件總表比對審查）</p>
+              <p style="color:var(--txs);font-size:12px;margin:0;">比對 Word 解析結果與 Firestore 現有資料，找出案名異動的物件、確認低/高信心配對，<strong style="color:var(--tx);">審查確認後直接寫回 Firestore</strong>（不需再回此頁上傳 CSV）。已確認的配對會記憶，下次自動套用。<br>路徑：<code style="background:var(--bg-p);padding:1px 5px;border-radius:4px;color:var(--ac);font-size:11px;">/Users/chenweiliang/Projects/review_v2.py</code></p>
             </div>
           </div>
         </div>
@@ -3325,14 +3325,14 @@ OBJECTS_APP_HTML = """
   </div>
 
   <!-- 手動觸發通知測試 -->
-  <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5">
-    <h3 class="font-semibold text-slate-100 mb-1">🔔 到期通知測試</h3>
-    <p class="text-xs text-slate-400 mb-3">手動觸發一次到期日通知，確認 Email 是否正常發送（每天早上 8 點自動執行）</p>
+  <div class="rounded-2xl p-5" style="background:var(--bg-t);border:1px solid var(--bd);">
+    <h3 class="font-semibold mb-1" style="color:var(--tx);">🔔 到期通知測試</h3>
+    <p class="text-xs mb-3" style="color:var(--txs);">手動觸發一次到期日通知，確認 Email 是否正常發送（每天早上 8 點自動執行）</p>
     <button onclick="triggerNotify()"
       class="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-sm font-semibold transition">
       立即執行通知
     </button>
-    <p id="notify-result" class="text-xs text-slate-400 mt-2"></p>
+    <p id="notify-result" class="text-xs mt-2" style="color:var(--txs);"></p>
   </div>
 </div>
 
@@ -3340,15 +3340,15 @@ OBJECTS_APP_HTML = """
 <div id="cp-detail-modal" role="dialog" aria-modal="true"
   class="hidden fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
   onclick="if(event.target===this)closeCpDetail()">
-  <div class="w-full max-w-2xl rounded-2xl bg-slate-800 border border-slate-600 shadow-2xl flex flex-col max-h-[90vh]"
+  <div class="w-full max-w-2xl rounded-2xl flex flex-col max-h-[90vh]" style="background:var(--bg-s);border:1px solid var(--bd);box-shadow:var(--sh);"
     onclick="event.stopPropagation()">
-    <div class="flex items-center justify-between px-6 py-4 border-b border-slate-700 shrink-0">
-      <h3 id="cp-detail-title" class="font-bold text-slate-100 text-lg">物件詳情</h3>
-      <button onclick="closeCpDetail()" class="text-slate-400 hover:text-slate-200 text-xl leading-none">✕</button>
+    <div class="flex items-center justify-between px-6 py-4 shrink-0" style="border-bottom:1px solid var(--bd);">
+      <h3 id="cp-detail-title" class="font-bold text-lg" style="color:var(--tx);">物件詳情</h3>
+      <button onclick="closeCpDetail()" class="text-xl leading-none" style="background:none;border:none;color:var(--txs);cursor:pointer;">✕</button>
     </div>
     <div id="cp-detail-body" class="overflow-y-auto px-6 py-5 space-y-1 text-sm"></div>
-    <div class="px-6 py-4 border-t border-slate-700 shrink-0">
-      <button onclick="closeCpDetail()" class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm transition">關閉</button>
+    <div class="px-6 py-4 shrink-0" style="border-top:1px solid var(--bd);">
+      <button onclick="closeCpDetail()" class="px-4 py-2 rounded-lg text-sm transition" style="background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);cursor:pointer;">關閉</button>
     </div>
   </div>
 </div>
@@ -3357,74 +3357,74 @@ OBJECTS_APP_HTML = """
 <div id="new-prop-modal" role="dialog" aria-modal="true"
   class="hidden fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm overflow-y-auto"
   onclick="if(event.target===this)closeNewModal()">
-  <div class="w-full max-w-lg rounded-2xl bg-slate-800 border border-slate-600 shadow-2xl" onclick="event.stopPropagation()">
-    <div class="flex items-center justify-between px-6 py-4 border-b border-slate-700">
-      <h3 class="font-bold text-slate-100">建立物件資訊</h3>
-      <button onclick="closeNewModal()" class="text-slate-400 hover:text-slate-200 text-xl leading-none">✕</button>
+  <div class="w-full max-w-lg rounded-2xl" style="background:var(--bg-s);border:1px solid var(--bd);box-shadow:var(--sh);" onclick="event.stopPropagation()">
+    <div class="flex items-center justify-between px-6 py-4" style="border-bottom:1px solid var(--bd);">
+      <h3 class="font-bold" style="color:var(--tx);">建立物件資訊</h3>
+      <button onclick="closeNewModal()" class="text-xl leading-none" style="background:none;border:none;color:var(--txs);cursor:pointer;">✕</button>
     </div>
     <div class="px-6 py-5 space-y-3 max-h-[65vh] overflow-y-auto">
       <!-- 圖片辨識（扣 2 點） -->
-      <div class="bg-slate-700/50 rounded-xl p-4 border border-slate-600">
-        <p class="text-xs text-slate-400 mb-2 font-medium">📷 圖片辨識（自儲值扣 2 點）</p>
+      <div class="rounded-xl p-4" style="background:var(--bg-t);border:1px solid var(--bd);">
+        <p class="text-xs mb-2 font-medium" style="color:var(--txs);">📷 圖片辨識（自儲值扣 2 點）</p>
         <div class="flex flex-wrap gap-2 items-center">
           <input type="file" id="lib-image-input" accept="image/*" class="hidden" onchange="onLibImageSelected(event)">
           <button type="button" onclick="document.getElementById('lib-image-input').click()"
-            class="px-3 py-2 rounded-lg bg-slate-600 hover:bg-slate-500 text-slate-200 text-sm transition">選擇圖片</button>
+            class="px-3 py-2 rounded-lg text-sm transition" style="background:var(--bg-h);color:var(--tx);border:1px solid var(--bd);cursor:pointer;">選擇圖片</button>
           <button type="button" onclick="handleLibPaste()"
-            class="px-3 py-2 rounded-lg bg-slate-600 hover:bg-slate-500 text-slate-200 text-sm transition">貼上</button>
-          <span id="lib-image-name" class="text-xs text-slate-500 truncate max-w-[140px]"></span>
+            class="px-3 py-2 rounded-lg text-sm transition" style="background:var(--bg-h);color:var(--tx);border:1px solid var(--bd);cursor:pointer;">貼上</button>
+          <span id="lib-image-name" class="text-xs truncate max-w-[140px]" style="color:var(--txm);"></span>
           <button type="button" id="lib-extract-btn" onclick="runLibExtractFromImage()" disabled
             class="px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed">辨識並帶入（2 點）</button>
         </div>
-        <p class="text-xs text-slate-500 mt-2 min-h-[1em]" id="lib-extract-status"></p>
-        <div class="mt-3 pt-3 border-t border-slate-600">
-          <p class="text-xs text-slate-400 mb-1">或輸入物件網址（自動截圖後辨識）</p>
+        <p class="text-xs mt-2 min-h-[1em]" id="lib-extract-status" style="color:var(--txm);"></p>
+        <div class="mt-3 pt-3" style="border-top:1px solid var(--bd);">
+          <p class="text-xs mb-1" style="color:var(--txs);">或輸入物件網址（自動截圖後辨識）</p>
           <p class="text-xs text-amber-400 mb-2">⚠️ 注意：YES319、591 等網站有 Cloudflare 防護，截圖功能無法使用。請改用上方「選擇圖片／貼上」功能：在瀏覽器按 Cmd+Shift+4 截圖後貼上即可。</p>
           <div class="flex gap-2 items-center">
             <input type="url" id="lib-url-input" placeholder="適用無 Cloudflare 保護的網站"
-              class="flex-1 min-w-0 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500" />
+              class="flex-1 min-w-0 rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" />
             <button type="button" id="lib-url-btn" onclick="runLibExtractFromUrl()"
               class="px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium whitespace-nowrap transition">截圖並辨識</button>
           </div>
-          <p class="text-xs text-slate-500 mt-2 min-h-[1em]" id="lib-url-status"></p>
+          <p class="text-xs mt-2 min-h-[1em]" id="lib-url-status" style="color:var(--txm);"></p>
         </div>
       </div>
       <!-- 從 AD 歷史匯入 -->
-      <div class="bg-slate-700/50 rounded-xl p-4 border border-slate-600">
-        <p class="text-xs text-slate-400 mb-2 font-medium">📋 從 AD 歷史匯入</p>
-        <p class="text-xs text-slate-500 mb-2">若改版前曾在「廣告工具」存過紀錄，可從下方匯入</p>
+      <div class="rounded-xl p-4" style="background:var(--bg-t);border:1px solid var(--bd);">
+        <p class="text-xs mb-2 font-medium" style="color:var(--txs);">📋 從 AD 歷史匯入</p>
+        <p class="text-xs mb-2" style="color:var(--txm);">若改版前曾在「廣告工具」存過紀錄，可從下方匯入</p>
         <div class="flex gap-2 items-center">
           <select id="lib-ad-history-select"
-            class="flex-1 min-w-0 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
+            class="flex-1 min-w-0 rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
             <option value="">— 從 AD 歷史匯入 —</option>
           </select>
           <button type="button" onclick="libImportFromAd()"
             class="px-3 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium whitespace-nowrap">匯入為物件</button>
         </div>
-        <p class="text-xs text-slate-500 mt-2 min-h-[1em]" id="lib-import-status"></p>
+        <p class="text-xs mt-2 min-h-[1em]" id="lib-import-status" style="color:var(--txm);"></p>
       </div>
       <!-- 物件欄位 -->
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="block text-xs text-slate-400 mb-1">物件名稱</label><input id="n-name" type="text" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500" placeholder="如：信義路三段電梯大樓"></div>
-        <div><label class="block text-xs text-slate-400 mb-1">總價（萬）</label><input id="n-price" type="text" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500" placeholder="數字"></div>
-        <div><label class="block text-xs text-slate-400 mb-1">區域</label><input id="n-area" type="text" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500" placeholder="如：台北市信義區"></div>
-        <div><label class="block text-xs text-slate-400 mb-1">地址</label><input id="n-addr" type="text" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500" placeholder="完整地址"></div>
-        <div><label class="block text-xs text-slate-400 mb-1">建坪</label><input id="n-bping" type="text" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500" placeholder="數字"></div>
-        <div><label class="block text-xs text-slate-400 mb-1">地坪</label><input id="n-lping" type="text" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500" placeholder="數字"></div>
-        <div><label class="block text-xs text-slate-400 mb-1">權狀</label><input id="n-aping" type="text" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500" placeholder="數字"></div>
-        <div><label class="block text-xs text-slate-400 mb-1">格局</label><input id="n-layout" type="text" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500" placeholder="3房2廳2衛"></div>
-        <div><label class="block text-xs text-slate-400 mb-1">樓層</label><input id="n-floor" type="text" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500" placeholder="3/12"></div>
-        <div><label class="block text-xs text-slate-400 mb-1">屋齡</label><input id="n-age" type="text" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500" placeholder="5年"></div>
-        <div><label class="block text-xs text-slate-400 mb-1">車位</label><input id="n-parking" type="text" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500" placeholder="有/無"></div>
-        <div><label class="block text-xs text-slate-400 mb-1">案號</label><input id="n-case" type="text" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500" placeholder="可選填"></div>
+        <div><label class="block text-xs mb-1" style="color:var(--txs);">物件名稱</label><input id="n-name" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="如：信義路三段電梯大樓"></div>
+        <div><label class="block text-xs mb-1" style="color:var(--txs);">總價（萬）</label><input id="n-price" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="數字"></div>
+        <div><label class="block text-xs mb-1" style="color:var(--txs);">區域</label><input id="n-area" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="如：台北市信義區"></div>
+        <div><label class="block text-xs mb-1" style="color:var(--txs);">地址</label><input id="n-addr" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="完整地址"></div>
+        <div><label class="block text-xs mb-1" style="color:var(--txs);">建坪</label><input id="n-bping" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="數字"></div>
+        <div><label class="block text-xs mb-1" style="color:var(--txs);">地坪</label><input id="n-lping" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="數字"></div>
+        <div><label class="block text-xs mb-1" style="color:var(--txs);">權狀</label><input id="n-aping" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="數字"></div>
+        <div><label class="block text-xs mb-1" style="color:var(--txs);">格局</label><input id="n-layout" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="3房2廳2衛"></div>
+        <div><label class="block text-xs mb-1" style="color:var(--txs);">樓層</label><input id="n-floor" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="3/12"></div>
+        <div><label class="block text-xs mb-1" style="color:var(--txs);">屋齡</label><input id="n-age" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="5年"></div>
+        <div><label class="block text-xs mb-1" style="color:var(--txs);">車位</label><input id="n-parking" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="有/無"></div>
+        <div><label class="block text-xs mb-1" style="color:var(--txs);">案號</label><input id="n-case" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="可選填"></div>
       </div>
       <div>
-        <label class="block text-xs text-slate-400 mb-1">環境說明（選填）</label>
-        <textarea id="n-env" rows="3" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 resize-none focus:outline-none focus:border-blue-500" placeholder="步行3分鐘到全聯…"></textarea>
+        <label class="block text-xs mb-1" style="color:var(--txs);">環境說明（選填）</label>
+        <textarea id="n-env" rows="3" class="w-full rounded-lg px-3 py-2 text-sm resize-none focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="步行3分鐘到全聯…"></textarea>
       </div>
     </div>
-    <div class="flex items-center justify-between px-6 py-4 border-t border-slate-700">
-      <button onclick="closeNewModal()" class="px-4 py-2 rounded-lg bg-slate-700 text-slate-300 hover:text-slate-100 text-sm transition">取消</button>
+    <div class="flex items-center justify-between px-6 py-4" style="border-top:1px solid var(--bd);">
+      <button onclick="closeNewModal()" class="px-4 py-2 rounded-lg text-sm transition" style="background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);cursor:pointer;">取消</button>
       <button onclick="saveNewProp()" class="px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition">儲存物件</button>
     </div>
   </div>
@@ -3446,27 +3446,27 @@ OBJECTS_APP_HTML = """
   function agentEmailLoad() {
     var list = document.getElementById('agent-email-list');
     if (!list) return;
-    list.innerHTML = '<p class="text-slate-500 text-sm text-center py-4">載入中…</p>';
+    list.innerHTML = '<p class="text-sm text-center py-4" style="color:var(--txm);">載入中…</p>';
     fetch('/api/agent-emails')
       .then(function(r){ return r.json(); })
       .then(function(data) {
-        if (data.error) { list.innerHTML = '<p class="text-red-400 text-sm">' + escapeHtml(data.error) + '</p>'; return; }
+        if (data.error) { list.innerHTML = '<p style="color:var(--dg);font-size:0.875rem;">' + escapeHtml(data.error) + '</p>'; return; }
         var items = data.items || [];
         if (!items.length) {
-          list.innerHTML = '<p class="text-slate-500 text-sm text-center py-4">尚無設定，請點「＋ 新增」</p>';
+          list.innerHTML = '<p class="text-sm text-center py-4" style="color:var(--txm);">尚無設定，請點「＋ 新增」</p>';
           return;
         }
         var html = '';
         items.forEach(function(item) {
-          html += '<div class="flex items-center justify-between bg-slate-700/50 rounded-xl px-4 py-2.5">';
+          html += '<div class="flex items-center justify-between rounded-xl px-4 py-2.5" style="background:var(--bg-h);">';
           html += '<div>';
-          html += '<span class="text-sm font-medium text-slate-100">' + escapeHtml(item.name) + '</span>';
-          html += '<span class="text-xs text-slate-400 ml-3">' + (item.email ? escapeHtml(item.email) : '<em class="text-slate-500">未設定</em>') + '</span>';
+          html += '<span class="text-sm font-medium" style="color:var(--tx);">' + escapeHtml(item.name) + '</span>';
+          html += '<span class="text-xs ml-3" style="color:var(--txs);">' + (item.email ? escapeHtml(item.email) : '<em style="color:var(--txm);">未設定</em>') + '</span>';
           html += '</div>';
           html += '<div class="flex gap-2">';
-          html += '<button class="ae-edit-btn text-xs text-blue-400 hover:text-blue-300 px-2 py-1 rounded border border-slate-600 hover:border-blue-500 transition" '
+          html += '<button class="ae-edit-btn text-xs px-2 py-1 rounded transition" style="color:var(--ac);border:1px solid var(--bd);" '
                 + 'data-name="' + escapeHtml(item.name) + '" data-email="' + escapeHtml(item.email||'') + '">編輯</button>';
-          html += '<button class="ae-del-btn text-xs text-red-400 hover:text-red-300 px-2 py-1 rounded border border-slate-600 hover:border-red-500 transition" '
+          html += '<button class="ae-del-btn text-xs px-2 py-1 rounded transition" style="color:var(--dg);border:1px solid var(--bd);" '
                 + 'data-name="' + escapeHtml(item.name) + '">刪除</button>';
           html += '</div></div>';
         });
@@ -3580,7 +3580,7 @@ OBJECTS_APP_HTML = """
       el.innerHTML = '';
       var items = data.items || [];
       if (!items.length) {
-        el.innerHTML = '<p class="text-slate-500 text-center py-8">尚無物件，點「＋ 建立物件資訊」開始建立。</p>';
+        el.innerHTML = '<p class="text-center py-8" style="color:var(--txm);">尚無物件，點「＋ 建立物件資訊」開始建立。</p>';
         return;
       }
       items.forEach(function(o) {
@@ -3589,14 +3589,17 @@ OBJECTS_APP_HTML = """
         var id = o.id;
 
         var wrap = document.createElement('div');
-        wrap.className = 'bg-slate-800 border border-slate-600 rounded-xl px-4 py-3 flex justify-between items-center gap-3 flex-wrap';
+        wrap.className = 'rounded-xl px-4 py-3 flex justify-between items-center gap-3 flex-wrap';
+        wrap.style.cssText = 'background:var(--bg-t);border:1px solid var(--bd);';
 
         var info = document.createElement('div');
         var titleEl = document.createElement('div');
-        titleEl.className = 'font-semibold text-slate-100';
+        titleEl.className = 'font-semibold';
+        titleEl.style.color = 'var(--tx)';
         titleEl.textContent = title;
         var metaEl = document.createElement('div');
-        metaEl.className = 'text-xs text-slate-400 mt-0.5';
+        metaEl.className = 'text-xs mt-0.5';
+        metaEl.style.color = 'var(--txs)';
         metaEl.textContent = meta;
         info.appendChild(titleEl);
         info.appendChild(metaEl);
@@ -3605,12 +3608,14 @@ OBJECTS_APP_HTML = """
         btns.className = 'flex gap-2';
 
         var bView = document.createElement('button');
-        bView.className = 'px-3 py-1.5 rounded-lg bg-slate-600 hover:bg-slate-500 text-slate-200 text-xs transition';
+        bView.className = 'px-3 py-1.5 rounded-lg text-xs transition';
+        bView.style.cssText = 'background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);cursor:pointer;';
         bView.textContent = '查看';
         bView.onclick = function() { viewDetail(id); };
 
         var bEdit = document.createElement('button');
-        bEdit.className = 'px-3 py-1.5 rounded-lg bg-slate-600 hover:bg-slate-500 text-slate-200 text-xs transition';
+        bEdit.className = 'px-3 py-1.5 rounded-lg text-xs transition';
+        bEdit.style.cssText = 'background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);cursor:pointer;';
         bEdit.textContent = '編輯';
         bEdit.onclick = function() { editObj(id); };
 
@@ -4622,7 +4627,7 @@ OBJECTS_APP_HTML = """
 
   function cpFetch() {
     var list = document.getElementById('cp-list');
-    list.innerHTML = '<p class="text-slate-400 text-center py-8">載入中…</p>';
+    list.innerHTML = '<p class="text-center py-8" style="color:var(--txs);">載入中…</p>';
     document.getElementById('cp-placeholder').classList.add('hidden');
 
     // 判斷是否需要全載（不分頁）：
@@ -4661,7 +4666,7 @@ OBJECTS_APP_HTML = """
         if (data.error) { list.innerHTML = '<p class="text-red-400 text-center py-8">' + escapeHtml(data.error) + '</p>'; return; }
         var items = data.items || [];
         if (!items.length) {
-          list.innerHTML = '<p class="text-slate-500 text-center py-10">找不到符合條件的物件</p>';
+          list.innerHTML = '<p class="text-center py-10" style="color:var(--txm);">找不到符合條件的物件</p>';
           document.getElementById('cp-info').classList.add('hidden');
           document.getElementById('cp-pagination').classList.add('hidden');
           return;
@@ -4931,7 +4936,7 @@ OBJECTS_APP_HTML = """
             panel.classList.toggle('hidden', !isHidden);
             if (!isHidden) return;  // 收起時不重新載入
             // 呼叫 Library 自己的代理 API（避免跨域問題）
-            panel.innerHTML = '<p class="text-xs text-slate-500 text-center py-2">載入中…</p>';
+            panel.innerHTML = '<p class="text-xs text-center py-2" style="color:var(--txm);">載入中…</p>';
             var reactionIcon = {'有興趣':'👍','普通':'😐','不喜歡':'👎'};
             fetch('/api/company-properties/' + encodeURIComponent(pid) + '/showings')
               .then(function(r){ return r.json(); })
@@ -4947,17 +4952,17 @@ OBJECTS_APP_HTML = """
                 var toggleBtn = document.querySelector('.cp-showing-toggle[data-prop-id="' + pid + '"]');
                 if (toggleBtn) toggleBtn.innerHTML = '👥 帶看 ' + items.length;
                 if (!items.length) {
-                  panel.innerHTML = '<p class="text-xs text-slate-400 text-center py-2">尚無帶看紀錄</p>' + addLink;
+                  panel.innerHTML = '<p class="text-xs text-center py-2" style="color:var(--txs);">尚無帶看紀錄</p>' + addLink;
                   return;
                 }
                 var html = '<div class="space-y-1.5">';
                 items.forEach(function(s) {
                   var icon = reactionIcon[s.reaction] || '•';
-                  html += '<div class="text-xs text-slate-300 leading-snug">'
+                  html += '<div class="text-xs leading-snug" style="color:var(--txs);">'
                         + '<span class="mr-1">' + icon + '</span>'
-                        + '<span class="font-medium text-slate-100">' + escapeHtml(s.buyer_name) + '</span>'
-                        + '<span class="text-slate-500 ml-2">' + escapeHtml(s.date) + '</span>'
-                        + (s.note ? '<span class="block text-slate-500 pl-4 italic truncate">' + escapeHtml(s.note) + '</span>' : '')
+                        + '<span class="font-medium" style="color:var(--tx);">' + escapeHtml(s.buyer_name) + '</span>'
+                        + '<span class="ml-2" style="color:var(--txm);">' + escapeHtml(s.date) + '</span>'
+                        + (s.note ? '<span class="block pl-4 italic truncate" style="color:var(--txm);">' + escapeHtml(s.note) + '</span>' : '')
                         + '</div>';
                 });
                 html += '</div>' + addLink;
@@ -5001,36 +5006,36 @@ OBJECTS_APP_HTML = """
       function row(label, key, val) {
         var v = (val !== undefined) ? val : data[key];
         if (v == null || v === '') return '';
-        return '<div class="flex gap-2 py-1.5 border-b border-slate-700/40 last:border-0">'
-          + '<span class="text-slate-500 w-20 shrink-0 text-xs pt-0.5">' + escapeHtml(label) + '</span>'
-          + '<span class="text-slate-200 text-sm flex-1">' + fmtVal(key, v) + '</span></div>';
+        return '<div class="flex gap-2 py-1.5 last:border-0" style="border-bottom:1px solid var(--bd);">'
+          + '<span class="w-20 shrink-0 text-xs pt-0.5" style="color:var(--txm);">' + escapeHtml(label) + '</span>'
+          + '<span class="text-sm flex-1" style="color:var(--tx);">' + fmtVal(key, v) + '</span></div>';
       }
 
       // 渲染分組區塊
       function section(icon, title, rows) {
         var inner = rows.join('');
         if (!inner) return '';
-        return '<div class="mb-3 bg-slate-800/60 rounded-xl border border-slate-700/60 overflow-hidden">'
-          + '<div class="flex items-center gap-2 px-4 py-2 bg-slate-700/40 border-b border-slate-700/60">'
+        return '<div class="mb-3 rounded-xl overflow-hidden" style="background:var(--bg-t);border:1px solid var(--bd);">'
+          + '<div class="flex items-center gap-2 px-4 py-2" style="background:var(--bg-h);border-bottom:1px solid var(--bd);">'
           + '<span class="text-base">' + icon + '</span>'
-          + '<span class="text-xs font-semibold text-slate-300 tracking-wide">' + title + '</span></div>'
+          + '<span class="text-xs font-semibold tracking-wide" style="color:var(--txs);">' + title + '</span></div>'
           + '<div class="px-4 py-1">' + inner + '</div></div>';
       }
 
       // 狀態徽章
       var isSelling = data['銷售中'] !== false && data['銷售中'] !== '已下架' && data['銷售中'] !== '已成交';
       var statusBadge = isSelling
-        ? '<span class="inline-block bg-green-700 text-green-200 text-xs px-2 py-0.5 rounded-full">銷售中</span>'
+        ? '<span class="inline-block text-xs px-2 py-0.5 rounded-full" style="background:var(--ok);color:#fff;">銷售中</span>'
         : (data['成交日期']
-            ? '<span class="inline-block bg-blue-900 text-blue-300 text-xs px-2 py-0.5 rounded-full">已成交</span>'
-            : '<span class="inline-block bg-slate-600 text-slate-400 text-xs px-2 py-0.5 rounded-full">已下架</span>');
+            ? '<span class="inline-block text-xs px-2 py-0.5 rounded-full" style="background:var(--tg);color:var(--tgt);">已成交</span>'
+            : '<span class="inline-block text-xs px-2 py-0.5 rounded-full" style="background:var(--bg-h);color:var(--txs);">已下架</span>');
 
       var html = '';
 
       // ── 狀態橫幅 ──
       html += '<div class="flex items-center gap-3 mb-3 px-1">'
         + statusBadge
-        + (data['物件類別'] ? '<span class="text-xs text-slate-400 bg-slate-700 px-2 py-0.5 rounded-full">' + escapeHtml(data['物件類別']) + '</span>' : '')
+        + (data['物件類別'] ? '<span class="text-xs px-2 py-0.5 rounded-full" style="color:var(--txs);background:var(--bg-h);">' + escapeHtml(data['物件類別']) + '</span>' : '')
         + (data['售價(萬)'] ? '<span class="text-amber-300 font-bold text-base ml-auto">' + escapeHtml(String(data['售價(萬)'])) + ' 萬</span>' : '')
         + '</div>';
 
