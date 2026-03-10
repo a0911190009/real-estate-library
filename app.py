@@ -391,32 +391,44 @@ VALID_THEME_STYLES = ["navy", "forest", "amber", "minimal", "rose", "oled"]
 @app.route("/api/theme", methods=["GET"])
 def api_theme_get():
     db = _get_db()
-    style = "navy"
+    style, mode = "navy", None
     if db:
         try:
             doc = db.collection("system_settings").document("theme").get()
             if doc.exists:
-                style = doc.to_dict().get("style", "navy")
+                d = doc.to_dict()
+                style = d.get("style", "navy")
+                mode = d.get("mode")
         except Exception:
             pass
-    return jsonify({"style": style})
+    return jsonify({"style": style, "mode": mode})
 
 @app.route("/api/theme", methods=["POST"])
 def api_theme_set():
     email = session.get("user_email", "")
-    if not email or not _is_admin(email):
-        return jsonify({"error": "無管理權限"}), 403
+    if not email:
+        return jsonify({"error": "請先登入"}), 401
     data = request.get_json(silent=True) or {}
-    style = data.get("style", "navy")
-    if style not in VALID_THEME_STYLES:
-        return jsonify({"error": "無效風格"}), 400
-    db = _get_db()
-    if db:
-        try:
-            db.collection("system_settings").document("theme").set({"style": style})
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-    return jsonify({"ok": True, "style": style})
+    update = {}
+    if "style" in data:
+        if not _is_admin(email):
+            return jsonify({"error": "無管理權限"}), 403
+        style = data["style"]
+        if style not in VALID_THEME_STYLES:
+            return jsonify({"error": "無效風格"}), 400
+        update["style"] = style
+    if "mode" in data:
+        mode = data["mode"]
+        if mode in ("dark", "light", "system"):
+            update["mode"] = mode
+    if update:
+        db = _get_db()
+        if db:
+            try:
+                db.collection("system_settings").document("theme").set(update, merge=True)
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
+    return jsonify({"ok": True})
 
 @app.route("/health")
 def health():
@@ -2696,11 +2708,11 @@ OBJECTS_APP_HTML = """
     /* ── 統一 Sidebar ── */
     #app-sidebar{position:fixed;top:0;left:0;height:100%;width:224px;background:var(--bg-s);border-right:1px solid var(--bd);display:flex;flex-direction:column;z-index:300;transition:background 0.3s,border-color 0.3s;}
     #app-sidebar .sb-logo{display:flex;align-items:center;gap:8px;padding:14px 16px;border-bottom:1px solid var(--bd);font-weight:600;color:var(--tx);font-size:0.85rem;}
-    #app-sidebar nav{flex:1;padding:12px 8px;display:flex;flex-direction:column;gap:2px;}
-    #app-sidebar nav a{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:10px;color:var(--txs);font-size:0.85rem;text-decoration:none;transition:background 0.15s,color 0.15s;}
+    #app-sidebar nav{flex:1;padding:16px 8px;display:flex;flex-direction:column;gap:2px;}
+    #app-sidebar nav a{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;color:var(--txs);font-size:0.875rem;text-decoration:none;transition:background 0.15s,color 0.15s;font-weight:500;}
     #app-sidebar nav a:hover,#app-sidebar nav a.active{background:var(--acs);color:var(--ac);}
-    #app-sidebar .sb-user{padding:10px 8px;border-top:1px solid var(--bd);}
-    #app-sidebar .sb-user button{width:100%;display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:10px;border:none;background:none;cursor:pointer;color:var(--txs);font-size:0.85rem;text-align:left;transition:background 0.15s;}
+    #app-sidebar .sb-user{padding:12px 8px;border-top:1px solid var(--bd);}
+    #app-sidebar .sb-user button{width:100%;display:flex;align-items:center;gap:12px;padding:8px 10px;border-radius:10px;border:none;background:none;cursor:pointer;color:var(--txs);font-size:0.875rem;text-align:left;transition:background 0.15s;}
     #app-sidebar .sb-user button:hover{background:var(--bg-h);}
     /* 通用頭像容器 */
     .av-wrap{position:relative;flex-shrink:0;border-radius:50%;overflow:hidden;border:2px solid var(--bdl);}
@@ -2723,8 +2735,9 @@ OBJECTS_APP_HTML = """
     /* 手機底部 Tab Bar */
     .lib-mobile-tabbar{position:fixed;bottom:0;left:0;right:0;z-index:250;background:var(--bg-s);backdrop-filter:blur(8px);border-top:1px solid var(--bd);display:none;transition:background 0.3s;}
     @media(max-width:767px){.lib-mobile-tabbar{display:flex!important;}}
-    .lib-tb-item{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 4px;color:var(--txm);font-size:0.65rem;text-decoration:none;transition:color 0.15s;}
-    .lib-tb-item:hover,.lib-tb-active{color:var(--tx)!important;}
+    .lib-tb-item{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 4px;color:var(--txm);font-size:0.65rem;text-decoration:none;transition:color 0.15s;position:relative;border-top:2px solid transparent;}
+    .lib-tb-item:hover{color:var(--tx)!important;}
+    .lib-tb-active{color:var(--ac)!important;border-top-color:var(--ac)!important;}
     /* 外觀設定面板 */
     #theme-panel{position:fixed;top:0;right:0;bottom:0;width:288px;background:var(--bg-s);border-left:1px solid var(--bd);z-index:800;padding:20px;overflow-y:auto;box-shadow:var(--sh);transition:background 0.3s,border-color 0.3s;}
     .tp-style-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px;}
@@ -2800,34 +2813,34 @@ OBJECTS_APP_HTML = """
     <button class="tp-mode-btn" id="tp-btn-light" onclick="window._tpSetMode('light')">☀️ 淺色</button>
     <button class="tp-mode-btn" id="tp-btn-system" onclick="window._tpSetMode('system')">🖥️ 系統</button>
   </div>
-  <div class="tp-section">色系風格（後台統一）</div>
-  <div class="tp-style-grid" id="tp-style-grid">
-    <div class="tp-style-card" id="tp-card-navy" onclick="window._tpAdminSetStyle('navy')">
-      <div class="preview"><div class="sb-strip" style="background:#1e293b;"></div><div class="ct-strip" style="background:#0f172a;"><div class="ln" style="background:#334155;width:80%;"></div><div class="ln" style="background:#3b82f6;width:50%;"></div><div class="ln" style="background:#334155;width:65%;"></div></div></div>
-      <div class="tp-check">✓</div><div class="tp-style-name">🌙 深夜藍</div><div class="tp-style-desc">穩重專業</div>
-    </div>
-    <div class="tp-style-card" id="tp-card-forest" onclick="window._tpAdminSetStyle('forest')">
-      <div class="preview"><div class="sb-strip" style="background:#132218;"></div><div class="ct-strip" style="background:#0a1a12;"><div class="ln" style="background:#1e3d2a;width:80%;"></div><div class="ln" style="background:#22c55e;width:50%;"></div><div class="ln" style="background:#1e3d2a;width:65%;"></div></div></div>
-      <div class="tp-check">✓</div><div class="tp-style-name">🌿 森林綠</div><div class="tp-style-desc">清新活力</div>
-    </div>
-    <div class="tp-style-card" id="tp-card-amber" onclick="window._tpAdminSetStyle('amber')">
-      <div class="preview"><div class="sb-strip" style="background:#261a0c;"></div><div class="ct-strip" style="background:#1a1208;"><div class="ln" style="background:#3d2b14;width:80%;"></div><div class="ln" style="background:#f59e0b;width:50%;"></div><div class="ln" style="background:#3d2b14;width:65%;"></div></div></div>
-      <div class="tp-check">✓</div><div class="tp-style-name">🌅 暖棕商務</div><div class="tp-style-desc">低調奢華</div>
-    </div>
-    <div class="tp-style-card" id="tp-card-minimal" onclick="window._tpAdminSetStyle('minimal')">
-      <div class="preview"><div class="sb-strip" style="background:#fff;border-right:1px solid #e5e7eb;"></div><div class="ct-strip" style="background:#f9fafb;"><div class="ln" style="background:#e5e7eb;width:80%;"></div><div class="ln" style="background:#4f46e5;width:50%;"></div><div class="ln" style="background:#e5e7eb;width:65%;"></div></div></div>
-      <div class="tp-check">✓</div><div class="tp-style-name">⬜ 純白簡約</div><div class="tp-style-desc">清晰易讀</div>
-    </div>
-    <div class="tp-style-card" id="tp-card-rose" onclick="window._tpAdminSetStyle('rose')">
-      <div class="preview"><div class="sb-strip" style="background:#2a0f1c;"></div><div class="ct-strip" style="background:#1a0810;"><div class="ln" style="background:#4a1a32;width:80%;"></div><div class="ln" style="background:#fb7185;width:50%;"></div><div class="ln" style="background:#4a1a32;width:65%;"></div></div></div>
-      <div class="tp-check">✓</div><div class="tp-style-name">🌸 玫瑰粉</div><div class="tp-style-desc">優雅浪漫</div>
-    </div>
-    <div class="tp-style-card" id="tp-card-oled" onclick="window._tpAdminSetStyle('oled')">
-      <div class="preview"><div class="sb-strip" style="background:#0a0a0a;"></div><div class="ct-strip" style="background:#000;"><div class="ln" style="background:#1f1f1f;width:80%;"></div><div class="ln" style="background:#fff;width:50%;"></div><div class="ln" style="background:#1f1f1f;width:65%;"></div></div></div>
-      <div class="tp-check">✓</div><div class="tp-style-name">🖤 OLED 黑</div><div class="tp-style-desc">省電護眼</div>
-    </div>
-  </div>
   <div id="tp-admin-only" style="display:none;">
+    <div class="tp-section">色系風格（後台統一）</div>
+    <div class="tp-style-grid" id="tp-style-grid">
+      <div class="tp-style-card" id="tp-card-navy" onclick="window._tpAdminSetStyle('navy')">
+        <div class="preview"><div class="sb-strip" style="background:#1e293b;"></div><div class="ct-strip" style="background:#0f172a;"><div class="ln" style="background:#334155;width:80%;"></div><div class="ln" style="background:#3b82f6;width:50%;"></div><div class="ln" style="background:#334155;width:65%;"></div></div></div>
+        <div class="tp-check">✓</div><div class="tp-style-name">🌙 深夜藍</div><div class="tp-style-desc">穩重專業</div>
+      </div>
+      <div class="tp-style-card" id="tp-card-forest" onclick="window._tpAdminSetStyle('forest')">
+        <div class="preview"><div class="sb-strip" style="background:#132218;"></div><div class="ct-strip" style="background:#0a1a12;"><div class="ln" style="background:#1e3d2a;width:80%;"></div><div class="ln" style="background:#22c55e;width:50%;"></div><div class="ln" style="background:#1e3d2a;width:65%;"></div></div></div>
+        <div class="tp-check">✓</div><div class="tp-style-name">🌿 森林綠</div><div class="tp-style-desc">清新活力</div>
+      </div>
+      <div class="tp-style-card" id="tp-card-amber" onclick="window._tpAdminSetStyle('amber')">
+        <div class="preview"><div class="sb-strip" style="background:#261a0c;"></div><div class="ct-strip" style="background:#1a1208;"><div class="ln" style="background:#3d2b14;width:80%;"></div><div class="ln" style="background:#f59e0b;width:50%;"></div><div class="ln" style="background:#3d2b14;width:65%;"></div></div></div>
+        <div class="tp-check">✓</div><div class="tp-style-name">🌅 暖棕商務</div><div class="tp-style-desc">低調奢華</div>
+      </div>
+      <div class="tp-style-card" id="tp-card-minimal" onclick="window._tpAdminSetStyle('minimal')">
+        <div class="preview"><div class="sb-strip" style="background:#fff;border-right:1px solid #e5e7eb;"></div><div class="ct-strip" style="background:#f9fafb;"><div class="ln" style="background:#e5e7eb;width:80%;"></div><div class="ln" style="background:#4f46e5;width:50%;"></div><div class="ln" style="background:#e5e7eb;width:65%;"></div></div></div>
+        <div class="tp-check">✓</div><div class="tp-style-name">⬜ 純白簡約</div><div class="tp-style-desc">清晰易讀</div>
+      </div>
+      <div class="tp-style-card" id="tp-card-rose" onclick="window._tpAdminSetStyle('rose')">
+        <div class="preview"><div class="sb-strip" style="background:#2a0f1c;"></div><div class="ct-strip" style="background:#1a0810;"><div class="ln" style="background:#4a1a32;width:80%;"></div><div class="ln" style="background:#fb7185;width:50%;"></div><div class="ln" style="background:#4a1a32;width:65%;"></div></div></div>
+        <div class="tp-check">✓</div><div class="tp-style-name">🌸 玫瑰粉</div><div class="tp-style-desc">優雅浪漫</div>
+      </div>
+      <div class="tp-style-card" id="tp-card-oled" onclick="window._tpAdminSetStyle('oled')">
+        <div class="preview"><div class="sb-strip" style="background:#0a0a0a;"></div><div class="ct-strip" style="background:#000;"><div class="ln" style="background:#1f1f1f;width:80%;"></div><div class="ln" style="background:#fff;width:50%;"></div><div class="ln" style="background:#1f1f1f;width:65%;"></div></div></div>
+        <div class="tp-check">✓</div><div class="tp-style-name">🖤 OLED 黑</div><div class="tp-style-desc">省電護眼</div>
+      </div>
+    </div>
     <button onclick="window._tpSaveStyle()" style="width:100%;padding:9px;border-radius:8px;background:var(--ac);color:var(--act);border:none;cursor:pointer;font-size:0.85rem;font-weight:600;">💾 套用到所有工具</button>
     <div id="tp-save-msg" style="text-align:center;font-size:0.75rem;color:var(--ok);margin-top:6px;display:none;">✓ 已儲存！所有工具同步套用</div>
   </div>
@@ -5237,9 +5250,9 @@ OBJECTS_APP_HTML = """
       // 買方管理連結（sidebar 和 tab bar，不放 dropdown）
       if (BUYER_URL_JS) {
         var sbBuyer = document.getElementById('sb-buyer');
-        if (sbBuyer) { sbBuyer.href = BUYER_URL_JS; sbBuyer.target = '_blank'; sbBuyer.classList.remove('hidden'); }
+        if (sbBuyer) { sbBuyer.href = BUYER_URL_JS; sbBuyer.target = 'tool-buyer'; sbBuyer.classList.remove('hidden'); }
         var tbBuyer = document.getElementById('tb-buyer');
-        if (tbBuyer) { tbBuyer.href = BUYER_URL_JS; tbBuyer.classList.remove('hidden'); }
+        if (tbBuyer) { tbBuyer.href = BUYER_URL_JS; tbBuyer.target = 'tool-buyer'; tbBuyer.classList.remove('hidden'); }
       }
     }).catch(function(){});
   })();
@@ -5305,10 +5318,12 @@ OBJECTS_APP_HTML = """
       });
     }
 
-    window._tpSetMode = function(m) { _mode = m; localStorage.setItem('up_mode', m); _applyTheme(); };
+    window._tpSetMode = function(m) {
+      _mode = m; localStorage.setItem('up_mode', m); _applyTheme();
+      fetch('/api/theme', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({mode:m})}).catch(function(){});
+    };
     window._tpAdminSetStyle = function(s) { _style = s; localStorage.setItem("up_style", s); _applyTheme(); };
     window._tpSaveStyle = function() {
-      if (!_PORTAL) return;
       fetch('/api/theme', {
         method:'POST', headers:{'Content-Type':'application/json'},
         body:JSON.stringify({style:_style})
@@ -5335,14 +5350,13 @@ OBJECTS_APP_HTML = """
       _mode = localStorage.getItem('up_mode') || 'system';
       _style = localStorage.getItem('up_style') || 'navy';
       _applyTheme();
-      // 取後台最新風格
-      if (_PORTAL) {
-        fetch('/api/theme').then(function(r){ return r.json(); }).then(function(d) {
-          if (d.style && d.style !== _style) {
-            _style = d.style; localStorage.setItem('up_style', _style); _applyTheme();
-          }
-        }).catch(function(){});
-      }
+      // 無條件從後台讀取 style 和 mode，確保跨工具同步
+      fetch('/api/theme').then(function(r){ return r.json(); }).then(function(d) {
+        var changed = false;
+        if (d.style && d.style !== _style) { _style = d.style; localStorage.setItem('up_style', _style); changed = true; }
+        if (d.mode && d.mode !== _mode) { _mode = d.mode; localStorage.setItem('up_mode', _mode); changed = true; }
+        if (changed) _applyTheme();
+      }).catch(function(){});
       // 管理員顯示儲存按鈕
       var adminEl = document.getElementById('tp-admin-only');
       if (adminEl) {
