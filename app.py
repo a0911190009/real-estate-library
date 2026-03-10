@@ -385,6 +385,39 @@ def _verify_service_key():
     return hmac.compare_digest(key, SERVICE_API_KEY)
 
 
+
+VALID_THEME_STYLES = ["navy", "forest", "amber", "minimal", "rose", "oled"]
+
+@app.route("/api/theme", methods=["GET"])
+def api_theme_get():
+    db = _get_db()
+    style = "navy"
+    if db:
+        try:
+            doc = db.collection("system_settings").document("theme").get()
+            if doc.exists:
+                style = doc.to_dict().get("style", "navy")
+        except Exception:
+            pass
+    return jsonify({"style": style})
+
+@app.route("/api/theme", methods=["POST"])
+def api_theme_set():
+    email = session.get("user_email", "")
+    if not email or not _is_admin(email):
+        return jsonify({"error": "無管理權限"}), 403
+    data = request.get_json(silent=True) or {}
+    style = data.get("style", "navy")
+    if style not in VALID_THEME_STYLES:
+        return jsonify({"error": "無效風格"}), 400
+    db = _get_db()
+    if db:
+        try:
+            db.collection("system_settings").document("theme").set({"style": style})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+    return jsonify({"ok": True, "style": style})
+
 @app.route("/health")
 def health():
     return {"service": "real-estate-library", "status": "ok"}, 200
@@ -2683,16 +2716,13 @@ OBJECTS_APP_HTML = """
     #user-dropdown .dd-danger{color:var(--dg);}
     #user-dropdown .dd-danger:hover{background:var(--dgb);}
     #user-dropdown .dd-divider{height:1px;background:var(--bd);margin:4px 0;}
-    @media(min-width:768px){body{padding-left:224px;}}
-    @media(max-width:767px){#app-sidebar{display:none;}#app-header{display:flex;}body{padding-left:0;padding-bottom:72px;}}
+    @media(min-width:768px){body{padding-left:calc(224px + 1.5rem);padding-right:1.5rem;}}
+    @media(max-width:767px){#app-sidebar{display:none;}#app-header{display:flex;}body{padding-left:1rem;padding-right:1rem;padding-bottom:72px;}}
     /* 手機底部 Tab Bar */
     .lib-mobile-tabbar{position:fixed;bottom:0;left:0;right:0;z-index:250;background:var(--bg-s);backdrop-filter:blur(8px);border-top:1px solid var(--bd);display:none;transition:background 0.3s;}
     @media(max-width:767px){.lib-mobile-tabbar{display:flex!important;}}
     .lib-tb-item{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 4px;color:var(--txm);font-size:0.65rem;text-decoration:none;transition:color 0.15s;}
     .lib-tb-item:hover,.lib-tb-active{color:var(--tx)!important;}
-    /* 外觀切換按鈕 */
-    #theme-toggle-btn{width:100%;display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:10px;border:none;background:none;cursor:pointer;color:var(--txs);font-size:0.82rem;text-align:left;transition:background 0.15s;}
-    #theme-toggle-btn:hover{background:var(--bg-h);color:var(--tx);}
     /* 外觀設定面板 */
     #theme-panel{position:fixed;top:0;right:0;bottom:0;width:288px;background:var(--bg-s);border-left:1px solid var(--bd);z-index:800;padding:20px;overflow-y:auto;box-shadow:var(--sh);transition:background 0.3s,border-color 0.3s;}
     .tp-style-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px;}
@@ -2712,6 +2742,43 @@ OBJECTS_APP_HTML = """
     .tp-mode-btn.active{background:var(--ac);color:var(--act);border-color:var(--ac);}
     .tp-section{font-size:0.68rem;font-weight:600;color:var(--txm);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;margin-top:14px;}
     .badge-role{background:var(--tg);color:var(--tgt);}
+    /* points-pill — 與 Portal 一模一樣 */
+    .points-pill{display:inline-flex;align-items:center;padding:0.2rem 0.6rem;border-radius:9999px;font-size:0.72rem;font-weight:600;white-space:nowrap;}
+    .points-pill.admin{background:rgba(139,92,246,0.2);color:rgb(196,167,255);}
+    .points-pill.sub{background:rgba(34,197,94,0.2);color:rgb(134,239,172);}
+    .points-pill.points{background:var(--acs);color:var(--ac);}
+    /* ── 覆蓋 Tailwind 主內容區硬編碼顏色 → CSS 變數（加 body 前綴提高權重） ── */
+    body{background:var(--bg-p)!important;color:var(--tx)!important;}
+    body [class*="min-h-screen"]{background:var(--bg-p)!important;color:var(--tx)!important;}
+    /* 背景色覆蓋 */
+    body header.sticky,body header[class*="sticky"]{background:var(--bg-s)!important;border-color:var(--bd)!important;}
+    body [class*="bg-slate-900"],body [class*="bg-slate-950"]{background:var(--bg-s)!important;}
+    body [class*="bg-slate-800"]{background:var(--bg-t)!important;}
+    body [class*="bg-slate-700"],body [class*="bg-slate-600"]{background:var(--bg-h)!important;}
+    body [class*="bg-white"]:not(button):not(a){background:var(--bg-s)!important;}
+    /* 邊框色覆蓋 */
+    body [class*="border-slate"],body [class*="divide-slate"]{border-color:var(--bd)!important;}
+    /* 文字色覆蓋 */
+    body [class*="text-slate-100"],body [class*="text-slate-200"],body [class*="text-white"]:not(button[class*="bg-blue"]):not(button[class*="bg-red"]){color:var(--tx)!important;}
+    body [class*="text-slate-300"],body [class*="text-slate-400"],body [class*="text-slate-500"]{color:var(--txs)!important;}
+    body [class*="text-slate-600"],body [class*="text-slate-700"]{color:var(--txm)!important;}
+    body [class*="text-gray-"]{color:var(--txs)!important;}
+    body [class*="hover\\:text-slate-200"]:hover,body [class*="hover\\:text-slate-100"]:hover{color:var(--tx)!important;}
+    /* accent（藍色）→ 主題 accent 色 */
+    body .tab-btn[class*="text-blue"]{color:var(--ac)!important;}
+    body [class*="border-blue-4"],body [class*="border-blue-5"]{border-color:var(--ac)!important;}
+    body [class*="bg-blue-6"],body [class*="bg-blue-5"]{background:var(--ach)!important;}
+    body [class*="hover\\:bg-blue-5"]:hover,body [class*="hover\\:bg-blue-6"]:hover{background:var(--ac)!important;}
+    body [class*="text-blue-4"]{color:var(--ac)!important;}
+    body [class*="focus\\:border-blue"]:focus{border-color:var(--ac)!important;}
+    /* shadow / ring */
+    body [class*="ring-slate"],body [class*="shadow-"]{box-shadow:var(--sh)!important;}
+    /* input / select / textarea */
+    body input,body select,body textarea{background:var(--bg-t)!important;color:var(--tx)!important;border-color:var(--bd)!important;}
+    body input::placeholder,body textarea::placeholder{color:var(--txm)!important;}
+    /* 捲軸 */
+    #cp-cat-panel,#cp-area-panel,#cp-agent-panel{scrollbar-color:var(--bdl) transparent!important;}
+    #cp-cat-panel::-webkit-scrollbar-thumb,#cp-area-panel::-webkit-scrollbar-thumb,#cp-agent-panel::-webkit-scrollbar-thumb{background:var(--bdl)!important;}
   </style>
 </head>
 <body data-theme="navy-dark" class="min-h-screen font-sans antialiased">
@@ -2773,21 +2840,26 @@ OBJECTS_APP_HTML = """
   </div>
   <nav>
     <a href="__PORTAL_LINK__" target="tool-portal" id="sb-portal-home" class="hidden">🏠 工具首頁</a>
+    <a href="javascript:void(0)" id="sb-ad" class="hidden">📝 廣告文案</a>
     <a href="#" class="active">📁 物件庫</a>
     <a href="javascript:void(0)" id="sb-buyer" class="hidden">👥 買方管理</a>
+    <a href="javascript:void(0)" id="sb-survey" class="hidden">📍 周邊調查</a>
   </nav>
-  <button id="theme-toggle-btn" onclick="document.getElementById('theme-panel').style.display='block'">
-    <span>🎨</span>
-    <span>外觀設定</span>
-  </button>
+  <div style="padding:8px 8px 4px;">
+    <button type="button" id="btn-new-obj" onclick="openNewModal()" title="建立物件資訊"
+      style="width:100%;display:flex;align-items:center;justify-content:center;gap:6px;padding:8px 12px;border-radius:10px;border:none;background:var(--ac);color:var(--act);font-size:0.85rem;font-weight:600;cursor:pointer;transition:background 0.15s;"
+      onmouseover="this.style.background='var(--ach)'" onmouseout="this.style.background='var(--ac)'">
+      ＋ 建立
+    </button>
+  </div>
   <div class="sb-user">
     <button type="button" onclick="libToggleDropdown(event)">
-      <div id="sb-avatar" class="av-wrap" style="width:32px;height:32px;"><div class="av-fb">?</div></div>
-      <div style="min-width:0;flex:1">
+      <div id="sb-avatar" class="av-wrap" style="width:36px;height:36px;flex-shrink:0;"><div class="av-fb">?</div></div>
+      <div style="min-width:0;flex:1;">
         <div id="sb-name" style="font-size:0.82rem;font-weight:600;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
-        <div id="sb-role" style="font-size:0.7rem;color:var(--ac);"></div>
+        <span id="sb-badge" class="points-pill points" style="margin-top:2px;">— 點</span>
       </div>
-      <span style="color:var(--txm);font-size:0.75rem;">▲</span>
+      <svg style="width:16px;height:16px;color:var(--txm);flex-shrink:0;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
     </button>
   </div>
 </aside>
@@ -2797,9 +2869,13 @@ OBJECTS_APP_HTML = """
   <div class="hd-logo">
     <span>📁 物件庫</span>
   </div>
-  <div style="display:flex;align-items:center;gap:8px;cursor:pointer;" onclick="libToggleDropdown(event)">
-    <span id="hd-badge" class="badge-role" style="font-size:0.72rem;padding:3px 8px;border-radius:20px;font-weight:600;"></span>
-    <div id="hd-avatar" class="av-wrap" style="width:34px;height:34px;"><div class="av-fb">?</div></div>
+  <div style="display:flex;align-items:center;gap:8px;">
+    <button type="button" id="btn-new-obj-mobile" onclick="openNewModal()" title="建立物件資訊"
+      style="background:var(--ac);color:var(--act);border:none;border-radius:8px;padding:6px 12px;font-size:0.82rem;font-weight:600;cursor:pointer;white-space:nowrap;">＋ 建立</button>
+    <div style="display:flex;align-items:center;gap:8px;cursor:pointer;" onclick="libToggleDropdown(event)">
+      <span id="hd-badge" class="points-pill points">— 點</span>
+      <div id="hd-avatar" class="av-wrap" style="width:34px;height:34px;"><div class="av-fb">?</div></div>
+    </div>
   </div>
 </header>
 
@@ -2807,14 +2883,13 @@ OBJECTS_APP_HTML = """
 <div id="user-dropdown">
   <div class="dd-header">
     <p id="dd-name">載入中…</p>
-    <span id="dd-badge" class="badge-role" style="font-size:0.7rem;padding:2px 8px;border-radius:12px;font-weight:600;display:inline-block;margin-top:4px;"></span>
+    <span id="dd-badge" class="points-pill points" style="margin-top:4px;">— 點</span>
   </div>
   <div style="padding:4px 0;">
-    <a id="dd-portal-home" href="__PORTAL_LINK__" target="tool-portal" class="hidden">🏠 工具首頁</a>
-    <a id="dd-buyer" href="javascript:void(0)" class="hidden">👥 買方管理</a>
     <a id="dd-plans" href="javascript:void(0)" class="hidden">⬆️ 升級方案</a>
     <a id="dd-account" href="javascript:void(0)" class="hidden">👤 帳號管理</a>
     <a id="dd-admin" href="javascript:void(0)" class="hidden">🛡️ 後台管理</a>
+    <button onclick="libCloseDropdown();document.getElementById('theme-panel').style.display='block';" style="display:flex;align-items:center;gap:10px;width:100%;padding:10px 16px;border:none;background:none;color:var(--txs);font-size:0.85rem;cursor:pointer;text-align:left;transition:background 0.15s;" onmouseover="this.style.background='var(--bg-h)';this.style.color='var(--tx)'" onmouseout="this.style.background='none';this.style.color='var(--txs)'">🎨 外觀設定</button>
   </div>
   <div class="dd-divider"></div>
   <div style="padding:4px 0;">
@@ -2851,14 +2926,6 @@ OBJECTS_APP_HTML = """
 
 <!-- 頂部分頁列（移除舊的導覽 header，只保留分頁標籤） -->
 <header class="sticky top-0 z-50 bg-slate-900/95 backdrop-blur border-b border-slate-700 shadow">
-  <div class="flex items-center justify-between px-5 py-2">
-    <div class="flex gap-2">
-      <button type="button" id="btn-new-obj" onclick="openNewModal()"
-        class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition shadow">
-        ＋ 建立物件資訊
-      </button>
-    </div>
-  </div>
   <!-- 分頁標籤 -->
   <div class="flex border-t border-slate-700/60">
     <button id="tab-my" onclick="switchTab('my')"
@@ -3952,17 +4019,20 @@ OBJECTS_APP_HTML = """
     var paneMyEl       = document.getElementById('pane-my');
     var paneCompanyEl  = document.getElementById('pane-company');
     var paneSettingsEl = document.getElementById('pane-settings');
-    var btnNewObj      = document.getElementById('btn-new-obj');
+    var btnNewObj       = document.getElementById('btn-new-obj');
+    var btnNewObjMobile = document.getElementById('btn-new-obj-mobile');
 
     // 全部隱藏（加 null check 防止任一元素不存在時崩潰）
     if (paneMyEl)       paneMyEl.style.display       = 'none';
     if (paneCompanyEl)  paneCompanyEl.style.display  = 'none';
     if (paneSettingsEl) paneSettingsEl.style.display = 'none';
-    if (btnNewObj)      btnNewObj.style.display      = 'none';
+    if (btnNewObj)       btnNewObj.style.display       = 'none';
+    if (btnNewObjMobile) btnNewObjMobile.style.display = 'none';
 
     if (tab === 'my') {
       if (paneMyEl) paneMyEl.style.display = 'block';
-      if (btnNewObj) btnNewObj.style.display = '';
+      if (btnNewObj)       btnNewObj.style.display       = '';
+      if (btnNewObjMobile) btnNewObjMobile.style.display = '';
     } else if (tab === 'company') {
       if (paneCompanyEl) paneCompanyEl.style.display = 'block';
     } else if (tab === 'buyers') {
@@ -4395,12 +4465,12 @@ OBJECTS_APP_HTML = """
     // 土地類（農地/建地）→ 地號查詢
     if (cat === '農地' || cat === '建地' || cat === '農建地') {
       var section = item['段別'] || '';
-      var landNo  = String(item['地號'] || '').trim().split(/[\s,，]+/)[0]; // 多地號取第一個
+      var landNo  = String(item['地號'] || '').trim().split(/[ \t,，]+/)[0]; // 多地號取第一個
       if (!section || !landNo || !locality) return '';
       // 地號拆主號/次號：998-13 → main=998, sub=13；6555 → main=6555, sub=0
       var parts = landNo.split('-');
-      var main = parts[0].replace(/[^\d]/g,'');
-      var sub  = parts[1] ? parts[1].replace(/[^\d]/g,'') : '0';
+      var main = parts[0].replace(/[^0-9]/g,'');
+      var sub  = parts[1] ? parts[1].replace(/[^0-9]/g,'') : '0';
       if (!main) return '';
       var sectionName = section.replace(/段$/, '') + '段'; // 確保有「段」字
       return 'https://www.foundi.info/tool/land?location_type=land_address'
@@ -4425,7 +4495,7 @@ OBJECTS_APP_HTML = """
 
   // 正規化案名（和後端一致）
   function _normName(s) {
-    return String(s || '').replace(/\s+/g, '').replace(/(?<!\d)\d{5,6}(?!\d)/g, '').trim();
+    return String(s || '').replace(/[ \t]+/g, '').replace(/(?<![0-9])[0-9]{5,6}(?![0-9])/g, '').trim();
   }
 
   // 載入目前 snapshot 的售價字典
@@ -4460,55 +4530,6 @@ OBJECTS_APP_HTML = """
         el.textContent = '';
       }
     }).catch(function() {});
-  }
-
-  // 上傳 Word 物件總表
-  function cpUploadWordSnapshot(input) {
-    if (!input.files || !input.files[0]) return;
-    var file = input.files[0];
-    var el = document.getElementById('cp-word-status');
-
-    // ── 進度提示：跑馬燈動畫 ──
-    var _dots = 0;
-    var _timer = null;
-    function _startProgress() {
-      var msgs = ['解析 Word 中', '比對物件中', '更新 Firestore 中'];
-      var stage = 0;
-      _timer = setInterval(function() {
-        _dots = (_dots + 1) % 4;
-        // 每 4 秒換一個階段提示
-        if (_dots === 0) stage = Math.min(stage + 1, msgs.length - 1);
-        if (el) el.textContent = msgs[stage] + '…'.repeat(_dots + 1);
-      }, 700);
-    }
-    function _stopProgress() {
-      if (_timer) { clearInterval(_timer); _timer = null; }
-    }
-
-    if (el) el.textContent = '上傳中…';
-    _startProgress();
-
-    var fd = new FormData();
-    fd.append('file', file);
-    fetch('/api/word-snapshot/upload', { method:'POST', body:fd })
-      .then(r => r.json()).then(function(data) {
-        _stopProgress();
-        if (data.error) { toast(data.error, 'error'); if(el) el.textContent = '上傳失敗'; return; }
-        // 顯示詳細結果
-        var msg = '✅ 解析 ' + (data.count||0) + ' 筆';
-        if (data.updated_firestore != null) msg += '，更新 ' + data.updated_firestore + ' 筆資料';
-        toast(msg, 'success');
-        if (el) el.textContent = msg;
-        // 重新載入售價字典並刷新列表
-        cpLoadWordSnapshot();
-        setTimeout(function(){ cpFetch(); }, 800);
-        // 清除 input 讓下次可重新選同一檔
-        input.value = '';
-      }).catch(function(e) {
-        _stopProgress();
-        toast('上傳失敗：' + e, 'error');
-        if (el) el.textContent = '上傳失敗';
-      });
   }
 
   // 上傳解析後的 CSV（export_word_table.py 產出），精確更新 Firestore
@@ -4658,7 +4679,7 @@ OBJECTS_APP_HTML = """
             if (!expStr) return expiryFilter === 'empty';
             // 解析民國日期「115年6月30日」或西元「2026/06/30」
             var expDate = null;
-            var m = String(expStr).match(/(\d+)\s*年\s*(\d+)\s*月\s*(\d+)\s*日/);
+            var m = String(expStr).match(/([0-9]+)[ \t]*年[ \t]*([0-9]+)[ \t]*月[ \t]*([0-9]+)[ \t]*日/);
             if (m) {
               var yr = parseInt(m[1]) + (parseInt(m[1]) < 1000 ? 1911 : 0);
               expDate = new Date(yr, parseInt(m[2])-1, parseInt(m[3]));
@@ -4705,7 +4726,7 @@ OBJECTS_APP_HTML = """
         function calcDaysLeft(dateStr) {
           if (!dateStr) return null;
           // 支援「115年6月30日」民國格式
-          var m = String(dateStr).match(/(\d+)\s*年\s*(\d+)\s*月\s*(\d+)\s*日/);
+          var m = String(dateStr).match(/([0-9]+)[ \t]*年[ \t]*([0-9]+)[ \t]*月[ \t]*([0-9]+)[ \t]*日/);
           var d;
           if (m) {
             var year = parseInt(m[1]) + (parseInt(m[1]) < 1000 ? 1911 : 0);
@@ -4734,7 +4755,7 @@ OBJECTS_APP_HTML = """
           if (selling === false && hasDeal) {
             // 格式化成交日期為民國年（若為西元格式 2025/06/01 → 114年6月1日）
             var dealLabel = dealDate;
-            var dm = String(dealDate).match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+            var dm = String(dealDate).match(/([0-9]{4})[/\x2D]([0-9]{1,2})[/\x2D]([0-9]{1,2})/);
             if (dm) {
               var roc = parseInt(dm[1]) - 1911;
               dealLabel = roc + '年' + parseInt(dm[2]) + '月' + parseInt(dm[3]) + '日';
@@ -5165,26 +5186,37 @@ OBJECTS_APP_HTML = """
       if (u.error) return;
       _setAll(['sb-name', 'dd-name'], u.name || u.email, 'textContent');
       _setAvatar(['sb-avatar', 'hd-avatar'], u.picture || '', u.name || u.email);
-      var roleText = u.is_admin ? '管理員' : '業務';
-      var el_role = document.getElementById('sb-role'); if (el_role) el_role.textContent = roleText;
-      ['dd-badge', 'hd-badge'].forEach(function(id) {
-        var el = document.getElementById(id); if (el) el.textContent = roleText;
+      // 更新 points-pill badge（管理員/訂閱/點數，與 Portal 一致）
+      var subActive = u.subscription_active;
+      if (subActive === undefined && u.subscription_end) {
+        try { subActive = new Date(u.subscription_end.replace('Z','').slice(0,19)).getTime() > Date.now(); } catch(e) { subActive = false; }
+      }
+      ['sb-badge', 'dd-badge', 'hd-badge'].forEach(function(id) {
+        var el = document.getElementById(id); if (!el) return;
+        el.classList.remove('admin','sub','points');
+        if (u.is_admin) { el.classList.add('admin'); el.textContent = '管理員'; }
+        else if (subActive) { el.classList.add('sub'); el.textContent = u.subscription_plan === 'yearly' ? '年訂閱' : '月訂閱'; }
+        else { el.classList.add('points'); el.textContent = (u.points != null ? u.points : 0) + ' 點'; }
       });
       // Portal 連結
       if (PORTAL_URL_JS && PORTAL_URL_JS !== '#') {
-        var plansUrl   = PORTAL_URL_JS.replace(/\/$/, '') + '/plans';
-        var accountUrl = PORTAL_URL_JS.replace(/\/$/, '') + '/account';
-        var adminUrl   = PORTAL_URL_JS.replace(/\/$/, '') + '/admin';
-        ['sb-portal-home', 'dd-portal-home'].forEach(function(id) {
-          var el = document.getElementById(id); if (el) { el.href = PORTAL_URL_JS; el.classList.remove('hidden'); }
-        });
+        var plansUrl   = PORTAL_URL_JS.replace(/[/]$/, '') + '/plans';
+        var accountUrl = PORTAL_URL_JS.replace(/[/]$/, '') + '/account';
+        var adminUrl   = PORTAL_URL_JS.replace(/[/]$/, '') + '/admin';
+        var sbPortalHome = document.getElementById('sb-portal-home');
+        if (sbPortalHome) { sbPortalHome.href = PORTAL_URL_JS; sbPortalHome.classList.remove('hidden'); }
         var tbHome = document.getElementById('tb-home'); if (tbHome) tbHome.href = PORTAL_URL_JS;
         // Tab Bar 廣告和周邊連結（透過 Portal /api/enter/ 跳轉）
-        var portalBase = PORTAL_URL_JS.replace(/\/$/, '');
+        var portalBase = PORTAL_URL_JS.replace(/[/]$/, '');
         var tbAd = document.getElementById('tb-ad');
         if (tbAd) { tbAd.href = portalBase + '/api/enter/post'; tbAd.target = 'tool-post'; tbAd.classList.remove('hidden'); }
         var tbSurvey = document.getElementById('tb-survey');
         if (tbSurvey) { tbSurvey.href = portalBase + '/api/enter/survey'; tbSurvey.target = 'tool-survey'; tbSurvey.classList.remove('hidden'); }
+        // Sidebar 廣告和周邊連結
+        var sbAd = document.getElementById('sb-ad');
+        if (sbAd) { sbAd.href = portalBase + '/api/enter/post'; sbAd.target = 'tool-post'; sbAd.classList.remove('hidden'); }
+        var sbSurvey = document.getElementById('sb-survey');
+        if (sbSurvey) { sbSurvey.href = portalBase + '/api/enter/survey'; sbSurvey.target = 'tool-survey'; sbSurvey.classList.remove('hidden'); }
         var ddPlans = document.getElementById('dd-plans');
         if (ddPlans) { ddPlans.href = plansUrl; ddPlans.classList.remove('hidden'); }
         var ddAccount = document.getElementById('dd-account');
@@ -5194,12 +5226,10 @@ OBJECTS_APP_HTML = """
           if (ddAdmin) { ddAdmin.href = adminUrl; ddAdmin.classList.remove('hidden'); }
         }
       }
-      // 買方管理連結
+      // 買方管理連結（sidebar 和 tab bar，不放 dropdown）
       if (BUYER_URL_JS) {
-        ['sb-buyer', 'dd-buyer'].forEach(function(id) {
-          var el = document.getElementById(id);
-          if (el) { el.href = BUYER_URL_JS; el.target = '_blank'; el.classList.remove('hidden'); }
-        });
+        var sbBuyer = document.getElementById('sb-buyer');
+        if (sbBuyer) { sbBuyer.href = BUYER_URL_JS; sbBuyer.target = '_blank'; sbBuyer.classList.remove('hidden'); }
         var tbBuyer = document.getElementById('tb-buyer');
         if (tbBuyer) { tbBuyer.href = BUYER_URL_JS; tbBuyer.classList.remove('hidden'); }
       }
@@ -5245,7 +5275,7 @@ OBJECTS_APP_HTML = """
     var DARK_ONLY = ['oled'];
     var _style = 'navy';
     var _mode  = 'system';
-    var _PORTAL = (PORTAL_URL_JS || '').replace(/\/$/, '');
+    var _PORTAL = (PORTAL_URL_JS || '').replace(/[/]$/, '');
 
     function _applyTheme() {
       var sys = window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -5268,10 +5298,10 @@ OBJECTS_APP_HTML = """
     }
 
     window._tpSetMode = function(m) { _mode = m; localStorage.setItem('up_mode', m); _applyTheme(); };
-    window._tpAdminSetStyle = function(s) { _style = s; _applyTheme(); };
+    window._tpAdminSetStyle = function(s) { _style = s; localStorage.setItem("up_style", s); _applyTheme(); };
     window._tpSaveStyle = function() {
       if (!_PORTAL) return;
-      fetch(_PORTAL + '/api/theme', {
+      fetch('/api/theme', {
         method:'POST', headers:{'Content-Type':'application/json'},
         body:JSON.stringify({style:_style})
       }).then(function(r){ return r.json(); }).then(function(d) {
@@ -5299,7 +5329,7 @@ OBJECTS_APP_HTML = """
       _applyTheme();
       // 取後台最新風格
       if (_PORTAL) {
-        fetch(_PORTAL + '/api/theme').then(function(r){ return r.json(); }).then(function(d) {
+        fetch('/api/theme').then(function(r){ return r.json(); }).then(function(d) {
           if (d.style && d.style !== _style) {
             _style = d.style; localStorage.setItem('up_style', _style); _applyTheme();
           }
