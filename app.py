@@ -3100,8 +3100,8 @@ OBJECTS_APP_HTML = """
   </div>
 
   <!-- 管理員工具列（只有管理員看得到） -->
-  <div id="cp-sync-bar" class="hidden mb-3 flex flex-wrap items-center gap-3 bg-slate-800/60 border border-slate-700 rounded-xl px-4 py-2">
-    <span class="text-xs text-slate-400 flex-1">上次同步：<span id="cp-last-sync" class="text-slate-300">讀取中…</span></span>
+  <div id="cp-sync-bar" class="hidden mb-3 flex flex-wrap items-center gap-3 rounded-xl px-4 py-2" style="background:var(--bg-t);border:1px solid var(--bd);">
+    <span class="flex-1" style="font-size:0.75rem;color:var(--txs);">上次同步：<span id="cp-last-sync" style="color:var(--tx);">讀取中…</span></span>
     <button id="cp-sync-btn" onclick="cpTriggerSync()"
       class="px-4 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold transition">
       🔄 同步 Sheets
@@ -3118,9 +3118,9 @@ OBJECTS_APP_HTML = """
       title="查看按鈕說明與操作流程">
       ❓ 說明
     </button>
-    <span id="cp-word-status" class="text-xs text-slate-400"></span>
+    <span id="cp-word-status" style="font-size:0.75rem;color:var(--txs);"></span>
     <!-- 物件總表日期標籤 -->
-    <span id="cp-doc-date" class="text-xs text-slate-500 ml-1" title="物件總表更新日期"></span>
+    <span id="cp-doc-date" style="font-size:0.75rem;color:var(--txm);margin-left:0.25rem;" title="物件總表更新日期"></span>
   </div>
 
   <!-- 同步說明 Modal -->
@@ -3243,10 +3243,10 @@ OBJECTS_APP_HTML = """
   </div>
 
   <!-- 結果資訊列 -->
-  <div id="cp-info" class="text-sm text-slate-400 mb-3 hidden">
-    共 <span id="cp-total" class="font-bold text-slate-200">0</span> 筆，第
-    <span id="cp-page-num" class="font-bold text-slate-200">1</span> /
-    <span id="cp-total-pages" class="font-bold text-slate-200">1</span> 頁
+  <div id="cp-info" class="mb-3 hidden" style="font-size:0.875rem;color:var(--txs);">
+    共 <span id="cp-total" class="font-bold" style="color:var(--tx);">0</span> 筆，第
+    <span id="cp-page-num" class="font-bold" style="color:var(--tx);">1</span> /
+    <span id="cp-total-pages" class="font-bold" style="color:var(--tx);">1</span> 頁
   </div>
 
   <!-- 結果列表 -->
@@ -3255,29 +3255,29 @@ OBJECTS_APP_HTML = """
   <!-- 分頁控制 -->
   <div id="cp-pagination" class="flex gap-2 justify-center mt-4 hidden">
     <button id="cp-prev" onclick="cpChangePage(-1)"
-      class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm text-slate-300 transition disabled:opacity-40">← 上一頁</button>
+      class="transition disabled:opacity-40" style="padding:0.5rem 1rem;border-radius:0.5rem;background:var(--bg-h);color:var(--txs);font-size:0.875rem;border:1px solid var(--bd);cursor:pointer;">← 上一頁</button>
     <button id="cp-next" onclick="cpChangePage(1)"
-      class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm text-slate-300 transition disabled:opacity-40">下一頁 →</button>
+      class="transition disabled:opacity-40" style="padding:0.5rem 1rem;border-radius:0.5rem;background:var(--bg-h);color:var(--txs);font-size:0.875rem;border:1px solid var(--bd);cursor:pointer;">下一頁 →</button>
   </div>
 
   <!-- 初始提示 -->
-  <div id="cp-placeholder" class="text-center py-16 text-slate-500">
+  <div id="cp-placeholder" class="text-center py-16" style="color:var(--txm);">
     <div class="text-5xl mb-3">🏢</div>
-    <p class="text-lg font-medium text-slate-400">公司物件庫</p>
+    <p class="text-lg font-medium" style="color:var(--txs);">公司物件庫</p>
     <p class="text-sm mt-1">輸入條件後按「搜尋」，或直接按搜尋顯示全部物件</p>
   </div>
 </div>
 
 <!-- ══ 設定分頁（僅管理員）══ -->
 <div id="pane-settings" style="display:none" class="max-w-2xl mx-auto px-4 py-6">
-  <h2 class="font-bold text-slate-100 text-lg mb-4">⚙️ 系統設定</h2>
+  <h2 class="font-bold text-lg mb-4" style="color:var(--tx);">⚙️ 系統設定</h2>
 
   <!-- 經紀人 Email 管理 -->
-  <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5 mb-6">
+  <div class="rounded-2xl p-5 mb-6" style="background:var(--bg-t);border:1px solid var(--bd);">
     <div class="flex items-center justify-between mb-4">
       <div>
-        <h3 class="font-semibold text-slate-100">📧 經紀人 Email 管理</h3>
-        <p class="text-xs text-slate-400 mt-0.5">設定各經紀人的通知 Email，委託到期日通知時使用</p>
+        <h3 class="font-semibold" style="color:var(--tx);">📧 經紀人 Email 管理</h3>
+        <p class="text-xs mt-0.5" style="color:var(--txs);">設定各經紀人的通知 Email，委託到期日通知時使用</p>
       </div>
       <button onclick="agentEmailOpenAdd()"
         class="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition">
@@ -3286,42 +3286,42 @@ OBJECTS_APP_HTML = """
     </div>
 
     <!-- 新增/編輯表單（預設隱藏） -->
-    <div id="agent-email-form" class="hidden bg-slate-700/50 rounded-xl p-4 mb-4 border border-slate-600">
+    <div id="agent-email-form" class="hidden rounded-xl p-4 mb-4" style="background:var(--bg-h);border:1px solid var(--bd);">
       <div class="grid grid-cols-2 gap-3 mb-3">
         <div>
-          <label class="text-xs text-slate-400 block mb-1">經紀人姓名</label>
+          <label class="text-xs block mb-1" style="color:var(--txs);">經紀人姓名</label>
           <input id="agent-email-name" type="text" placeholder="如：陳威良"
-            class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
+            class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-t);border:1px solid var(--bd);color:var(--tx);">
         </div>
         <div>
-          <label class="text-xs text-slate-400 block mb-1">Email</label>
+          <label class="text-xs block mb-1" style="color:var(--txs);">Email</label>
           <input id="agent-email-addr" type="email" placeholder="如：abc@gmail.com"
-            class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
+            class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-t);border:1px solid var(--bd);color:var(--tx);">
         </div>
       </div>
       <div class="flex gap-2">
         <button onclick="agentEmailSave()"
           class="px-4 py-1.5 rounded-lg bg-green-600 hover:bg-green-500 text-white text-xs font-semibold transition">儲存</button>
         <button onclick="agentEmailCloseForm()"
-          class="px-4 py-1.5 rounded-lg bg-slate-600 hover:bg-slate-500 text-slate-200 text-xs transition">取消</button>
+          class="px-4 py-1.5 rounded-lg text-xs transition" style="background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);">取消</button>
       </div>
     </div>
 
     <!-- 列表 -->
     <div id="agent-email-list" class="space-y-2">
-      <p class="text-slate-500 text-sm text-center py-4">載入中…</p>
+      <p class="text-sm text-center py-4" style="color:var(--txm);">載入中…</p>
     </div>
   </div>
 
   <!-- 物件搜尋索引 -->
-  <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5 mb-6">
-    <h3 class="font-semibold text-slate-100 mb-1">🔍 物件搜尋索引</h3>
-    <p class="text-xs text-slate-400 mb-3">買方管理輸入物件名稱時的自動完成資料來源。每次「立即同步 Sheets」後自動更新，也可手動重建。</p>
+  <div class="rounded-2xl p-5 mb-6" style="background:var(--bg-t);border:1px solid var(--bd);">
+    <h3 class="font-semibold mb-1" style="color:var(--tx);">🔍 物件搜尋索引</h3>
+    <p class="text-xs mb-3" style="color:var(--txs);">買方管理輸入物件名稱時的自動完成資料來源。每次「立即同步 Sheets」後自動更新，也可手動重建。</p>
     <button onclick="rebuildPropIndex()"
-      class="px-4 py-2 rounded-lg bg-slate-600 hover:bg-slate-500 text-white text-sm font-semibold transition">
+      class="px-4 py-2 rounded-lg text-white text-sm font-semibold transition" style="background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);">
       重建物件索引
     </button>
-    <p id="prop-index-result" class="text-xs text-slate-400 mt-2"></p>
+    <p id="prop-index-result" class="text-xs mt-2" style="color:var(--txs);"></p>
   </div>
 
   <!-- 手動觸發通知測試 -->
@@ -4764,11 +4764,11 @@ OBJECTS_APP_HTML = """
               var roc = parseInt(dm[1]) - 1911;
               dealLabel = roc + '年' + parseInt(dm[2]) + '月' + parseInt(dm[3]) + '日';
             }
-            statusBadge = '<span class="text-xs bg-blue-900 text-blue-300 px-2 py-0.5 rounded-full whitespace-nowrap">✅ 已成交：' + escapeHtml(dealLabel) + '</span>';
+            statusBadge = '<span style="font-size:0.75rem;background:var(--tg);color:var(--tgt);padding:0.125rem 0.5rem;border-radius:9999px;white-space:nowrap;">✅ 已成交：' + escapeHtml(dealLabel) + '</span>';
           } else if (selling === false && !hasDeal) {
-            statusBadge = '<span class="text-xs bg-slate-600 text-slate-400 px-2 py-0.5 rounded-full">已下架</span>';
+            statusBadge = '<span style="font-size:0.75rem;background:var(--bg-h);color:var(--txs);padding:0.125rem 0.5rem;border-radius:9999px;">已下架</span>';
           } else {
-            statusBadge = '<span class="text-xs bg-green-700 text-green-200 px-2 py-0.5 rounded-full">銷售中</span>';
+            statusBadge = '<span style="font-size:0.75rem;background:var(--ok);color:#fff;padding:0.125rem 0.5rem;border-radius:9999px;">銷售中</span>';
           }
           // 售價對比：從 Word snapshot 找最新售價
           var dbPrice = item['售價(萬)'];
@@ -4784,21 +4784,21 @@ OBJECTS_APP_HTML = """
           }
           var price;
           if (wordHit && wordHit['售價萬'] && String(wordHit['售價萬']) !== String(dbPrice)) {
-            // 有新售價且不同 → 顯示對比
-            price = '<span class="line-through text-slate-500 text-xs">' + escapeHtml(String(dbPrice||'-')) + '萬</span>'
-                  + ' <span class="text-yellow-300 font-bold">' + escapeHtml(String(wordHit['售價萬'])) + '萬</span>'
-                  + '<span class="text-xs text-yellow-500 ml-0.5">↑Word</span>';
+            // 有新售價且不同 → 顯示對比（刪除線舊價 + 黃色新價）
+            price = '<span style="text-decoration:line-through;color:var(--txm);font-size:0.75rem;">' + escapeHtml(String(dbPrice||'-')) + '萬</span>'
+                  + ' <span style="color:var(--warn);font-weight:bold;">' + escapeHtml(String(wordHit['售價萬'])) + '萬</span>'
+                  + '<span style="font-size:0.75rem;color:var(--warn);margin-left:0.125rem;">↑Word</span>';
           } else {
             price = dbPrice ? dbPrice + ' 萬' : '-';
           }
           var buildPing = item['建坪'] ? item['建坪'] + ' 坪' : (item['地坪'] ? item['地坪'] + ' 坪地' : '');
-          var cat = item['物件類別'] ? '<span class="text-xs text-amber-400">' + escapeHtml(item['物件類別']) + '</span>' : '';
-          var agent = item['經紀人'] ? '<span class="text-xs text-slate-500">' + escapeHtml(item['經紀人']) + '</span>' : '';
+          var cat = item['物件類別'] ? '<span style="font-size:0.75rem;color:var(--warn);">' + escapeHtml(item['物件類別']) + '</span>' : '';
+          var agent = item['經紀人'] ? '<span style="font-size:0.75rem;color:var(--txm);">' + escapeHtml(item['經紀人']) + '</span>' : '';
           var safeId = String(item.id).replace(/'/g, '');
           var name = escapeHtml(item['案名'] || '（無案名）');
           // 若有舊案名（案名曾改動），顯示「原：舊案名」灰色小字
           var oldNameBadge = item['舊案名']
-            ? '<span class="text-xs text-slate-500 italic">原：' + escapeHtml(item['舊案名']) + '</span>'
+            ? '<span style="font-size:0.75rem;color:var(--txm);font-style:italic;">原：' + escapeHtml(item['舊案名']) + '</span>'
             : '';
           // 地址顯示：有地址用地址；土地類（農地/建地）改顯示 縣市＋段別＋地號
           var addr;
@@ -4820,46 +4820,47 @@ OBJECTS_APP_HTML = """
             var daysLeft = calcDaysLeft(item['委託到期日']);
             if (daysLeft !== null) {
               if (daysLeft < 0) {
-                expiryBadge = '<span class="text-xs bg-red-900 text-red-300 px-2 py-0.5 rounded-full">⚠️ 已到期 ' + Math.abs(daysLeft) + '天</span>';
+                expiryBadge = '<span style="font-size:0.75rem;background:var(--dgb);color:var(--dg);padding:0.125rem 0.5rem;border-radius:9999px;">⚠️ 已到期 ' + Math.abs(daysLeft) + '天</span>';
               } else if (daysLeft <= 15) {
-                expiryBadge = '<span class="text-xs bg-orange-800 text-orange-200 px-2 py-0.5 rounded-full animate-pulse">⏰ 剩 ' + daysLeft + ' 天</span>';
+                expiryBadge = '<span style="font-size:0.75rem;background:rgba(234,88,12,0.15);color:#f97316;padding:0.125rem 0.5rem;border-radius:9999px;" class="animate-pulse">⏰ 剩 ' + daysLeft + ' 天</span>';
               } else {
-                expiryBadge = '<span class="text-xs text-slate-500">到期：剩' + daysLeft + '天</span>';
+                expiryBadge = '<span style="font-size:0.75rem;color:var(--txm);">到期：剩' + daysLeft + '天</span>';
               }
             }
           }
 
           var starred = !!item['已加星'];
           var starIcon = starred ? '★' : '☆';
-          var starClass = starred
-            ? 'cp-star-btn text-yellow-400 hover:text-slate-400'
-            : 'cp-star-btn text-slate-600 hover:text-yellow-400';
-          // 卡片：已加星者加上左側黃色邊框
-          var cardBorder = starred
-            ? 'border-yellow-500/60'
-            : 'border-slate-700';
+          // 星號按鈕樣式：已加星黃色，未加星灰色
+          var starStyle = starred
+            ? 'cp-star-btn;color:#facc15;'
+            : 'cp-star-btn;color:var(--txm);';
+          // 卡片邊框：已加星用黃色邊框，否則用主題邊框
+          var cardBorderStyle = starred
+            ? 'border:1px solid rgba(234,179,8,0.6);'
+            : 'border:1px solid var(--bd);';
 
-          html += '<div class="bg-slate-800 border ' + cardBorder + ' hover:border-slate-500 rounded-xl p-4 transition relative group">';
+          html += '<div class="cp-card rounded-xl p-4 transition relative group" style="background:var(--bg-t);' + cardBorderStyle + '">';
           html += '<div class="flex items-start justify-between gap-2">';
           html += '<div class="min-w-0 cursor-pointer flex-1 cp-detail-btn" data-id="' + safeId + '">';
-          html += '<p class="font-semibold text-slate-100 truncate">' + name + '</p>';
+          html += '<p class="font-semibold truncate" style="color:var(--tx);">' + name + '</p>';
           if (oldNameBadge) html += '<p class="truncate mt-0">' + oldNameBadge + '</p>';
-          html += '<p class="text-xs text-slate-400 truncate mt-0.5">' + addr + '</p>';
+          html += '<p class="truncate mt-0.5" style="font-size:0.75rem;color:var(--txs);">' + addr + '</p>';
           // 所有權人：只有管理員看得到
           if (isAdmin && item['所有權人']) {
-            html += '<p class="text-xs text-slate-500 truncate mt-0.5">👤 ' + escapeHtml(item['所有權人']) + '</p>';
+            html += '<p class="truncate mt-0.5" style="font-size:0.75rem;color:var(--txm);">👤 ' + escapeHtml(item['所有權人']) + '</p>';
           }
           html += '</div>';
           // 右上角：星號按鈕 + 售價 + 狀態
           html += '<div class="shrink-0 text-right flex flex-col items-end gap-1">';
-          html += '<button data-prop-id="' + safeId + '" class="' + starClass + ' text-lg leading-none transition" title="追蹤此物件">' + starIcon + '</button>';
-          var priceHtml = (price.indexOf('<') >= 0) ? price : '<span class="font-bold text-blue-300 text-sm">' + escapeHtml(price) + '</span>';
-          html += '<p class="text-sm leading-tight">' + priceHtml + '</p>' + statusBadge;
+          html += '<button data-prop-id="' + safeId + '" class="cp-star-btn text-lg leading-none transition" style="color:' + (starred ? '#facc15' : 'var(--txm)') + ';background:none;border:none;cursor:pointer;" title="追蹤此物件">' + starIcon + '</button>';
+          var priceHtml = (price.indexOf('<') >= 0) ? price : '<span style="font-weight:bold;color:var(--ac);font-size:0.875rem;">' + escapeHtml(price) + '</span>';
+          html += '<p class="leading-tight" style="font-size:0.875rem;">' + priceHtml + '</p>' + statusBadge;
           html += '</div>';
           html += '</div>';
           html += '<div class="flex gap-3 mt-2 flex-wrap items-center justify-between">';
           html += '<div class="flex gap-3 flex-wrap items-center">' + cat;
-          html += buildPing ? '<span class="text-xs text-slate-400">' + escapeHtml(buildPing) + '</span>' : '';
+          html += buildPing ? '<span style="font-size:0.75rem;color:var(--txs);">' + escapeHtml(buildPing) + '</span>' : '';
           html += agent + expiryBadge + '</div>';
           // 右下角：FOUNDI 連結 + 戰況按鈕
           html += '<div class="flex items-center gap-1">';
@@ -4867,7 +4868,7 @@ OBJECTS_APP_HTML = """
           var foundiUrl = _buildFoundiUrl(item);
           if (foundiUrl) {
             html += '<a href="' + foundiUrl + '" target="_blank" rel="noopener" '
-                  + 'class="text-xs text-cyan-600 hover:text-cyan-400 transition px-2 py-0.5 rounded border border-slate-700 hover:border-cyan-600" '
+                  + 'style="font-size:0.75rem;color:var(--ac);padding:0.125rem 0.5rem;border-radius:0.375rem;border:1px solid var(--bd);text-decoration:none;" '
                   + 'title="在 FOUNDI 查詢此物件" onclick="event.stopPropagation()">🔍 FOUNDI</a>';
           }
           // 帶看紀錄按鈕：跳轉到買方管理新增帶看
@@ -4876,17 +4877,18 @@ OBJECTS_APP_HTML = """
                            + '&prop_name=' + encodeURIComponent(item['案名'] || '')
                            + '&prop_address=' + encodeURIComponent(item['物件地址'] || '');
             html += '<a href="' + showingUrl + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" '
-                  + 'class="text-xs text-slate-500 hover:text-green-400 transition px-2 py-0.5 rounded border border-slate-700 hover:border-green-600" '
+                  + 'style="font-size:0.75rem;color:var(--txs);padding:0.125rem 0.5rem;border-radius:0.375rem;border:1px solid var(--bd);text-decoration:none;" '
                   + 'title="記錄帶看">🗓</a>';
             // 帶看摘要展開按鈕（點擊後非同步載入）
-            html += '<button class="cp-showing-toggle text-xs text-slate-500 hover:text-green-400 transition px-2 py-0.5 rounded border border-slate-700 hover:border-green-600" '
+            html += '<button class="cp-showing-toggle" '
+                  + 'style="font-size:0.75rem;color:var(--txs);padding:0.125rem 0.5rem;border-radius:0.375rem;border:1px solid var(--bd);background:none;cursor:pointer;" '
                   + 'data-prop-id="' + safeId + '" data-loaded="0" title="查看曾帶看此物件的買方">👥 帶看</button>';
           }
           html += '</div>';
           // 帶看摘要區（預設摺疊）
           if (BUYER_URL) {
-            html += '<div id="showing-panel-' + safeId + '" class="hidden mt-2 pt-2 border-t border-slate-700/50">'
-                  + '<p class="text-xs text-slate-500 text-center py-2">載入中…</p></div>';
+            html += '<div id="showing-panel-' + safeId + '" class="hidden mt-2 pt-2" style="border-top:1px solid var(--bd);">'
+                  + '<p style="font-size:0.75rem;color:var(--txm);text-align:center;padding:0.5rem 0;">載入中…</p></div>';
           }
           html += '</div></div>';
         }
@@ -4902,14 +4904,11 @@ OBJECTS_APP_HTML = """
                 if (data.starred !== undefined) {
                   // 更新圖示與樣式（不重新整理整頁）
                   btn.textContent = data.starred ? '★' : '☆';
-                  btn.className = data.starred
-                    ? 'cp-star-btn text-yellow-400 hover:text-slate-400 text-lg leading-none transition'
-                    : 'cp-star-btn text-slate-600 hover:text-yellow-400 text-lg leading-none transition';
+                  btn.style.color = data.starred ? '#facc15' : 'var(--txm)';
                   // 更新卡片邊框
-                  var card = btn.closest('.bg-slate-800');
+                  var card = btn.closest('.cp-card');
                   if (card) {
-                    card.classList.toggle('border-yellow-500\\/60', data.starred);
-                    card.classList.toggle('border-slate-700', !data.starred);
+                    card.style.border = data.starred ? '1px solid rgba(234,179,8,0.6)' : '1px solid var(--bd)';
                   }
                   // 若目前是星號篩選模式，從列表移除取消追蹤的卡片
                   if (!data.starred && document.getElementById('cp-star-filter-btn').dataset.active === '1') {
