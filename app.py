@@ -2614,9 +2614,9 @@ def _render_app():
     # 生成管理員用戶選擇列
     if is_admin:
         admin_bar = (
-            '<div class="flex items-center gap-3 px-2 py-2 mb-3 bg-slate-800/60 rounded-xl border border-slate-700 text-sm text-slate-400">'
+            '<div class="flex items-center gap-3 px-2 py-2 mb-3 rounded-xl text-sm" style="background:var(--bg-t);border:1px solid var(--bd);color:var(--txs);">'
             '<span>查看用戶：</span>'
-            '<select id="userSelect" class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-1 text-slate-200 text-sm focus:outline-none">'
+            '<select id="userSelect" class="rounded-lg px-3 py-1 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">'
             '<option value="">載入中…</option>'
             '</select>'
             '</div>'
@@ -2631,14 +2631,16 @@ def _render_app():
     for key, label in fields:
         span_class = "sm:col-span-2" if key in wide_keys else ""
         div_class = f'<div class="{span_class}">' if span_class else "<div>"
-        lbl = f'<label class="block text-xs text-slate-400 mb-1" for="f_{key}">{label}</label>'
+        lbl = f'<label class="block text-xs mb-1" style="color:var(--txs);" for="f_{key}">{label}</label>'
         if key in textarea_keys:
             inp = (f'<textarea id="f_{key}" name="{key}" rows="3"'
-                   f' class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 resize-none focus:outline-none focus:border-blue-500"'
+                   f' class="w-full rounded-lg px-3 py-2 text-sm resize-none focus:outline-none"'
+                   f' style="background:var(--bg-t);border:1px solid var(--bd);color:var(--tx);"'
                    f' placeholder="{label}"></textarea>')
         else:
             inp = (f'<input type="text" id="f_{key}" name="{key}"'
-                   f' class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500"'
+                   f' class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none"'
+                   f' style="background:var(--bg-t);border:1px solid var(--bd);color:var(--tx);"'
                    f' placeholder="{label}">')
         fields_html_parts.append(f"{div_class}{lbl}{inp}</div>")
     fields_html = "\n        ".join(fields_html_parts)
@@ -2750,26 +2752,28 @@ OBJECTS_APP_HTML = """
     /* ── 覆蓋 Tailwind 主內容區硬編碼顏色 → CSS 變數（加 body 前綴提高權重） ── */
     body{background:var(--bg-p)!important;color:var(--tx)!important;}
     body [class*="min-h-screen"]{background:var(--bg-p)!important;color:var(--tx)!important;}
-    /* 背景色覆蓋 */
-    body header.sticky,body header[class*="sticky"]{background:var(--bg-s)!important;border-color:var(--bd)!important;}
-    body [class*="bg-slate-900"],body [class*="bg-slate-950"]{background:var(--bg-s)!important;}
-    body [class*="bg-slate-800"]{background:var(--bg-t)!important;}
-    body [class*="bg-slate-700"],body [class*="bg-slate-600"]{background:var(--bg-h)!important;}
+    /* 背景色覆蓋（含透明度變體：/60、/95 等） */
+    body header,body header.sticky,body header[class*="sticky"]{background:var(--bg-s)!important;border-color:var(--bd)!important;}
+    body [class*="bg-slate-9"],body [class*="bg-slate-95"]{background:var(--bg-s)!important;}
+    body [class*="bg-slate-8"]{background:var(--bg-t)!important;}
+    body [class*="bg-slate-7"],body [class*="bg-slate-6"]{background:var(--bg-h)!important;}
     body [class*="bg-white"]:not(button):not(a){background:var(--bg-s)!important;}
     /* 邊框色覆蓋 */
     body [class*="border-slate"],body [class*="divide-slate"]{border-color:var(--bd)!important;}
     /* 文字色覆蓋 */
-    body [class*="text-slate-100"],body [class*="text-slate-200"],body [class*="text-white"]:not(button[class*="bg-blue"]):not(button[class*="bg-red"]){color:var(--tx)!important;}
-    body [class*="text-slate-300"],body [class*="text-slate-400"],body [class*="text-slate-500"]{color:var(--txs)!important;}
-    body [class*="text-slate-600"],body [class*="text-slate-700"]{color:var(--txm)!important;}
+    body [class*="text-slate-1"],body [class*="text-slate-2"],body [class*="text-white"]:not(button[class*="bg-blue"]):not(button[class*="bg-red"]){color:var(--tx)!important;}
+    body [class*="text-slate-3"],body [class*="text-slate-4"],body [class*="text-slate-5"]{color:var(--txs)!important;}
+    body [class*="text-slate-6"],body [class*="text-slate-7"]{color:var(--txm)!important;}
     body [class*="text-gray-"]{color:var(--txs)!important;}
-    body [class*="hover\\:text-slate-200"]:hover,body [class*="hover\\:text-slate-100"]:hover{color:var(--tx)!important;}
+    body [class*="hover\\:text-slate-2"]:hover,body [class*="hover\\:text-slate-1"]:hover{color:var(--tx)!important;}
+    /* hover 背景覆蓋 */
+    body [class*="hover\\:bg-slate-7"]:hover,body [class*="hover\\:bg-slate-6"]:hover{background:var(--bg-h)!important;}
     /* accent（藍色）→ 主題 accent 色 */
     body .tab-btn[class*="text-blue"]{color:var(--ac)!important;}
     body [class*="border-blue-4"],body [class*="border-blue-5"]{border-color:var(--ac)!important;}
     body [class*="bg-blue-6"],body [class*="bg-blue-5"]{background:var(--ach)!important;}
     body [class*="hover\\:bg-blue-5"]:hover,body [class*="hover\\:bg-blue-6"]:hover{background:var(--ac)!important;}
-    body [class*="text-blue-4"]{color:var(--ac)!important;}
+    body [class*="text-blue-4"],body [class*="text-blue-3"]{color:var(--ac)!important;}
     body [class*="focus\\:border-blue"]:focus{border-color:var(--ac)!important;}
     /* shadow / ring */
     body [class*="ring-slate"],body [class*="shadow-"]{box-shadow:var(--sh)!important;}
@@ -2925,20 +2929,20 @@ OBJECTS_APP_HTML = """
 <div id="toast-container"></div>
 
 <!-- 頂部分頁列（移除舊的導覽 header，只保留分頁標籤） -->
-<header class="sticky top-0 z-50 bg-slate-900/95 backdrop-blur border-b border-slate-700 shadow">
+<header class="sticky top-0 z-50 backdrop-blur shadow" style="background:var(--bg-s);border-bottom:1px solid var(--bd);">
   <!-- 分頁標籤 -->
-  <div class="flex border-t border-slate-700/60">
+  <div class="flex" style="border-top:1px solid var(--bd);">
     <button id="tab-my" onclick="switchTab('my')"
-      class="tab-btn flex-1 py-2 text-sm font-medium text-blue-400 border-b-2 border-blue-500 transition">
+      class="tab-btn flex-1 py-2 text-sm font-medium border-b-2 transition" style="color:var(--ac);border-color:var(--ac);">
       📂 我的物件
     </button>
     <button id="tab-company" onclick="switchTab('company')"
-      class="tab-btn flex-1 py-2 text-sm font-medium text-slate-400 border-b-2 border-transparent hover:text-slate-200 transition">
+      class="tab-btn flex-1 py-2 text-sm font-medium border-b-2 border-transparent transition" style="color:var(--txs);">
       🏢 公司物件庫
     </button>
     <!-- 設定 tab：僅管理員看得到（由 JS 控制顯示） -->
     <button id="tab-settings" onclick="switchTab('settings')"
-      class="tab-btn hidden flex-1 py-2 text-sm font-medium text-slate-400 border-b-2 border-transparent hover:text-slate-200 transition">
+      class="tab-btn hidden flex-1 py-2 text-sm font-medium border-b-2 border-transparent transition" style="color:var(--txs);">
       ⚙️ 設定
     </button>
   </div>
@@ -2950,8 +2954,8 @@ OBJECTS_APP_HTML = """
   <div id="listPanel" class="space-y-3"></div>
 
   <!-- 編輯物件面板（原地編輯用，新增改由 Modal） -->
-  <div id="formPanel" class="hidden bg-slate-800 rounded-2xl border border-slate-600 p-5 mb-4">
-    <h2 id="formTitle" class="font-bold text-slate-100 mb-4">編輯物件</h2>
+  <div id="formPanel" class="hidden rounded-2xl p-5 mb-4" style="background:var(--bg-t);border:1px solid var(--bd);">
+    <h2 id="formTitle" class="font-bold mb-4" style="color:var(--tx);">編輯物件</h2>
     <form id="objForm">
       <input type="hidden" id="objId" name="id">
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -2959,18 +2963,18 @@ OBJECTS_APP_HTML = """
       </div>
       <div class="flex gap-3 mt-4">
         <button type="submit" class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition">儲存</button>
-        <button type="button" onclick="hideForm()" class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm transition">取消</button>
+        <button type="button" onclick="hideForm()" class="px-4 py-2 rounded-lg text-sm transition" style="background:var(--bg-h);color:var(--txs);">取消</button>
       </div>
     </form>
   </div>
 
   <!-- 詳情面板 -->
-  <div id="detailPanel" class="hidden bg-slate-800 rounded-2xl border border-slate-600 p-5 mb-4">
-    <h2 id="detailTitle" class="font-bold text-slate-100 mb-3">物件詳情</h2>
-    <div id="detailContent" class="space-y-1 text-sm text-slate-300"></div>
+  <div id="detailPanel" class="hidden rounded-2xl p-5 mb-4" style="background:var(--bg-t);border:1px solid var(--bd);">
+    <h2 id="detailTitle" class="font-bold mb-3" style="color:var(--tx);">物件詳情</h2>
+    <div id="detailContent" class="space-y-1 text-sm" style="color:var(--txs);"></div>
     <div class="flex gap-3 mt-4">
       <button type="button" onclick="editCurrentDetail()" class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition">編輯</button>
-      <button type="button" onclick="closeDetail()" class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm transition">關閉</button>
+      <button type="button" onclick="closeDetail()" class="px-4 py-2 rounded-lg text-sm transition" style="background:var(--bg-h);color:var(--txs);">關閉</button>
     </div>
   </div>
 </div>
@@ -2979,7 +2983,7 @@ OBJECTS_APP_HTML = """
 <div id="pane-company" style="display:none" class="max-w-4xl mx-auto px-4 py-6">
 
   <!-- 搜尋條件列 -->
-  <div class="bg-slate-800 rounded-2xl border border-slate-700 p-4 mb-4">
+  <div class="rounded-2xl p-4 mb-4" style="background:var(--bg-t);border:1px solid var(--bd);">
     <!-- 第一列：關鍵字 + 售價 + 狀態 -->
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
       <input id="cp-keyword" type="text" placeholder="🔍 案名 / 地址 / 委託編號"
@@ -3013,36 +3017,36 @@ OBJECTS_APP_HTML = """
       <!-- 類別複選按鈕 -->
       <div class="relative">
         <button id="cp-cat-btn" onclick="cpToggleDropdown('cat')"
-          class="flex items-center gap-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 hover:border-slate-400 transition">
+          class="flex items-center gap-1 rounded-lg px-3 py-2 text-sm transition" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
           <span id="cp-cat-label">全部類別</span>
-          <svg class="w-3 h-3 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+          <svg class="w-3 h-3" style="color:var(--txs);" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
         </button>
-        <div id="cp-cat-panel" class="hidden absolute left-0 top-full mt-1 z-50 bg-slate-800 border border-slate-600 rounded-xl shadow-2xl p-3 min-w-[180px] max-h-72 overflow-y-auto">
+        <div id="cp-cat-panel" class="hidden absolute left-0 top-full mt-1 z-50 rounded-xl p-3 min-w-[180px] max-h-72 overflow-y-auto" style="background:var(--bg-s);border:1px solid var(--bd);box-shadow:var(--sh);">
           <div id="cp-cat-list" class="space-y-1"></div>
         </div>
       </div>
       <!-- 地區複選按鈕 -->
       <div class="relative">
         <button id="cp-area-btn" onclick="cpToggleDropdown('area')"
-          class="flex items-center gap-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 hover:border-slate-400 transition">
+          class="flex items-center gap-1 rounded-lg px-3 py-2 text-sm transition" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
           <span id="cp-area-label">全部地區</span>
-          <svg class="w-3 h-3 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+          <svg class="w-3 h-3" style="color:var(--txs);" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
         </button>
-        <div id="cp-area-panel" class="hidden absolute left-0 top-full mt-1 z-50 bg-slate-800 border border-slate-600 rounded-xl shadow-2xl p-3 min-w-[200px] max-h-72 overflow-y-auto">
+        <div id="cp-area-panel" class="hidden absolute left-0 top-full mt-1 z-50 rounded-xl p-3 min-w-[200px] max-h-72 overflow-y-auto" style="background:var(--bg-s);border:1px solid var(--bd);box-shadow:var(--sh);">
           <div id="cp-area-list" class="space-y-1"></div>
         </div>
       </div>
       <!-- 經紀人複選按鈕 -->
       <div class="relative">
         <button id="cp-agent-btn" onclick="cpToggleDropdown('agent')"
-          class="flex items-center gap-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 hover:border-slate-400 transition">
+          class="flex items-center gap-1 rounded-lg px-3 py-2 text-sm transition" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
           <span id="cp-agent-label">全部經紀人</span>
-          <svg class="w-3 h-3 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+          <svg class="w-3 h-3" style="color:var(--txs);" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
         </button>
-        <div id="cp-agent-panel" class="hidden absolute left-0 top-full mt-1 z-50 bg-slate-800 border border-slate-600 rounded-xl shadow-2xl p-3 min-w-[180px] max-h-72 overflow-y-auto">
-          <p class="text-xs text-slate-500 mb-2">── 在線人員 ──</p>
+        <div id="cp-agent-panel" class="hidden absolute left-0 top-full mt-1 z-50 rounded-xl p-3 min-w-[180px] max-h-72 overflow-y-auto" style="background:var(--bg-s);border:1px solid var(--bd);box-shadow:var(--sh);">
+          <p class="text-xs mb-2" style="color:var(--txm);">── 在線人員 ──</p>
           <div id="cp-agent-active-list" class="space-y-1 mb-2"></div>
-          <p class="text-xs text-slate-500 mb-2">── 其他 ──</p>
+          <p class="text-xs mb-2" style="color:var(--txm);">── 其他 ──</p>
           <div id="cp-agent-inactive-list" class="space-y-1"></div>
         </div>
       </div>
@@ -3051,16 +3055,16 @@ OBJECTS_APP_HTML = """
       <button onclick="cpSearch()"
         class="px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition">搜尋</button>
       <button onclick="cpReset()"
-        class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm transition">重設</button>
+        class="px-4 py-2 rounded-lg text-sm transition" style="background:var(--bg-h);color:var(--txs);">重設</button>
       <!-- 加星篩選按鈕：點一下只看已加星，再點取消 -->
       <button id="cp-star-filter-btn" onclick="cpToggleStarFilter()"
-        class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm transition flex items-center gap-1"
+        class="px-4 py-2 rounded-lg text-sm transition flex items-center gap-1" style="background:var(--bg-h);color:var(--txs);"
         title="只顯示已加星物件">
         <span id="cp-star-filter-icon">☆</span>
         <span id="cp-star-filter-label">追蹤中</span>
       </button>
       <div class="flex items-center gap-1 ml-2">
-        <span class="text-xs text-slate-400">排序：</span>
+        <span class="text-xs" style="color:var(--txs);">排序：</span>
         <select id="cp-sort"
           onchange="cpSearch()"
           class="bg-slate-700 border border-slate-600 text-slate-200 text-xs rounded-lg px-2 py-1.5 focus:ring-1 focus:ring-blue-500">
@@ -4046,14 +4050,14 @@ OBJECTS_APP_HTML = """
 
     // 分頁按鈕樣式
     document.querySelectorAll('.tab-btn').forEach(function(btn) {
-      btn.style.color        = '#94a3b8';   // slate-400
+      btn.style.color        = 'var(--txs)';
       btn.style.borderBottom = '2px solid transparent';
       btn.style.fontWeight   = '400';
     });
     var activeBtn = document.getElementById('tab-' + tab);
     if (activeBtn) {
-      activeBtn.style.color        = '#60a5fa'; // blue-400
-      activeBtn.style.borderBottom = '2px solid #3b82f6'; // blue-500
+      activeBtn.style.color        = 'var(--ac)';
+      activeBtn.style.borderBottom = '2px solid var(--ac)';
       activeBtn.style.fontWeight   = '600';
     }
 
