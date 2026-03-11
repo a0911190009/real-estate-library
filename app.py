@@ -2862,6 +2862,7 @@ OBJECTS_APP_HTML = """
     <a href="#" class="active">📁 物件庫</a>
     <a href="javascript:void(0)" id="sb-buyer" class="hidden">👥 買方管理</a>
     <a href="javascript:void(0)" id="sb-survey" class="hidden">📍 周邊調查</a>
+    <a href="javascript:void(0)" id="sb-calendar" class="hidden">📅 業務行事曆</a>
   </nav>
   <div style="padding:8px 8px 4px;">
     <button type="button" id="btn-new-obj" onclick="openNewModal()" title="建立物件資訊"
@@ -2937,6 +2938,10 @@ OBJECTS_APP_HTML = """
   <a href="javascript:void(0)" id="tb-survey" class="lib-tb-item hidden">
     <span style="font-size:1.3rem;">📍</span>
     <span>周邊</span>
+  </a>
+  <a href="javascript:void(0)" id="tb-calendar" class="lib-tb-item hidden">
+    <span style="font-size:1.3rem;">📅</span>
+    <span>行事曆</span>
   </a>
 </nav>
 
@@ -5239,6 +5244,10 @@ OBJECTS_APP_HTML = """
         if (sbAd) { sbAd.href = portalBase + '/api/enter/post'; sbAd.target = 'tool-post'; sbAd.classList.remove('hidden'); }
         var sbSurvey = document.getElementById('sb-survey');
         if (sbSurvey) { sbSurvey.href = portalBase + '/api/enter/survey'; sbSurvey.target = 'tool-survey'; sbSurvey.classList.remove('hidden'); }
+        var tbCalendar = document.getElementById('tb-calendar');
+        if (tbCalendar) { tbCalendar.href = portalBase + '/api/enter/calendar'; tbCalendar.target = 'tool-calendar'; tbCalendar.classList.remove('hidden'); }
+        var sbCalendar = document.getElementById('sb-calendar');
+        if (sbCalendar) { sbCalendar.href = portalBase + '/api/enter/calendar'; sbCalendar.target = 'tool-calendar'; sbCalendar.classList.remove('hidden'); }
         var ddPlans = document.getElementById('dd-plans');
         if (ddPlans) { ddPlans.href = plansUrl; ddPlans.classList.remove('hidden'); }
         var ddAccount = document.getElementById('dd-account');
