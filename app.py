@@ -1486,6 +1486,7 @@ def api_word_snapshot_upload_csv():
     """
     import csv as _csv
     import io as _io
+    import logging
     from datetime import date as _date
 
     email, err = _require_user()
@@ -2147,7 +2148,7 @@ def api_notify_expiry():
     notify_secret = os.environ.get("NOTIFY_SECRET", "")
     if notify_secret and secret != notify_secret:
         # 沒有 header secret 時，允許管理員從瀏覽器手動觸發
-        email_s = session.get("email", "")
+        email_s = session.get("user_email", "")
         if not _is_admin(email_s):
             return jsonify({"error": "未授權"}), 403
 
