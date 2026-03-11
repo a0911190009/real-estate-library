@@ -91,7 +91,7 @@ BUYER_URL  = (os.environ.get("BUYER_URL") or "").strip()
 ADMIN_EMAILS = [e.strip() for e in (os.environ.get("ADMIN_EMAILS") or "").split(",") if e.strip()]
 SERVICE_API_KEY = (os.environ.get("SERVICE_API_KEY") or "").strip()
 TOKEN_SERIALIZER = URLSafeTimedSerializer(app.secret_key)
-TOKEN_MAX_AGE = 60
+TOKEN_MAX_AGE = 300  # 5 分鐘，容忍 Cloud Run cold start
 
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 GCS_BUCKET = os.environ.get("GCS_BUCKET", "")
