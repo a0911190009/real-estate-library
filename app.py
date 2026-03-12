@@ -5258,12 +5258,14 @@ OBJECTS_APP_HTML = """
           if (ddAdmin) { ddAdmin.href = adminUrl; ddAdmin.classList.remove('hidden'); }
         }
       }
-      // 買方管理連結（sidebar 和 tab bar，不放 dropdown）
-      if (BUYER_URL_JS) {
+      // 買方管理連結：透過 Portal /api/enter/buyer 跳轉，才能帶 token 自動登入
+      var buyerPortalBase = PORTAL_URL_JS ? PORTAL_URL_JS.replace(/\/$/, '') : '';
+      var buyerEnterUrl = buyerPortalBase ? buyerPortalBase + '/api/enter/buyer' : BUYER_URL_JS;
+      if (buyerEnterUrl) {
         var sbBuyer = document.getElementById('sb-buyer');
-        if (sbBuyer) { sbBuyer.href = BUYER_URL_JS; sbBuyer.target = 'tool-buyer'; sbBuyer.classList.remove('hidden'); }
+        if (sbBuyer) { sbBuyer.href = buyerEnterUrl; sbBuyer.target = 'tool-buyer'; sbBuyer.classList.remove('hidden'); }
         var tbBuyer = document.getElementById('tb-buyer');
-        if (tbBuyer) { tbBuyer.href = BUYER_URL_JS; tbBuyer.target = 'tool-buyer'; tbBuyer.classList.remove('hidden'); }
+        if (tbBuyer) { tbBuyer.href = buyerEnterUrl; tbBuyer.target = 'tool-buyer'; tbBuyer.classList.remove('hidden'); }
       }
     }).catch(function(){});
   })();
