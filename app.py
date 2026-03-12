@@ -83,8 +83,9 @@ _secret = os.environ.get("FLASK_SECRET_KEY", "")
 if not _secret and not os.environ.get("FLASK_DEBUG"):
     raise RuntimeError("FLASK_SECRET_KEY 未設定。生產環境必須設定此環境變數。")
 app.secret_key = _secret or "dev-only-insecure-key"
-app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-app.config["SESSION_COOKIE_SECURE"] = not os.environ.get("FLASK_DEBUG")
+# SameSite=None：Portal 跨站跳轉後瀏覽器才能正確帶 session cookie
+app.config["SESSION_COOKIE_SAMESITE"] = "None"
+app.config["SESSION_COOKIE_SECURE"] = True
 
 PORTAL_URL = (os.environ.get("PORTAL_URL") or "").strip()
 BUYER_URL  = (os.environ.get("BUYER_URL") or "").strip()

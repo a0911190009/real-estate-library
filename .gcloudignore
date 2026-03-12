@@ -11,3 +11,4 @@ venv/
 node_modules/
 .DS_Store
 README.md
+gunicorn.ctl
