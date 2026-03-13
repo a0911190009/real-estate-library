@@ -375,6 +375,126 @@ def _can_access(email, target_email, is_admin):
     return email == target_email or (is_admin and target_email)
 
 
+# ══════════════════════════════════════════
+#  組織（Org）功能
+# ══════════════════════════════════════════
+
+def _get_org_for_user(email):
+    """
+    查詢該 email 屬於哪個組織。
+    回傳 org dict（含 org_id、name、role）；若不屬於任何組織則回傳 None。
+    Firestore 路徑：orgs/{org_id}/members/{email}
+    """
+    if not email:
+        return None
+    db = _get_db()
+    if not db:
+        return None
+    try:
+        # 查詢所有 org 的 members 子集合裡是否有此 email
+        # 用 collectionGroup 查詢效率最好
+        members = db.collection_group("members").where("email", "==", email).limit(1).stream()
+        for member_doc in members:
+            role = member_doc.to_dict().get("role", "viewer")
+            # 路徑格式：orgs/{org_id}/members/{email}
+            org_ref = member_doc.reference.parent.parent
+            org_doc = org_ref.get()
+            if org_doc.exists:
+                org_data = org_doc.to_dict()
+                return {
+                    "org_id": org_doc.id,
+                    "name":   org_data.get("name", ""),
+                    "role":   role,
+                    "owner_email": org_data.get("owner_email", ""),
+                }
+    except Exception as e:
+        import logging
+        logging.warning("Library: _get_org_for_user 查詢失敗: %s", e)
+    return None
+
+
+def _get_user_role_in_org(org_id, email):
+    """
+    查詢某 email 在指定組織中的角色。
+    回傳 'admin' / 'editor' / 'viewer'，或 None（非成員）。
+    """
+    if not org_id or not email:
+        return None
+    db = _get_db()
+    if not db:
+        return None
+    try:
+        doc = db.collection("orgs").document(org_id).collection("members").document(email).get()
+        if doc.exists:
+            return doc.to_dict().get("role", "viewer")
+    except Exception as e:
+        import logging
+        logging.warning("Library: _get_user_role_in_org 查詢失敗: %s", e)
+    return None
+
+
+def _list_org_object_ids(org_id):
+    """列出組織物件庫的所有物件 ID。"""
+    db = _get_db()
+    if not db or not org_id:
+        return []
+    try:
+        docs = db.collection("orgs").document(org_id).collection("objects").select([]).stream()
+        return [doc.id for doc in docs]
+    except Exception as e:
+        import logging
+        logging.warning("Library: _list_org_object_ids 失敗: %s", e)
+        return []
+
+
+def _load_org_object(org_id, obj_id):
+    """讀取組織物件庫的一筆物件。"""
+    db = _get_db()
+    if not db or not org_id or not obj_id:
+        return None
+    try:
+        doc = db.collection("orgs").document(org_id).collection("objects").document(obj_id).get()
+        if doc.exists:
+            data = doc.to_dict()
+            data.pop("_id", None)
+            return data
+    except Exception as e:
+        import logging
+        logging.warning("Library: _load_org_object 失敗: %s", e)
+    return None
+
+
+def _save_org_object(org_id, obj_id, data):
+    """儲存組織物件庫的一筆物件。"""
+    db = _get_db()
+    if not db or not org_id or not obj_id:
+        return False
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    if "id" not in data:
+        data["id"] = obj_id
+    try:
+        db.collection("orgs").document(org_id).collection("objects").document(obj_id).set(data)
+        return True
+    except Exception as e:
+        import logging
+        logging.warning("Library: _save_org_object 失敗: %s", e)
+        return False
+
+
+def _delete_org_object(org_id, obj_id):
+    """刪除組織物件庫的一筆物件。"""
+    db = _get_db()
+    if not db or not org_id or not obj_id:
+        return False
+    try:
+        db.collection("orgs").document(org_id).collection("objects").document(obj_id).delete()
+        return True
+    except Exception as e:
+        import logging
+        logging.warning("Library: _delete_org_object 失敗: %s", e)
+        return False
+
+
 def _verify_service_key():
     """驗證 X-Service-Key 或 Authorization Bearer 與 SERVICE_API_KEY 一致（供 AD/Portal 後端呼叫）。"""
     if not SERVICE_API_KEY:
@@ -391,15 +511,17 @@ VALID_THEME_STYLES = ["navy", "forest", "amber", "minimal", "rose", "oled"]
 
 @app.route("/api/theme", methods=["GET"])
 def api_theme_get():
+    """讀取主題（與 Portal 共用 Firestore system_settings/theme），供跨工具同步。"""
     db = _get_db()
-    style, mode = "navy", None
+    style, mode = "navy", "system"
     if db:
         try:
             doc = db.collection("system_settings").document("theme").get()
             if doc.exists:
                 d = doc.to_dict()
-                style = d.get("style", "navy")
-                mode = d.get("mode")
+                style = d.get("style") or "navy"
+                if d.get("mode") in ("dark", "light", "system"):
+                    mode = d["mode"]
         except Exception:
             pass
     return jsonify({"style": style, "mode": mode})
@@ -469,15 +591,18 @@ def auth_logout():
 
 @app.route("/api/me", methods=["GET"])
 def api_me():
-    """回傳目前登入者基本資訊（供前端預設篩選用）。"""
+    """回傳目前登入者基本資訊（含組織資訊）。"""
     email, err = _require_user()
     if err:
         return jsonify({"error": err[0]}), err[1]
+    org = _get_org_for_user(email)
     return jsonify({
-        "email":   email,
-        "name":    session.get("user_name", ""),
-        "picture": session.get("user_picture", ""),
+        "email":    email,
+        "name":     session.get("user_name", ""),
+        "picture":  session.get("user_picture", ""),
         "is_admin": _is_admin(email),
+        # 組織資訊（若有）
+        "org": org,  # None 或 {org_id, name, role, owner_email}
     })
 
 
@@ -487,6 +612,38 @@ def api_objects_list():
     if err:
         return jsonify({"error": err[0]}), err[1]
     is_admin = _is_admin(email)
+
+    # 判斷要顯示「個人庫」還是「組織庫」
+    # ?mode=personal → 強制個人庫；?mode=org 或預設 → 若有組織則用組織庫
+    mode = request.args.get("mode", "").strip()  # "personal" 或 "org" 或 ""
+    org_info = _get_org_for_user(email)
+    use_org = org_info and mode != "personal"
+
+    if use_org:
+        org_id = org_info["org_id"]
+        ids = _list_org_object_ids(org_id)
+        items = []
+        for oid in sorted(ids, reverse=True):
+            obj = _load_org_object(org_id, oid)
+            if obj:
+                items.append({
+                    "id":           obj.get("id", oid),
+                    "custom_title": obj.get("custom_title", ""),
+                    "project_name": obj.get("project_name", ""),
+                    "address":      obj.get("address", ""),
+                    "created_at":   obj.get("created_at", ""),
+                    "updated_at":   obj.get("updated_at", ""),
+                    "owner_email":  obj.get("owner_email", ""),
+                })
+        return jsonify({
+            "items":       items,
+            "target_user": email,
+            "is_admin":    is_admin,
+            "org":         org_info,
+            "mode":        "org",
+        })
+
+    # 個人庫邏輯（原有）
     target = request.args.get("user", "").strip() or email
     if not _can_access(email, target, is_admin):
         return jsonify({"error": "無權限查看該用戶的物件"}), 403
@@ -510,15 +667,21 @@ def api_objects_list():
         obj = _load_object(target, oid)
         if obj:
             items.append({
-                "id": obj.get("id", oid),
+                "id":           obj.get("id", oid),
                 "custom_title": obj.get("custom_title", ""),
                 "project_name": obj.get("project_name", ""),
-                "address": obj.get("address", ""),
-                "created_at": obj.get("created_at", ""),
-                "updated_at": obj.get("updated_at", ""),
-                "owner_email": obj.get("owner_email", target),
+                "address":      obj.get("address", ""),
+                "created_at":   obj.get("created_at", ""),
+                "updated_at":   obj.get("updated_at", ""),
+                "owner_email":  obj.get("owner_email", target),
             })
-    return jsonify({"items": items, "target_user": target, "is_admin": is_admin})
+    return jsonify({
+        "items":       items,
+        "target_user": target,
+        "is_admin":    is_admin,
+        "org":         org_info,  # 告訴前端此人有組織（雖然現在看個人庫）
+        "mode":        "personal",
+    })
 
 
 @app.route("/api/users", methods=["GET"])
@@ -552,6 +715,16 @@ def api_objects_create():
     if err:
         return jsonify({"error": err[0]}), err[1]
     data = request.get_json() or {}
+
+    # 判斷要存入個人庫還是組織庫
+    mode = data.get("_mode", "").strip()  # "personal" 或 "org"
+    org_info = _get_org_for_user(email)
+    use_org = org_info and mode != "personal"
+
+    # 組織庫權限檢查：viewer 不能新增
+    if use_org and org_info.get("role") == "viewer":
+        return jsonify({"error": "你在此組織的權限為「只能查看」，無法新增物件"}), 403
+
     now = datetime.now()
     obj_id = now.strftime("%Y%m%d_%H%M%S")
     title = (data.get("custom_title") or data.get("project_name") or "未命名").strip()
@@ -569,8 +742,16 @@ def api_objects_create():
         else:
             obj[key] = obj.get(key, "")
     obj[AD_OUTPUTS_KEY] = data.get(AD_OUTPUTS_KEY, [])
+
+    if use_org:
+        org_id = org_info["org_id"]
+        obj["org_id"] = org_id
+        if _save_org_object(org_id, obj_id, obj):
+            return jsonify({"ok": True, "id": obj_id, "object": obj, "mode": "org"}), 201
+        return jsonify({"error": "儲存失敗"}), 500
+
     if _save_object(email, obj_id, obj):
-        return jsonify({"ok": True, "id": obj_id, "object": obj}), 201
+        return jsonify({"ok": True, "id": obj_id, "object": obj, "mode": "personal"}), 201
     return jsonify({"error": "儲存失敗"}), 500
 
 
@@ -670,6 +851,19 @@ def api_objects_get(obj_id):
     email, err = _require_user()
     if err:
         return jsonify({"error": err[0]}), err[1]
+
+    # 若有指定 org_id 參數，優先從組織庫讀取
+    org_id_param = request.args.get("org_id", "").strip()
+    if org_id_param:
+        role = _get_user_role_in_org(org_id_param, email)
+        if not role and not _is_admin(email):
+            return jsonify({"error": "無組織存取權限"}), 403
+        obj = _load_org_object(org_id_param, obj_id)
+        if not obj:
+            return jsonify({"error": "物件不存在"}), 404
+        return jsonify(obj)
+
+    # 一般個人庫邏輯
     target = request.args.get("user", "").strip() or email
     if not _can_access(email, target, _is_admin(email)):
         return jsonify({"error": "無權限"}), 403
@@ -684,13 +878,35 @@ def api_objects_update(obj_id):
     email, err = _require_user()
     if err:
         return jsonify({"error": err[0]}), err[1]
+    data = request.get_json() or {}
+
+    # 若有指定 org_id（body 或 query），優先更新組織庫
+    org_id_param = (data.get("_org_id") or request.args.get("org_id", "")).strip()
+    if org_id_param:
+        role = _get_user_role_in_org(org_id_param, email)
+        if not role and not _is_admin(email):
+            return jsonify({"error": "無組織存取權限"}), 403
+        if role == "viewer":
+            return jsonify({"error": "你在此組織的權限為「只能查看」，無法編輯"}), 403
+        obj = _load_org_object(org_id_param, obj_id)
+        if not obj:
+            return jsonify({"error": "物件不存在"}), 404
+        for key, _label, _typ in PROPERTY_FIELDS + EXTRA_FIELDS:
+            if key in data:
+                obj[key] = data[key]
+        if AD_OUTPUTS_KEY in data:
+            obj[AD_OUTPUTS_KEY] = data[AD_OUTPUTS_KEY]
+        if _save_org_object(org_id_param, obj_id, obj):
+            return jsonify({"ok": True, "object": obj})
+        return jsonify({"error": "儲存失敗"}), 500
+
+    # 個人庫邏輯
     target = request.args.get("user", "").strip() or email
     if not _can_access(email, target, _is_admin(email)):
         return jsonify({"error": "無權限"}), 403
     obj = _load_object(target, obj_id)
     if not obj:
         return jsonify({"error": "物件不存在"}), 404
-    data = request.get_json() or {}
     for key, _label, _typ in PROPERTY_FIELDS + EXTRA_FIELDS:
         if key in data:
             obj[key] = data[key]
@@ -706,12 +922,217 @@ def api_objects_delete(obj_id):
     email, err = _require_user()
     if err:
         return jsonify({"error": err[0]}), err[1]
+
+    # 若有 org_id，從組織庫刪除
+    org_id_param = request.args.get("org_id", "").strip()
+    if org_id_param:
+        role = _get_user_role_in_org(org_id_param, email)
+        if not role and not _is_admin(email):
+            return jsonify({"error": "無組織存取權限"}), 403
+        if role not in ("admin",) and not _is_admin(email):
+            return jsonify({"error": "僅組織管理員可刪除物件"}), 403
+        if _delete_org_object(org_id_param, obj_id):
+            return jsonify({"ok": True})
+        return jsonify({"error": "刪除失敗或物件不存在"}), 404
+
+    # 個人庫邏輯
     target = request.args.get("user", "").strip() or email
     if not _can_access(email, target, _is_admin(email)):
         return jsonify({"error": "無權限"}), 403
     if _delete_object(target, obj_id):
         return jsonify({"ok": True})
     return jsonify({"error": "刪除失敗或物件不存在"}), 404
+
+
+# ──────────────────────────────────────────
+#  組織成員管理 API
+# ──────────────────────────────────────────
+
+@app.route("/api/org/info", methods=["GET"])
+def api_org_info():
+    """回傳目前用戶的組織資訊（成員列表供管理員用）。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    org_info = _get_org_for_user(email)
+    if not org_info:
+        return jsonify({"org": None})
+    org_id = org_info["org_id"]
+    db = _get_db()
+    members = []
+    if db:
+        try:
+            docs = db.collection("orgs").document(org_id).collection("members").stream()
+            for doc in docs:
+                d = doc.to_dict()
+                members.append({
+                    "email":     doc.id,
+                    "role":      d.get("role", "viewer"),
+                    "joined_at": d.get("joined_at", ""),
+                })
+        except Exception as e:
+            import logging
+            logging.warning("api_org_info: 讀取成員失敗: %s", e)
+    return jsonify({"org": org_info, "members": members})
+
+
+@app.route("/api/org/members", methods=["GET"])
+def api_org_members_list():
+    """列出組織成員（需為組織 admin 或系統管理員）。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    org_info = _get_org_for_user(email)
+    if not org_info:
+        return jsonify({"error": "你不屬於任何組織"}), 404
+    if org_info.get("role") != "admin" and not _is_admin(email):
+        return jsonify({"error": "僅組織管理員可查看成員列表"}), 403
+    org_id = org_info["org_id"]
+    db = _get_db()
+    members = []
+    if db:
+        try:
+            docs = db.collection("orgs").document(org_id).collection("members").stream()
+            for doc in docs:
+                d = doc.to_dict()
+                members.append({
+                    "email":     doc.id,
+                    "role":      d.get("role", "viewer"),
+                    "joined_at": d.get("joined_at", ""),
+                })
+        except Exception as e:
+            import logging
+            logging.warning("api_org_members_list: 失敗: %s", e)
+            return jsonify({"error": "讀取成員列表失敗"}), 500
+    return jsonify({"org": org_info, "members": members})
+
+
+@app.route("/api/org/members", methods=["POST"])
+def api_org_members_add():
+    """邀請成員加入組織。Body: { "email": "xxx@yyy.com", "role": "editor" }"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    org_info = _get_org_for_user(email)
+    if not org_info:
+        return jsonify({"error": "你不屬於任何組織"}), 404
+    if org_info.get("role") != "admin" and not _is_admin(email):
+        return jsonify({"error": "僅組織管理員可邀請成員"}), 403
+    data = request.get_json() or {}
+    target_email = (data.get("email") or "").strip().lower()
+    role = (data.get("role") or "editor").strip()
+    if not target_email or "@" not in target_email:
+        return jsonify({"error": "請輸入有效的 email"}), 400
+    if role not in ("admin", "editor", "viewer"):
+        return jsonify({"error": "角色必須是 admin / editor / viewer"}), 400
+    org_id = org_info["org_id"]
+    db = _get_db()
+    if not db:
+        return jsonify({"error": "Firestore 未初始化"}), 500
+    try:
+        db.collection("orgs").document(org_id).collection("members").document(target_email).set({
+            "email":     target_email,
+            "role":      role,
+            "joined_at": datetime.now(timezone.utc).isoformat(),
+            "invited_by": email,
+        })
+        return jsonify({"ok": True, "email": target_email, "role": role})
+    except Exception as e:
+        import logging
+        logging.warning("api_org_members_add: 失敗: %s", e)
+        return jsonify({"error": "新增成員失敗"}), 500
+
+
+@app.route("/api/org/members", methods=["DELETE"])
+def api_org_members_remove():
+    """移除組織成員。Body: { "email": "xxx@yyy.com" }"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    org_info = _get_org_for_user(email)
+    if not org_info:
+        return jsonify({"error": "你不屬於任何組織"}), 404
+    if org_info.get("role") != "admin" and not _is_admin(email):
+        return jsonify({"error": "僅組織管理員可移除成員"}), 403
+    data = request.get_json() or {}
+    target_email = (data.get("email") or "").strip().lower()
+    if not target_email:
+        return jsonify({"error": "缺少 email"}), 400
+    # 不能移除自己（唯一管理員）
+    if target_email == email:
+        return jsonify({"error": "不能移除自己，請先轉讓管理員再離開"}), 400
+    org_id = org_info["org_id"]
+    db = _get_db()
+    if not db:
+        return jsonify({"error": "Firestore 未初始化"}), 500
+    try:
+        db.collection("orgs").document(org_id).collection("members").document(target_email).delete()
+        return jsonify({"ok": True})
+    except Exception as e:
+        import logging
+        logging.warning("api_org_members_remove: 失敗: %s", e)
+        return jsonify({"error": "移除成員失敗"}), 500
+
+
+@app.route("/api/org/members/role", methods=["PATCH"])
+def api_org_members_update_role():
+    """更新成員角色。Body: { "email": "xxx@yyy.com", "role": "viewer" }"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    org_info = _get_org_for_user(email)
+    if not org_info:
+        return jsonify({"error": "你不屬於任何組織"}), 404
+    if org_info.get("role") != "admin" and not _is_admin(email):
+        return jsonify({"error": "僅組織管理員可修改角色"}), 403
+    data = request.get_json() or {}
+    target_email = (data.get("email") or "").strip().lower()
+    new_role = (data.get("role") or "").strip()
+    if not target_email or new_role not in ("admin", "editor", "viewer"):
+        return jsonify({"error": "缺少 email 或角色無效"}), 400
+    org_id = org_info["org_id"]
+    db = _get_db()
+    if not db:
+        return jsonify({"error": "Firestore 未初始化"}), 500
+    try:
+        db.collection("orgs").document(org_id).collection("members").document(target_email).set(
+            {"role": new_role}, merge=True
+        )
+        return jsonify({"ok": True, "email": target_email, "role": new_role})
+    except Exception as e:
+        import logging
+        logging.warning("api_org_members_update_role: 失敗: %s", e)
+        return jsonify({"error": "更新角色失敗"}), 500
+
+
+@app.route("/api/org/transfer-objects", methods=["POST"])
+def api_org_transfer_objects():
+    """
+    把自己個人庫的物件複製到組織庫。
+    Body: { "confirm": true }（防誤觸）
+    """
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    org_info = _get_org_for_user(email)
+    if not org_info:
+        return jsonify({"error": "你不屬於任何組織"}), 404
+    data = request.get_json() or {}
+    if not data.get("confirm"):
+        return jsonify({"error": "請傳入 confirm: true 以確認轉移"}), 400
+    org_id = org_info["org_id"]
+    ids = _list_user_ids(email)
+    copied, failed = 0, 0
+    for oid in ids:
+        obj = _load_object(email, oid)
+        if obj:
+            obj["org_id"] = org_id
+            if _save_org_object(org_id, oid, obj):
+                copied += 1
+            else:
+                failed += 1
+    return jsonify({"ok": True, "copied": copied, "failed": failed,
+                    "message": f"已複製 {copied} 筆物件到組織庫，失敗 {failed} 筆"})
 
 
 def _field_key_label():
@@ -2966,12 +3387,30 @@ OBJECTS_APP_HTML = """
       class="tab-btn hidden flex-1 py-2 text-sm font-medium border-b-2 border-transparent transition" style="color:var(--txs);">
       ⚙️ 設定
     </button>
+    <!-- 組織設定 tab：屬於組織的人才看得到（由 JS 控制顯示） -->
+    <button id="tab-org" onclick="switchTab('org')"
+      class="tab-btn hidden flex-1 py-2 text-sm font-medium border-b-2 border-transparent transition" style="color:var(--txs);">
+      🏢 組織
+    </button>
   </div>
 </header>
 
 <!-- ══ 我的物件分頁 ══ -->
 <div id="pane-my" class="max-w-3xl mx-auto px-4 py-6">
   __ADMIN_BAR__
+
+  <!-- 個人庫 / 組織庫 切換下拉（屬於組織時才顯示） -->
+  <div id="lib-mode-bar" class="hidden flex items-center gap-3 px-3 py-2 mb-4 rounded-xl text-sm" style="background:var(--bg-t);border:1px solid var(--bd);">
+    <span style="color:var(--txs);">📂 查看：</span>
+    <select id="lib-mode-select" onchange="libSwitchMode(this.value)"
+      class="rounded-lg px-3 py-1 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
+      <option value="org">🏢 組織物件庫</option>
+      <option value="personal">👤 個人物件庫</option>
+    </select>
+    <span id="lib-mode-org-name" class="text-xs" style="color:var(--txs);"></span>
+    <span id="lib-mode-role-badge" class="text-xs px-2 py-0.5 rounded-full" style="background:var(--acs);color:var(--ac);"></span>
+  </div>
+
   <div id="listPanel" class="space-y-3"></div>
 
   <!-- 編輯物件面板（原地編輯用，新增改由 Modal） -->
@@ -3357,6 +3796,68 @@ OBJECTS_APP_HTML = """
   </div>
 </div>
 
+<!-- ══ 組織設定分頁（屬於組織的人才看得到）══ -->
+<div id="pane-org" style="display:none" class="max-w-2xl mx-auto px-4 py-6">
+  <h2 class="font-bold text-lg mb-1" style="color:var(--tx);">🏢 組織設定</h2>
+  <p id="org-panel-desc" class="text-sm mb-5" style="color:var(--txs);">載入中…</p>
+
+  <!-- 成員列表 -->
+  <div class="rounded-2xl p-5 mb-6" style="background:var(--bg-t);border:1px solid var(--bd);">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <h3 class="font-semibold" style="color:var(--tx);">👥 組織成員</h3>
+        <p class="text-xs mt-0.5" style="color:var(--txs);">管理員可邀請成員並設定其操作權限</p>
+      </div>
+      <!-- 邀請按鈕只有 org admin 才看得到 -->
+      <button id="btn-org-invite" onclick="orgInviteOpen()" class="hidden px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition">
+        ＋ 邀請成員
+      </button>
+    </div>
+
+    <!-- 邀請表單（預設隱藏） -->
+    <div id="org-invite-form" class="hidden rounded-xl p-4 mb-4" style="background:var(--bg-h);border:1px solid var(--bd);">
+      <div class="grid grid-cols-2 gap-3 mb-3">
+        <div>
+          <label class="text-xs block mb-1" style="color:var(--txs);">成員 Email</label>
+          <input id="org-invite-email" type="email" placeholder="如：colleague@gmail.com"
+            class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-t);border:1px solid var(--bd);color:var(--tx);">
+        </div>
+        <div>
+          <label class="text-xs block mb-1" style="color:var(--txs);">角色</label>
+          <select id="org-invite-role"
+            class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-t);border:1px solid var(--bd);color:var(--tx);">
+            <option value="editor">✏️ 編輯者（可新增/編輯）</option>
+            <option value="viewer">👀 觀察者（只能查看）</option>
+            <option value="admin">🛡️ 管理員（全部操作）</option>
+          </select>
+        </div>
+      </div>
+      <div class="flex gap-2">
+        <button onclick="orgInviteSave()"
+          class="px-4 py-1.5 rounded-lg bg-green-600 hover:bg-green-500 text-white text-xs font-semibold transition">邀請</button>
+        <button onclick="orgInviteClose()"
+          class="px-4 py-1.5 rounded-lg text-xs transition" style="background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);">取消</button>
+      </div>
+    </div>
+
+    <!-- 成員列表 -->
+    <div id="org-member-list" class="space-y-2">
+      <p class="text-sm text-center py-4" style="color:var(--txm);">載入中…</p>
+    </div>
+  </div>
+
+  <!-- 個人庫轉移到組織庫 -->
+  <div id="org-transfer-section" class="hidden rounded-2xl p-5 mb-6" style="background:var(--bg-t);border:1px solid var(--bd);">
+    <h3 class="font-semibold mb-1" style="color:var(--tx);">📦 轉移個人物件到組織庫</h3>
+    <p class="text-xs mb-3" style="color:var(--txs);">把你個人庫的物件複製一份到組織共用庫。原始個人庫資料不受影響。</p>
+    <button onclick="orgTransferObjects()"
+      class="px-4 py-2 rounded-lg text-white text-sm font-semibold transition" style="background:#d97706;">
+      📦 開始複製到組織庫
+    </button>
+    <p id="org-transfer-result" class="text-xs mt-2" style="color:var(--txs);"></p>
+  </div>
+</div>
+
 <!-- 公司物件詳情 Modal -->
 <div id="cp-detail-modal" role="dialog" aria-modal="true"
   class="hidden fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
@@ -3461,6 +3962,162 @@ OBJECTS_APP_HTML = """
   if (isAdmin) {
     var settingsTab = document.getElementById('tab-settings');
     if (settingsTab) settingsTab.classList.remove('hidden');
+  }
+
+  // ══ 組織（Org）功能 JS ══
+  var _orgInfo = null;       // 目前使用者的 org 資訊（由 /api/me 填入）
+  var _libMode = 'org';      // 目前顯示模式：'org' 或 'personal'
+
+  // 從 /api/me 拿 org 資訊，初始化庫模式
+  fetch('/api/me').then(function(r){ return r.json(); }).then(function(u) {
+    if (u.error || !u.org) return;
+    _orgInfo = u.org;
+    // 顯示組織 tab
+    var orgTab = document.getElementById('tab-org');
+    if (orgTab) orgTab.classList.remove('hidden');
+    // 顯示庫切換下拉
+    var modeBar = document.getElementById('lib-mode-bar');
+    if (modeBar) modeBar.classList.remove('hidden');
+    // 更新 org 名稱和角色
+    var orgName = document.getElementById('lib-mode-org-name');
+    var roleBadge = document.getElementById('lib-mode-role-badge');
+    if (orgName) orgName.textContent = u.org.name || '';
+    var roleMap = { admin: '管理員', editor: '編輯者', viewer: '觀察者' };
+    if (roleBadge) roleBadge.textContent = roleMap[u.org.role] || u.org.role;
+    // 預設顯示組織庫（已在 loadObjects 內處理 mode=org）
+  }).catch(function(){});
+
+  // 切換個人庫 / 組織庫
+  function libSwitchMode(mode) {
+    _libMode = mode;
+    loadObjects();
+  }
+
+  // 切換分頁（擴充原 switchTab 支援 org 分頁）
+  var _origSwitchTab = typeof switchTab === 'function' ? switchTab : null;
+
+  // ══ 組織成員管理 UI ══
+  function orgLoadMembers() {
+    var list = document.getElementById('org-member-list');
+    if (!list) return;
+    list.innerHTML = '<p class="text-sm text-center py-4" style="color:var(--txm);">載入中…</p>';
+    fetch('/api/org/members')
+      .then(function(r){ return r.json(); })
+      .then(function(data) {
+        if (data.error) {
+          list.innerHTML = '<p style="color:var(--dg);font-size:0.875rem;">' + escapeHtml(data.error) + '</p>';
+          return;
+        }
+        _orgInfo = data.org || _orgInfo;
+        var members = data.members || [];
+        // 更新面板說明
+        var desc = document.getElementById('org-panel-desc');
+        if (desc && data.org) {
+          desc.textContent = '組織名稱：' + (data.org.name || '') + '　|　你的角色：' + ({ admin:'管理員', editor:'編輯者', viewer:'觀察者' }[data.org.role] || data.org.role);
+        }
+        // 顯示邀請按鈕（管理員才有）
+        var inviteBtn = document.getElementById('btn-org-invite');
+        if (inviteBtn && data.org && data.org.role === 'admin') inviteBtn.classList.remove('hidden');
+        // 顯示轉移區塊（管理員才有）
+        var transferSection = document.getElementById('org-transfer-section');
+        if (transferSection && data.org && data.org.role === 'admin') transferSection.classList.remove('hidden');
+
+        if (!members.length) {
+          list.innerHTML = '<p class="text-sm text-center py-4" style="color:var(--txm);">尚無成員</p>';
+          return;
+        }
+        var isOrgAdmin = data.org && data.org.role === 'admin';
+        var html = '';
+        var roleLabel = { admin: '🛡️ 管理員', editor: '✏️ 編輯者', viewer: '👀 觀察者' };
+        members.forEach(function(m) {
+          html += '<div class="flex items-center justify-between rounded-xl px-4 py-2.5" style="background:var(--bg-h);">';
+          html += '<div>';
+          html += '<span class="text-sm font-medium" style="color:var(--tx);">' + escapeHtml(m.email) + '</span>';
+          html += '<span class="text-xs ml-3 px-2 py-0.5 rounded-full" style="background:var(--acs);color:var(--ac);">' + (roleLabel[m.role] || m.role) + '</span>';
+          if (m.joined_at) html += '<span class="text-xs ml-2" style="color:var(--txm);">加入：' + escapeHtml(m.joined_at.slice(0,10)) + '</span>';
+          html += '</div>';
+          if (isOrgAdmin) {
+            html += '<div class="flex gap-2">';
+            // 角色下拉
+            html += '<select onchange="orgChangeRole(\'' + escapeHtml(m.email) + '\',this.value)" class="text-xs rounded px-2 py-1" style="background:var(--bg-t);border:1px solid var(--bd);color:var(--tx);">';
+            ['admin','editor','viewer'].forEach(function(r) {
+              html += '<option value="' + r + '"' + (m.role === r ? ' selected' : '') + '>' + (roleLabel[r]||r) + '</option>';
+            });
+            html += '</select>';
+            html += '<button onclick="orgRemoveMember(\'' + escapeHtml(m.email) + '\')" class="text-xs px-2 py-1 rounded transition" style="color:var(--dg);border:1px solid var(--bd);">移除</button>';
+            html += '</div>';
+          }
+          html += '</div>';
+        });
+        list.innerHTML = html;
+      })
+      .catch(function(e) {
+        if (list) list.innerHTML = '<p style="color:var(--dg);font-size:0.875rem;">載入失敗</p>';
+      });
+  }
+
+  function orgInviteOpen() {
+    var form = document.getElementById('org-invite-form');
+    if (form) form.classList.remove('hidden');
+    var emailEl = document.getElementById('org-invite-email');
+    if (emailEl) emailEl.focus();
+  }
+  function orgInviteClose() {
+    var form = document.getElementById('org-invite-form');
+    if (form) form.classList.add('hidden');
+    var emailEl = document.getElementById('org-invite-email');
+    if (emailEl) emailEl.value = '';
+  }
+  function orgInviteSave() {
+    var email = (document.getElementById('org-invite-email') || {}).value || '';
+    var role  = (document.getElementById('org-invite-role') || {}).value || 'editor';
+    if (!email || !email.includes('@')) { toast('請輸入有效的 Email', 'error'); return; }
+    fetch('/api/org/members', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email.trim().toLowerCase(), role: role })
+    }).then(function(r){ return r.json(); }).then(function(d) {
+      if (d.error) { toast('邀請失敗：' + d.error, 'error'); return; }
+      toast('已邀請 ' + email, 'success');
+      orgInviteClose();
+      orgLoadMembers();
+    }).catch(function(){ toast('邀請失敗，請重試', 'error'); });
+  }
+  function orgRemoveMember(targetEmail) {
+    if (!confirm('確定要移除成員 ' + targetEmail + '？')) return;
+    fetch('/api/org/members', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: targetEmail })
+    }).then(function(r){ return r.json(); }).then(function(d) {
+      if (d.error) { toast('移除失敗：' + d.error, 'error'); return; }
+      toast('已移除 ' + targetEmail, 'success');
+      orgLoadMembers();
+    }).catch(function(){ toast('移除失敗，請重試', 'error'); });
+  }
+  function orgChangeRole(targetEmail, newRole) {
+    fetch('/api/org/members/role', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: targetEmail, role: newRole })
+    }).then(function(r){ return r.json(); }).then(function(d) {
+      if (d.error) { toast('更新角色失敗：' + d.error, 'error'); return; }
+      toast('已更新角色', 'success');
+    }).catch(function(){ toast('更新失敗，請重試', 'error'); });
+  }
+  function orgTransferObjects() {
+    if (!confirm('確定要把你的個人物件庫複製到組織庫？（原資料不受影響）')) return;
+    var resultEl = document.getElementById('org-transfer-result');
+    if (resultEl) resultEl.textContent = '複製中…';
+    fetch('/api/org/transfer-objects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: true })
+    }).then(function(r){ return r.json(); }).then(function(d) {
+      if (d.error) { toast('複製失敗：' + d.error, 'error'); if (resultEl) resultEl.textContent = '失敗：' + d.error; return; }
+      toast(d.message || '複製完成', 'success');
+      if (resultEl) resultEl.textContent = d.message || '';
+    }).catch(function(){ toast('複製失敗，請重試', 'error'); });
   }
 
   // ══ 經紀人 Email 管理 ══
@@ -3591,17 +4248,35 @@ OBJECTS_APP_HTML = """
 
   function escapeHtml(s) { if (s == null) return ''; var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
   function targetUser() { return isAdmin && document.getElementById('userSelect') ? document.getElementById('userSelect').value : ''; }
-  function apiUrl(path) { var u = targetUser() ? '?user=' + encodeURIComponent(targetUser()) : ''; return path + u; }
+  function apiUrl(path) {
+    var params = [];
+    var u = targetUser();
+    if (u) params.push('user=' + encodeURIComponent(u));
+    // 加入 mode 參數，支援組織庫 / 個人庫切換
+    if (path === '/api/objects' && typeof _libMode !== 'undefined') {
+      params.push('mode=' + encodeURIComponent(_libMode));
+    }
+    return path + (params.length ? '?' + params.join('&') : '');
+  }
+
+  // loadObjects 別名（供組織庫切換使用）
+  function loadObjects() { loadList(); }
 
   // ── 載入列表 ──
+  // _currentOrgId：目前列表是否屬於組織庫（儲存 org_id 以便後續操作傳入）
+  var _currentOrgId = null;
+
   function loadList() {
     fetch(apiUrl('/api/objects')).then(r => r.json()).then(data => {
       if (data.error) { toast(data.error, 'error'); return; }
+      // 記錄目前是否在組織庫模式
+      _currentOrgId = (data.mode === 'org' && data.org) ? data.org.org_id : null;
       var el = document.getElementById('listPanel');
       el.innerHTML = '';
       var items = data.items || [];
       if (!items.length) {
-        el.innerHTML = '<p class="text-center py-8" style="color:var(--txm);">尚無物件，點「＋ 建立物件資訊」開始建立。</p>';
+        var emptyMsg = _currentOrgId ? '組織庫目前沒有物件。' : '尚無物件，點「＋ 建立物件資訊」開始建立。';
+        el.innerHTML = '<p class="text-center py-8" style="color:var(--txm);">' + emptyMsg + '</p>';
         return;
       }
       items.forEach(function(o) {
@@ -3905,19 +4580,27 @@ OBJECTS_APP_HTML = """
     if (!payload.project_name && !payload.address) {
       toast('至少填寫物件名稱或地址', 'error'); return;
     }
+    // 傳入目前模式，讓後端決定存個人庫還是組織庫
+    if (typeof _libMode !== 'undefined') payload._mode = _libMode;
     try {
-      var r = await fetch(apiUrl('/api/objects'), {
+      var r = await fetch('/api/objects', {
         method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload),
       });
       var d = await r.json();
       if (d.ok || d.id) {
-        toast('物件已儲存', 'success');
+        toast(d.mode === 'org' ? '物件已儲存至組織庫' : '物件已儲存', 'success');
         closeNewModal();
         loadList();
       } else {
         toast('儲存失敗：' + (d.error || ''), 'error');
       }
     } catch (e) { toast('連線失敗：' + (e.message || ''), 'error'); }
+  }
+
+  // ── 取得物件 API URL（自動帶 org_id 或 user 參數）──
+  function objApiUrl(id) {
+    if (_currentOrgId) return '/api/objects/' + encodeURIComponent(id) + '?org_id=' + encodeURIComponent(_currentOrgId);
+    return apiUrl('/api/objects/' + encodeURIComponent(id));
   }
 
   // ── 編輯物件（沿用舊表單） ──
@@ -3928,7 +4611,7 @@ OBJECTS_APP_HTML = """
     document.getElementById('formTitle').textContent = '編輯物件';
     document.getElementById('objForm').reset();
     document.getElementById('objId').value = id;
-    fetch(apiUrl('/api/objects/' + encodeURIComponent(id))).then(r => r.json()).then(o => {
+    fetch(objApiUrl(id)).then(r => r.json()).then(o => {
       if (o.error) { toast(o.error, 'error'); return; }
       fields.forEach(function(kv){ var k=kv[0]; var el=document.getElementById('f_'+k); if(el) el.value = o[k]!=null ? o[k] : ''; });
       document.getElementById('objId').value = o.id || id;
@@ -3947,14 +4630,16 @@ OBJECTS_APP_HTML = """
     var payload = {};
     fields.forEach(function(kv){ var k=kv[0]; var el=document.getElementById('f_'+k); if(el) payload[k]=el.value; });
     if (id) payload.id = id;
-    fetch(apiUrl('/api/objects/' + encodeURIComponent(id)), {
+    // 組織庫模式：在 body 帶 _org_id
+    if (_currentOrgId) payload._org_id = _currentOrgId;
+    fetch(objApiUrl(id), {
       method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
     }).then(r => r.json()).then(function(d){ if (d.error) toast(d.error, 'error'); else hideForm(); }).catch(function(){ toast('儲存失敗', 'error'); });
   };
 
   // ── 查看詳情 ──
   function viewDetail(id) {
-    fetch(apiUrl('/api/objects/' + encodeURIComponent(id))).then(r => r.json()).then(o => {
+    fetch(objApiUrl(id)).then(r => r.json()).then(o => {
       if (o.error) { toast(o.error, 'error'); return; }
       window._detailId = id;
       document.getElementById('listPanel').classList.add('hidden');
@@ -3983,7 +4668,10 @@ OBJECTS_APP_HTML = """
 
   function delObj(id) {
     if (!confirm('確定刪除此物件？')) return;
-    fetch(apiUrl('/api/objects/' + encodeURIComponent(id)), { method: 'DELETE' }).then(r => r.json()).then(function(d){
+    var delUrl = _currentOrgId
+      ? '/api/objects/' + encodeURIComponent(id) + '?org_id=' + encodeURIComponent(_currentOrgId)
+      : apiUrl('/api/objects/' + encodeURIComponent(id));
+    fetch(delUrl, { method: 'DELETE' }).then(r => r.json()).then(function(d){
       if (d.error) toast(d.error, 'error'); else { toast('已刪除', 'success'); loadList(); }
     });
   }
@@ -4049,6 +4737,7 @@ OBJECTS_APP_HTML = """
     var paneMyEl       = document.getElementById('pane-my');
     var paneCompanyEl  = document.getElementById('pane-company');
     var paneSettingsEl = document.getElementById('pane-settings');
+    var paneOrgEl      = document.getElementById('pane-org');
     var btnNewObj       = document.getElementById('btn-new-obj');
     var btnNewObjMobile = document.getElementById('btn-new-obj-mobile');
 
@@ -4056,6 +4745,7 @@ OBJECTS_APP_HTML = """
     if (paneMyEl)       paneMyEl.style.display       = 'none';
     if (paneCompanyEl)  paneCompanyEl.style.display  = 'none';
     if (paneSettingsEl) paneSettingsEl.style.display = 'none';
+    if (paneOrgEl)      paneOrgEl.style.display      = 'none';
     if (btnNewObj)       btnNewObj.style.display       = 'none';
     if (btnNewObjMobile) btnNewObjMobile.style.display = 'none';
 
@@ -4072,6 +4762,9 @@ OBJECTS_APP_HTML = """
     } else if (tab === 'settings') {
       if (paneSettingsEl) paneSettingsEl.style.display = 'block';
       agentEmailLoad();  // 進入設定頁自動載入列表
+    } else if (tab === 'org') {
+      if (paneOrgEl) paneOrgEl.style.display = 'block';
+      orgLoadMembers();  // 進入組織設定頁自動載入成員列表
     }
 
     // 分頁按鈕樣式
@@ -5316,7 +6009,9 @@ OBJECTS_APP_HTML = """
       var sys = window.matchMedia('(prefers-color-scheme: dark)').matches;
       var eff = _mode === 'system' ? (sys ? 'dark' : 'light') : _mode;
       if (DARK_ONLY.indexOf(_style) >= 0) eff = 'dark';
-      document.body.setAttribute('data-theme', (STYLE_MODES[_style] || STYLE_MODES.navy)[eff]);
+      var themeVal = (STYLE_MODES[_style] || STYLE_MODES.navy)[eff];
+      document.documentElement.setAttribute('data-theme', themeVal);
+      document.body.setAttribute('data-theme', themeVal);
       ['dark','light','system'].forEach(function(m) {
         var btn = document.getElementById('tp-btn-' + m);
         if (btn) btn.classList.toggle('active', m === _mode);
@@ -5350,25 +6045,27 @@ OBJECTS_APP_HTML = """
       }).catch(function(){});
     };
 
-    // 立即套用快取防閃白
+    // 立即套用快取防閃白（html + body 都設，與其他工具一致）
     (function() {
       var s = localStorage.getItem('up_style') || 'navy';
       var m = localStorage.getItem('up_mode') || 'system';
       var sys = window.matchMedia('(prefers-color-scheme: dark)').matches;
       var eff = m === 'system' ? (sys ? 'dark' : 'light') : m;
       if (DARK_ONLY.indexOf(s) >= 0) eff = 'dark';
-      document.body.setAttribute('data-theme', (STYLE_MODES[s] || STYLE_MODES.navy)[eff]);
+      var themeVal = (STYLE_MODES[s] || STYLE_MODES.navy)[eff];
+      document.documentElement.setAttribute('data-theme', themeVal);
+      document.body.setAttribute('data-theme', themeVal);
     })();
 
     document.addEventListener('DOMContentLoaded', function() {
       _mode = localStorage.getItem('up_mode') || 'system';
       _style = localStorage.getItem('up_style') || 'navy';
       _applyTheme();
-      // 無條件從後台讀取 style 和 mode，確保跨工具同步
+      // 無條件從 Firestore 讀取 style 和 mode，與 Portal/其他工具同步
       fetch('/api/theme').then(function(r){ return r.json(); }).then(function(d) {
         var changed = false;
         if (d.style && d.style !== _style) { _style = d.style; localStorage.setItem('up_style', _style); changed = true; }
-        if (d.mode && d.mode !== _mode) { _mode = d.mode; localStorage.setItem('up_mode', _mode); changed = true; }
+        if (d.mode != null && d.mode !== _mode) { _mode = d.mode; localStorage.setItem('up_mode', _mode); changed = true; }
         if (changed) _applyTheme();
       }).catch(function(){});
       // 管理員顯示儲存按鈕
