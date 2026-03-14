@@ -4076,13 +4076,13 @@ OBJECTS_APP_HTML = """
           html += '</div>';
           if (isOrgAdmin) {
             html += '<div class="flex gap-2">';
-            // 角色下拉
-            html += '<select onchange="orgChangeRole(\'' + escapeHtml(m.email) + '\',this.value)" class="text-xs rounded px-2 py-1" style="background:var(--bg-t);border:1px solid var(--bd);color:var(--tx);">';
+            // 角色下拉：用 data-email 傳遞，避免引號問題
+            html += '<select data-email="' + escapeHtml(m.email) + '" onchange="orgChangeRole(this.dataset.email,this.value)" class="text-xs rounded px-2 py-1" style="background:var(--bg-t);border:1px solid var(--bd);color:var(--tx);">';
             ['admin','editor','viewer'].forEach(function(r) {
               html += '<option value="' + r + '"' + (m.role === r ? ' selected' : '') + '>' + (roleLabel[r]||r) + '</option>';
             });
             html += '</select>';
-            html += '<button onclick="orgRemoveMember(\'' + escapeHtml(m.email) + '\')" class="text-xs px-2 py-1 rounded transition" style="color:var(--dg);border:1px solid var(--bd);">移除</button>';
+            html += '<button data-email="' + escapeHtml(m.email) + '" onclick="orgRemoveMember(this.dataset.email)" class="text-xs px-2 py-1 rounded transition" style="color:var(--dg);border:1px solid var(--bd);">移除</button>';
             html += '</div>';
           }
           html += '</div>';
