@@ -3965,27 +3965,42 @@ OBJECTS_APP_HTML = """
   }
 
   // ══ 組織（Org）功能 JS ══
-  var _orgInfo = null;       // 目前使用者的 org 資訊（由 /api/me 填入）
-  var _libMode = 'org';      // 目前顯示模式：'org' 或 'personal'
+  var _orgInfo = null;           // 目前使用者的 org 資訊（由 /api/me 填入）
+  var _libMode = 'personal';     // 預設個人庫，確認有組織後才切換為 'org'
+  var _orgInfoLoaded = false;    // 是否已完成 org 查詢（防止 loadList 在查詢前就跑）
 
   // 從 /api/me 拿 org 資訊，初始化庫模式
   fetch('/api/me').then(function(r){ return r.json(); }).then(function(u) {
-    if (u.error || !u.org) return;
+    if (_orgInfoLoaded) return;  // fallback timer 已先觸發，不重複載入
+    _orgInfoLoaded = true;
+    clearTimeout(_loadListFallbackTimer);
+    if (u.error || !u.org) {
+      // 沒有組織，保持個人庫模式載入
+      loadList();
+      return;
+    }
     _orgInfo = u.org;
+    _libMode = 'org';  // 確認有組織後才切成組織庫
     // 顯示組織 tab
     var orgTab = document.getElementById('tab-org');
     if (orgTab) orgTab.classList.remove('hidden');
     // 顯示庫切換下拉
     var modeBar = document.getElementById('lib-mode-bar');
-    if (modeBar) modeBar.classList.remove('hidden');
+    if (modeBar) { modeBar.classList.remove('hidden'); modeBar.style.display = 'flex'; }
     // 更新 org 名稱和角色
     var orgName = document.getElementById('lib-mode-org-name');
     var roleBadge = document.getElementById('lib-mode-role-badge');
     if (orgName) orgName.textContent = u.org.name || '';
     var roleMap = { admin: '管理員', editor: '編輯者', viewer: '觀察者' };
     if (roleBadge) roleBadge.textContent = roleMap[u.org.role] || u.org.role;
-    // 預設顯示組織庫（已在 loadObjects 內處理 mode=org）
-  }).catch(function(){});
+    // 用正確的模式載入列表
+    loadList();
+  }).catch(function(){
+    if (_orgInfoLoaded) return;
+    _orgInfoLoaded = true;
+    clearTimeout(_loadListFallbackTimer);
+    loadList();  // 查詢失敗也要載入個人庫
+  });
 
   // 切換個人庫 / 組織庫
   function libSwitchMode(mode) {
@@ -4677,7 +4692,11 @@ OBJECTS_APP_HTML = """
   }
 
   try { loadUsers(); } catch(e) { console.error('loadUsers 失敗:', e); }
-  try { loadList();  } catch(e) { console.error('loadList 失敗:', e); }
+  // loadList() 改由 /api/me 查詢 org 完成後再呼叫（確保 _libMode 已正確設定）
+  // 若 /api/me 在 5 秒內未回呼，fallback 用個人庫模式載入
+  var _loadListFallbackTimer = setTimeout(function() {
+    if (!_orgInfoLoaded) { _orgInfoLoaded = true; loadList(); }
+  }, 5000);
 
   // ── URL 參數：自動切換到公司物件庫並定位到該物件 ──
   // 支援 ?prop_name=<案名>（直接搜尋，不需登入API）
