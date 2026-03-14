@@ -86,6 +86,8 @@ app.secret_key = _secret or "dev-only-insecure-key"
 # SameSite=None：Portal 跨站跳轉後瀏覽器才能正確帶 session cookie
 app.config["SESSION_COOKIE_SAMESITE"] = "None"
 app.config["SESSION_COOKIE_SECURE"] = True
+# Session 持久化：關閉瀏覽器後仍保留 30 天（避免每次都要重新登入）
+app.config["PERMANENT_SESSION_LIFETIME"] = 60 * 60 * 24 * 30  # 30 天（秒）
 
 PORTAL_URL = (os.environ.get("PORTAL_URL") or "").strip()
 BUYER_URL  = (os.environ.get("BUYER_URL") or "").strip()
@@ -586,6 +588,7 @@ def auth_portal_login():
     session["user_email"] = email
     session["user_name"] = payload.get("name", "")
     session["user_picture"] = payload.get("picture", "")
+    session.permanent = True   # 讓 cookie 存活 30 天，不隨分頁關閉消失
     session.modified = True
     # 直接 render 首頁（不做任何 redirect），Set-Cookie 與 HTML 在同一個 response
     # 避免 Chrome SameSite 問題：跨站 redirect 後瀏覽器帶不到剛設的 cookie
@@ -3984,22 +3987,14 @@ OBJECTS_APP_HTML = """
   }
 
   // ══ 組織（Org）功能 JS ══
-  var _orgInfo = null;           // 目前使用者的 org 資訊（由 /api/me 填入）
-  var _libMode = 'personal';     // 預設個人庫，確認有組織後才切換為 'org'
-  var _orgInfoLoaded = false;    // 是否已完成 org 查詢（防止 loadList 在查詢前就跑）
+  var _orgInfo = null;       // 目前使用者的 org 資訊（由 /api/me 填入）
+  var _libMode = 'personal'; // 預設個人庫
 
-  // 從 /api/me 拿 org 資訊，初始化庫模式
+  // 非同步查詢 org 資訊，不阻擋物件列表載入
   fetch('/api/me').then(function(r){ return r.json(); }).then(function(u) {
-    if (_orgInfoLoaded) return;  // fallback timer 已先觸發，不重複載入
-    _orgInfoLoaded = true;
-    clearTimeout(_loadListFallbackTimer);
-    if (u.error || !u.org) {
-      // 沒有組織，保持個人庫模式載入
-      loadList();
-      return;
-    }
+    if (u.error || !u.org) return;  // 沒有組織，什麼都不做
     _orgInfo = u.org;
-    _libMode = 'org';  // 確認有組織後才切成組織庫
+    _libMode = 'org';
     // 顯示組織 tab
     var orgTab = document.getElementById('tab-org');
     if (orgTab) orgTab.classList.remove('hidden');
@@ -4012,14 +4007,9 @@ OBJECTS_APP_HTML = """
     if (orgName) orgName.textContent = u.org.name || '';
     var roleMap = { admin: '管理員', editor: '編輯者', viewer: '觀察者' };
     if (roleBadge) roleBadge.textContent = roleMap[u.org.role] || u.org.role;
-    // 用正確的模式載入列表
+    // 有組織就重新用 org 模式載入列表
     loadList();
-  }).catch(function(){
-    if (_orgInfoLoaded) return;
-    _orgInfoLoaded = true;
-    clearTimeout(_loadListFallbackTimer);
-    loadList();  // 查詢失敗也要載入個人庫
-  });
+  }).catch(function(){});
 
   // 切換個人庫 / 組織庫
   function libSwitchMode(mode) {
@@ -4711,11 +4701,7 @@ OBJECTS_APP_HTML = """
   }
 
   try { loadUsers(); } catch(e) { console.error('loadUsers 失敗:', e); }
-  // loadList() 改由 /api/me 查詢 org 完成後再呼叫（確保 _libMode 已正確設定）
-  // 若 /api/me 在 5 秒內未回呼，fallback 用個人庫模式載入
-  var _loadListFallbackTimer = setTimeout(function() {
-    if (!_orgInfoLoaded) { _orgInfoLoaded = true; loadList(); }
-  }, 5000);
+  try { loadList();  } catch(e) { console.error('loadList 失敗:', e); }
 
   // ── URL 參數：自動切換到公司物件庫並定位到該物件 ──
   // 支援 ?prop_name=<案名>（直接搜尋，不需登入API）
