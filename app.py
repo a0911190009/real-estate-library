@@ -592,7 +592,14 @@ def auth_portal_login():
     session.modified = True
     # 直接 render 首頁（不做任何 redirect），Set-Cookie 與 HTML 在同一個 response
     # 避免 Chrome SameSite 問題：跨站 redirect 後瀏覽器帶不到剛設的 cookie
-    return _render_app()
+    from flask import make_response
+    resp = _render_app()
+    # 如果 _render_app 已回傳 Response 物件，直接補 headers；否則包裝成 Response
+    if not hasattr(resp, 'headers'):
+        resp = make_response(resp)
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
 
 
 @app.route("/auth/logout", methods=["POST"])
@@ -3111,7 +3118,12 @@ def _render_app():
     html = html.replace("__ADMIN_BAR__", admin_bar)
     html = html.replace("__FIELDS_HTML__", fields_html)
     html = html.replace("__BUYER_URL__", json.dumps(BUYER_URL))
-    return html
+    # 加 Cache-Control 標頭，禁止瀏覽器快取動態 HTML 頁面
+    from flask import make_response
+    resp = make_response(html)
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
 
 
 OBJECTS_APP_HTML = """
