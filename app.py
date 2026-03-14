@@ -383,7 +383,10 @@ def _get_org_for_user(email):
     """
     查詢該 email 屬於哪個組織。
     回傳 org dict（含 org_id、name、role）；若不屬於任何組織則回傳 None。
-    Firestore 路徑：orgs/{org_id}/members/{email}
+
+    策略：直接查 users/{email} document 上的 org_id 欄位（O(1)，不需 collectionGroup）。
+    若沒有 org_id 欄位則回 None（個人用戶）。
+    org_id 在建立組織時由 Portal 後台寫入。
     """
     if not email:
         return None
@@ -391,22 +394,30 @@ def _get_org_for_user(email):
     if not db:
         return None
     try:
-        # 查詢所有 org 的 members 子集合裡是否有此 email
-        # 用 collectionGroup 查詢效率最好
-        members = db.collection_group("members").where("email", "==", email).limit(1).stream()
-        for member_doc in members:
+        # 快速查法：直接讀 users/{email} 文件的 org_id 欄位
+        user_doc = db.collection("users").document(email).get()
+        if not user_doc.exists:
+            return None
+        user_data = user_doc.to_dict() or {}
+        org_id = user_data.get("org_id", "")
+        if not org_id:
+            return None
+        # 查組織資料
+        org_doc = db.collection("orgs").document(org_id).get()
+        if not org_doc.exists:
+            return None
+        org_data = org_doc.to_dict() or {}
+        # 查成員角色
+        member_doc = db.collection("orgs").document(org_id).collection("members").document(email).get()
+        role = "viewer"
+        if member_doc.exists:
             role = member_doc.to_dict().get("role", "viewer")
-            # 路徑格式：orgs/{org_id}/members/{email}
-            org_ref = member_doc.reference.parent.parent
-            org_doc = org_ref.get()
-            if org_doc.exists:
-                org_data = org_doc.to_dict()
-                return {
-                    "org_id": org_doc.id,
-                    "name":   org_data.get("name", ""),
-                    "role":   role,
-                    "owner_email": org_data.get("owner_email", ""),
-                }
+        return {
+            "org_id":      org_id,
+            "name":        org_data.get("name", ""),
+            "role":        role,
+            "owner_email": org_data.get("owner_email", ""),
+        }
     except Exception as e:
         import logging
         logging.warning("Library: _get_org_for_user 查詢失敗: %s", e)
@@ -1036,6 +1047,8 @@ def api_org_members_add():
             "joined_at": datetime.now(timezone.utc).isoformat(),
             "invited_by": email,
         })
+        # 同步在 users/{target_email} 寫入 org_id，讓物件庫能快速查到組織（不需 collectionGroup）
+        db.collection("users").document(target_email).set({"org_id": org_id}, merge=True)
         return jsonify({"ok": True, "email": target_email, "role": role})
     except Exception as e:
         import logging
@@ -1067,6 +1080,12 @@ def api_org_members_remove():
         return jsonify({"error": "Firestore 未初始化"}), 500
     try:
         db.collection("orgs").document(org_id).collection("members").document(target_email).delete()
+        # 清除 users/{target_email} 的 org_id 欄位
+        try:
+            from google.cloud.firestore import DELETE_FIELD
+            db.collection("users").document(target_email).update({"org_id": DELETE_FIELD})
+        except Exception:
+            db.collection("users").document(target_email).set({"org_id": ""}, merge=True)
         return jsonify({"ok": True})
     except Exception as e:
         import logging
