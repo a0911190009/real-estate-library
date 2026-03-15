@@ -7,6 +7,7 @@
 import os
 import json
 import re
+# favicon 已更新為透明版 (static/favicon.png)
 import base64
 import uuid
 import threading
