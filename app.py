@@ -777,97 +777,6 @@ def api_objects_create():
     return jsonify({"error": "儲存失敗"}), 500
 
 
-@app.route("/api/objects/list-for-service", methods=["GET"])
-def api_objects_list_for_service():
-    """供 AD 等後端服務以 X-Service-Key 列出指定用戶的物件清單。
-    Query: email=xxx（必填）"""
-    if not _verify_service_key():
-        return jsonify({"error": "需要有效的 X-Service-Key"}), 401
-    email = (request.args.get("email") or "").strip()
-    if not email or "@" not in email:
-        return jsonify({"error": "缺少有效的 email"}), 400
-    ids = _list_user_ids(email)
-    items = []
-    for oid in sorted(ids, reverse=True):
-        obj = _load_object(email, oid)
-        if obj:
-            items.append({
-                "id": obj.get("id", oid),
-                "custom_title": obj.get("custom_title", ""),
-                "project_name": obj.get("project_name", ""),
-                "address": obj.get("address", ""),
-                "price": obj.get("price", ""),
-                "building_ping": obj.get("building_ping", ""),
-                "land_ping": obj.get("land_ping", ""),
-                "authority_ping": obj.get("authority_ping", ""),
-                "layout": obj.get("layout", ""),
-                "floor": obj.get("floor", ""),
-                "age": obj.get("age", ""),
-                "parking": obj.get("parking", ""),
-                "case_number": obj.get("case_number", ""),
-                "location_area": obj.get("location_area", ""),
-                "env_description": obj.get("env_description", ""),
-                "survey_summary": obj.get("survey_summary", ""),
-                "created_at": obj.get("created_at", ""),
-            })
-    return jsonify({"items": items})
-
-
-@app.route("/api/objects/from-service", methods=["POST"])
-def api_objects_from_service():
-    """由 AD 等服務以 X-Service-Key 代用戶寫入物件。Body: { "email": "user@example.com", "object": { project_name, address, ... } }"""
-    if not _verify_service_key():
-        return jsonify({"error": "需要有效的 X-Service-Key"}), 401
-    data = request.get_json() or {}
-    email = (data.get("email") or "").strip()
-    if not email or "@" not in email:
-        return jsonify({"error": "缺少有效的 email"}), 400
-    payload = data.get("object") or data
-    now = datetime.now()
-    obj_id = now.strftime("%Y%m%d_%H%M%S")
-    title = (payload.get("custom_title") or payload.get("project_name") or "未命名").strip()
-    if title:
-        safe_title = re.sub(r'[^\w\u4e00-\u9fff\-]', '_', title)[:24]
-        obj_id = f"{obj_id}_{safe_title}"
-    obj = {"id": obj_id, "created_at": now.isoformat(), "owner_email": email}
-    for key, _label, _typ in PROPERTY_FIELDS + EXTRA_FIELDS:
-        if key == "ad_outputs":
-            continue
-        if key in payload:
-            obj[key] = payload[key]
-        elif key == "custom_title":
-            obj[key] = payload.get("project_name", "") or ""
-        else:
-            obj[key] = obj.get(key, "")
-    obj[AD_OUTPUTS_KEY] = payload.get(AD_OUTPUTS_KEY, [])
-    if _save_object(email, obj_id, obj):
-        return jsonify({"ok": True, "id": obj_id, "object": obj}), 201
-    return jsonify({"error": "儲存失敗"}), 500
-
-
-@app.route("/api/objects/<obj_id>/ad-outputs", methods=["PATCH"])
-def api_objects_update_ad_outputs(obj_id):
-    """由 AD 服務以 X-Service-Key 更新指定物件的 ad_outputs（不動其他欄位）。
-    Body: { "email": "user@example.com", "ad_outputs": [...] }"""
-    if not _verify_service_key():
-        return jsonify({"error": "需要有效的 X-Service-Key"}), 401
-    data = request.get_json() or {}
-    email = (data.get("email") or "").strip()
-    if not email or "@" not in email:
-        return jsonify({"error": "缺少有效的 email"}), 400
-    ad_outputs = data.get("ad_outputs")
-    if not isinstance(ad_outputs, list):
-        return jsonify({"error": "ad_outputs 必須為陣列"}), 400
-    obj = _load_object(email, obj_id)
-    if not obj:
-        return jsonify({"error": "物件不存在"}), 404
-    obj[AD_OUTPUTS_KEY] = ad_outputs
-    obj["updated_at"] = datetime.now().isoformat()
-    if _save_object(email, obj_id, obj):
-        return jsonify({"ok": True, "id": obj_id})
-    return jsonify({"error": "儲存失敗"}), 500
-
-
 @app.route("/api/objects/<obj_id>", methods=["GET"])
 def api_objects_get(obj_id):
     email, err = _require_user()
@@ -3324,13 +3233,6 @@ OBJECTS_APP_HTML = """
     <a href="javascript:void(0)" id="sb-survey" class="hidden"><img src="/static/tool-survey.png" alt="" style="width:18px;height:18px;object-fit:contain;vertical-align:middle;margin-right:8px;"> 周邊調查</a>
     <a href="javascript:void(0)" id="sb-calendar" class="hidden"><img src="/static/tool-calendar.png" alt="" style="width:18px;height:18px;object-fit:contain;vertical-align:middle;margin-right:8px;"> 業務行事曆</a>
   </nav>
-  <div style="padding:8px 8px 4px;">
-    <button type="button" id="btn-new-obj" onclick="openNewModal()" title="建立物件資訊"
-      style="width:100%;display:flex;align-items:center;justify-content:center;gap:6px;padding:8px 12px;border-radius:10px;border:none;background:var(--ac);color:var(--act);font-size:0.85rem;font-weight:600;cursor:pointer;transition:background 0.15s;"
-      onmouseover="this.style.background='var(--ach)'" onmouseout="this.style.background='var(--ac)'">
-      ＋ 建立
-    </button>
-  </div>
   <div class="sb-user">
     <button type="button" onclick="libToggleDropdown(event)">
       <div id="sb-avatar" class="av-wrap" style="width:36px;height:36px;flex-shrink:0;"><div class="av-fb">?</div></div>
@@ -3349,8 +3251,6 @@ OBJECTS_APP_HTML = """
     <span>📁 物件庫</span>
   </div>
   <div style="display:flex;align-items:center;gap:8px;">
-    <button type="button" id="btn-new-obj-mobile" onclick="openNewModal()" title="建立物件資訊"
-      style="background:var(--ac);color:var(--act);border:none;border-radius:8px;padding:6px 12px;font-size:0.82rem;font-weight:600;cursor:pointer;white-space:nowrap;">＋ 建立</button>
     <div style="display:flex;align-items:center;gap:8px;cursor:pointer;" onclick="libToggleDropdown(event)">
       <span id="hd-badge" class="points-pill points">— 點</span>
       <div id="hd-avatar" class="av-wrap" style="width:34px;height:34px;"><div class="av-fb">?</div></div>
@@ -3411,12 +3311,8 @@ OBJECTS_APP_HTML = """
 <header class="sticky top-0 z-50 backdrop-blur shadow" style="background:var(--bg-s);border-bottom:1px solid var(--bd);">
   <!-- 分頁標籤 -->
   <div class="flex" style="border-top:1px solid var(--bd);">
-    <button id="tab-my" onclick="switchTab('my')"
-      class="tab-btn flex-1 py-2 text-sm font-medium border-b-2 transition" style="color:var(--ac);border-color:var(--ac);">
-      📂 我的物件
-    </button>
     <button id="tab-company" onclick="switchTab('company')"
-      class="tab-btn flex-1 py-2 text-sm font-medium border-b-2 border-transparent transition" style="color:var(--txs);">
+      class="tab-btn flex-1 py-2 text-sm font-medium border-b-2 transition" style="color:var(--ac);border-color:var(--ac);">
       🏢 公司物件庫
     </button>
     <!-- 設定 tab：僅管理員看得到（由 JS 控制顯示） -->
@@ -3431,50 +3327,6 @@ OBJECTS_APP_HTML = """
     </button>
   </div>
 </header>
-
-<!-- ══ 我的物件分頁 ══ -->
-<div id="pane-my" class="max-w-3xl mx-auto px-4 py-6">
-  __ADMIN_BAR__
-
-  <!-- 個人庫 / 組織庫 切換下拉（屬於組織時才顯示） -->
-  <div id="lib-mode-bar" class="hidden flex items-center gap-3 px-3 py-2 mb-4 rounded-xl text-sm" style="background:var(--bg-t);border:1px solid var(--bd);">
-    <span style="color:var(--txs);">📂 查看：</span>
-    <select id="lib-mode-select" onchange="libSwitchMode(this.value)"
-      class="rounded-lg px-3 py-1 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
-      <option value="org">🏢 組織物件庫</option>
-      <option value="personal">👤 個人物件庫</option>
-    </select>
-    <span id="lib-mode-org-name" class="text-xs" style="color:var(--txs);"></span>
-    <span id="lib-mode-role-badge" class="text-xs px-2 py-0.5 rounded-full" style="background:var(--acs);color:var(--ac);"></span>
-  </div>
-
-  <div id="listPanel" class="space-y-3"></div>
-
-  <!-- 編輯物件面板（原地編輯用，新增改由 Modal） -->
-  <div id="formPanel" class="hidden rounded-2xl p-5 mb-4" style="background:var(--bg-t);border:1px solid var(--bd);">
-    <h2 id="formTitle" class="font-bold mb-4" style="color:var(--tx);">編輯物件</h2>
-    <form id="objForm">
-      <input type="hidden" id="objId" name="id">
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        __FIELDS_HTML__
-      </div>
-      <div class="flex gap-3 mt-4">
-        <button type="submit" class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition">儲存</button>
-        <button type="button" onclick="hideForm()" class="px-4 py-2 rounded-lg text-sm transition" style="background:var(--bg-h);color:var(--txs);">取消</button>
-      </div>
-    </form>
-  </div>
-
-  <!-- 詳情面板 -->
-  <div id="detailPanel" class="hidden rounded-2xl p-5 mb-4" style="background:var(--bg-t);border:1px solid var(--bd);">
-    <h2 id="detailTitle" class="font-bold mb-3" style="color:var(--tx);">物件詳情</h2>
-    <div id="detailContent" class="space-y-1 text-sm" style="color:var(--txs);"></div>
-    <div class="flex gap-3 mt-4">
-      <button type="button" onclick="editCurrentDetail()" class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition">編輯</button>
-      <button type="button" onclick="closeDetail()" class="px-4 py-2 rounded-lg text-sm transition" style="background:var(--bg-h);color:var(--txs);">關閉</button>
-    </div>
-  </div>
-</div>
 
 <!-- ══ 公司物件庫分頁 ══ -->
 <div id="pane-company" style="display:none" class="max-w-4xl mx-auto px-4 py-6">
@@ -3912,88 +3764,12 @@ OBJECTS_APP_HTML = """
   </div>
 </div>
 
-<!-- ── 建立物件資訊 Modal（含圖片辨識） ── -->
-<div id="new-prop-modal" role="dialog" aria-modal="true"
-  class="hidden fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm overflow-y-auto"
-  onclick="if(event.target===this)closeNewModal()">
-  <div class="w-full max-w-lg rounded-2xl" style="background:var(--bg-s);border:1px solid var(--bd);box-shadow:var(--sh);" onclick="event.stopPropagation()">
-    <div class="flex items-center justify-between px-6 py-4" style="border-bottom:1px solid var(--bd);">
-      <h3 class="font-bold" style="color:var(--tx);">建立物件資訊</h3>
-      <button onclick="closeNewModal()" class="text-xl leading-none" style="background:none;border:none;color:var(--txs);cursor:pointer;">✕</button>
-    </div>
-    <div class="px-6 py-5 space-y-3 max-h-[65vh] overflow-y-auto">
-      <!-- 圖片辨識（扣 2 點） -->
-      <div class="rounded-xl p-4" style="background:var(--bg-t);border:1px solid var(--bd);">
-        <p class="text-xs mb-2 font-medium" style="color:var(--txs);">📷 圖片辨識（自儲值扣 2 點）</p>
-        <div class="flex flex-wrap gap-2 items-center">
-          <input type="file" id="lib-image-input" accept="image/*" class="hidden" onchange="onLibImageSelected(event)">
-          <button type="button" onclick="document.getElementById('lib-image-input').click()"
-            class="px-3 py-2 rounded-lg text-sm transition" style="background:var(--bg-h);color:var(--tx);border:1px solid var(--bd);cursor:pointer;">選擇圖片</button>
-          <button type="button" onclick="handleLibPaste()"
-            class="px-3 py-2 rounded-lg text-sm transition" style="background:var(--bg-h);color:var(--tx);border:1px solid var(--bd);cursor:pointer;">貼上</button>
-          <span id="lib-image-name" class="text-xs truncate max-w-[140px]" style="color:var(--txm);"></span>
-          <button type="button" id="lib-extract-btn" onclick="runLibExtractFromImage()" disabled
-            class="px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed">辨識並帶入（2 點）</button>
-        </div>
-        <p class="text-xs mt-2 min-h-[1em]" id="lib-extract-status" style="color:var(--txm);"></p>
-        <div class="mt-3 pt-3" style="border-top:1px solid var(--bd);">
-          <p class="text-xs mb-1" style="color:var(--txs);">或輸入物件網址（自動截圖後辨識）</p>
-          <p class="text-xs text-amber-400 mb-2">⚠️ 注意：YES319、591 等網站有 Cloudflare 防護，截圖功能無法使用。請改用上方「選擇圖片／貼上」功能：在瀏覽器按 Cmd+Shift+4 截圖後貼上即可。</p>
-          <div class="flex gap-2 items-center">
-            <input type="url" id="lib-url-input" placeholder="適用無 Cloudflare 保護的網站"
-              class="flex-1 min-w-0 rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" />
-            <button type="button" id="lib-url-btn" onclick="runLibExtractFromUrl()"
-              class="px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium whitespace-nowrap transition">截圖並辨識</button>
-          </div>
-          <p class="text-xs mt-2 min-h-[1em]" id="lib-url-status" style="color:var(--txm);"></p>
-        </div>
-      </div>
-      <!-- 從 AD 歷史匯入 -->
-      <div class="rounded-xl p-4" style="background:var(--bg-t);border:1px solid var(--bd);">
-        <p class="text-xs mb-2 font-medium" style="color:var(--txs);">📋 從 AD 歷史匯入</p>
-        <p class="text-xs mb-2" style="color:var(--txm);">若改版前曾在「廣告工具」存過紀錄，可從下方匯入</p>
-        <div class="flex gap-2 items-center">
-          <select id="lib-ad-history-select"
-            class="flex-1 min-w-0 rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
-            <option value="">— 從 AD 歷史匯入 —</option>
-          </select>
-          <button type="button" onclick="libImportFromAd()"
-            class="px-3 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium whitespace-nowrap">匯入為物件</button>
-        </div>
-        <p class="text-xs mt-2 min-h-[1em]" id="lib-import-status" style="color:var(--txm);"></p>
-      </div>
-      <!-- 物件欄位 -->
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="block text-xs mb-1" style="color:var(--txs);">物件名稱</label><input id="n-name" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="如：信義路三段電梯大樓"></div>
-        <div><label class="block text-xs mb-1" style="color:var(--txs);">總價（萬）</label><input id="n-price" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="數字"></div>
-        <div><label class="block text-xs mb-1" style="color:var(--txs);">區域</label><input id="n-area" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="如：台北市信義區"></div>
-        <div><label class="block text-xs mb-1" style="color:var(--txs);">地址</label><input id="n-addr" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="完整地址"></div>
-        <div><label class="block text-xs mb-1" style="color:var(--txs);">建坪</label><input id="n-bping" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="數字"></div>
-        <div><label class="block text-xs mb-1" style="color:var(--txs);">地坪</label><input id="n-lping" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="數字"></div>
-        <div><label class="block text-xs mb-1" style="color:var(--txs);">權狀</label><input id="n-aping" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="數字"></div>
-        <div><label class="block text-xs mb-1" style="color:var(--txs);">格局</label><input id="n-layout" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="3房2廳2衛"></div>
-        <div><label class="block text-xs mb-1" style="color:var(--txs);">樓層</label><input id="n-floor" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="3/12"></div>
-        <div><label class="block text-xs mb-1" style="color:var(--txs);">屋齡</label><input id="n-age" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="5年"></div>
-        <div><label class="block text-xs mb-1" style="color:var(--txs);">車位</label><input id="n-parking" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="有/無"></div>
-        <div><label class="block text-xs mb-1" style="color:var(--txs);">案號</label><input id="n-case" type="text" class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="可選填"></div>
-      </div>
-      <div>
-        <label class="block text-xs mb-1" style="color:var(--txs);">環境說明（選填）</label>
-        <textarea id="n-env" rows="3" class="w-full rounded-lg px-3 py-2 text-sm resize-none focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" placeholder="步行3分鐘到全聯…"></textarea>
-      </div>
-    </div>
-    <div class="flex items-center justify-between px-6 py-4" style="border-top:1px solid var(--bd);">
-      <button onclick="closeNewModal()" class="px-4 py-2 rounded-lg text-sm transition" style="background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);cursor:pointer;">取消</button>
-      <button onclick="saveNewProp()" class="px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition">儲存物件</button>
-    </div>
-  </div>
-</div>
+<!-- new-prop-modal 已移除（我的物件功能移至廣告文案工具的「文案收藏」） -->
 
 <script>
   const fields = __FIELDS_JSON__;
   const isAdmin   = __IS_ADMIN_JSON__;
   const BUYER_URL = __BUYER_URL__;
-  var _libImageFile = null;
 
   // 管理員才顯示「設定」tab
   if (isAdmin) {
@@ -4298,425 +4074,10 @@ OBJECTS_APP_HTML = """
     return path + (params.length ? '?' + params.join('&') : '');
   }
 
-  // loadObjects 別名（供組織庫切換使用）
-  function loadObjects() { loadList(); }
-
-  // ── 載入列表 ──
-  // _currentOrgId：目前列表是否屬於組織庫（儲存 org_id 以便後續操作傳入）
+  // _currentOrgId（保留給組織庫使用，已移除我的物件相關函式）
   var _currentOrgId = null;
 
-  function loadList() {
-    fetch(apiUrl('/api/objects')).then(r => r.json()).then(data => {
-      if (data.error) { toast(data.error, 'error'); return; }
-      // 記錄目前是否在組織庫模式
-      _currentOrgId = (data.mode === 'org' && data.org) ? data.org.org_id : null;
-      var el = document.getElementById('listPanel');
-      el.innerHTML = '';
-      var items = data.items || [];
-      if (!items.length) {
-        var emptyMsg = _currentOrgId ? '組織庫目前沒有物件。' : '尚無物件，點「＋ 建立物件資訊」開始建立。';
-        el.innerHTML = '<p class="text-center py-8" style="color:var(--txm);">' + emptyMsg + '</p>';
-        return;
-      }
-      items.forEach(function(o) {
-        var title = o.custom_title || o.project_name || o.address || o.id || '未命名';
-        var meta = [o.address, o.updated_at ? o.updated_at.slice(0,10) : ''].filter(Boolean).join(' · ');
-        var id = o.id;
-
-        var wrap = document.createElement('div');
-        wrap.className = 'rounded-xl px-4 py-3 flex justify-between items-center gap-3 flex-wrap';
-        wrap.style.cssText = 'background:var(--bg-t);border:1px solid var(--bd);';
-
-        var info = document.createElement('div');
-        var titleEl = document.createElement('div');
-        titleEl.className = 'font-semibold';
-        titleEl.style.color = 'var(--tx)';
-        titleEl.textContent = title;
-        var metaEl = document.createElement('div');
-        metaEl.className = 'text-xs mt-0.5';
-        metaEl.style.color = 'var(--txs)';
-        metaEl.textContent = meta;
-        info.appendChild(titleEl);
-        info.appendChild(metaEl);
-
-        var btns = document.createElement('div');
-        btns.className = 'flex gap-2';
-
-        var bView = document.createElement('button');
-        bView.className = 'px-3 py-1.5 rounded-lg text-xs transition';
-        bView.style.cssText = 'background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);cursor:pointer;';
-        bView.textContent = '查看';
-        bView.onclick = function() { viewDetail(id); };
-
-        var bEdit = document.createElement('button');
-        bEdit.className = 'px-3 py-1.5 rounded-lg text-xs transition';
-        bEdit.style.cssText = 'background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);cursor:pointer;';
-        bEdit.textContent = '編輯';
-        bEdit.onclick = function() { editObj(id); };
-
-        var bDel = document.createElement('button');
-        bDel.className = 'px-3 py-1.5 rounded-lg bg-rose-700 hover:bg-rose-600 text-white text-xs transition';
-        bDel.textContent = '刪除';
-        bDel.onclick = function() { delObj(id); };
-
-        btns.appendChild(bView);
-        btns.appendChild(bEdit);
-        btns.appendChild(bDel);
-        wrap.appendChild(info);
-        wrap.appendChild(btns);
-        el.appendChild(wrap);
-      });
-    }).catch(function() { toast('載入失敗', 'error'); });
-  }
-
-  function loadUsers() {
-    if (!isAdmin) return;
-    fetch('/api/users').then(r => r.json()).then(data => {
-      if (data.error) return;
-      var sel = document.getElementById('userSelect');
-      if (!sel) return;
-      sel.innerHTML = '<option value="">（自己）</option>' + (data.users || []).map(u => '<option value="' + escapeHtml(u) + '">' + escapeHtml(u) + '</option>').join('');
-      sel.onchange = loadList;
-    });
-  }
-
-  // ── 新增 Modal 開關 ──
-  function openNewModal() {
-    _libImageFile = null;
-    document.getElementById('lib-image-input').value = '';
-    document.getElementById('lib-image-name').textContent = '';
-    document.getElementById('lib-extract-btn').disabled = true;
-    document.getElementById('lib-extract-status').textContent = '';
-    document.getElementById('lib-url-input').value = '';
-    document.getElementById('lib-url-status').textContent = '';
-    ['n-name','n-price','n-area','n-addr','n-bping','n-lping','n-aping','n-layout','n-floor','n-age','n-parking','n-case','n-env'].forEach(function(id) {
-      document.getElementById(id).value = '';
-    });
-    loadLibAdHistory();
-    var m = document.getElementById('new-prop-modal');
-    m.classList.remove('hidden'); m.classList.add('flex');
-  }
-
-  function closeNewModal() {
-    var m = document.getElementById('new-prop-modal');
-    m.classList.add('hidden'); m.classList.remove('flex');
-  }
-
-  // ── 圖片選取 ──
-  function onLibImageSelected(ev) {
-    var f = ev.target && ev.target.files && ev.target.files[0];
-    _libImageFile = f || null;
-    document.getElementById('lib-image-name').textContent = f ? f.name : '';
-    document.getElementById('lib-extract-btn').disabled = !_libImageFile;
-    document.getElementById('lib-extract-status').textContent = '';
-  }
-
-  // ── 剪貼簿貼上 ──
-  async function handleLibPaste() {
-    try {
-      var items = await navigator.clipboard.read();
-      for (var item of items) {
-        for (var type of item.types) {
-          if (type.startsWith('image/')) {
-            var blob = await item.getType(type);
-            _libImageFile = new File([blob], 'pasted.png', { type: type });
-            document.getElementById('lib-image-name').textContent = '已貼上圖片';
-            document.getElementById('lib-extract-btn').disabled = false;
-            document.getElementById('lib-extract-status').textContent = '';
-            return;
-          }
-        }
-      }
-      toast('剪貼簿沒有圖片，請先複製一張截圖', 'error');
-    } catch (e) {
-      toast('無法讀取剪貼簿，請改用「選擇圖片」', 'error');
-    }
-  }
-
-  // ── 將辨識結果填入表單 ──
-  function fillLibForm(ext) {
-    if (!ext) return;
-    // 欄位 ID 與 extracted 欄位對應表
-    var mapping = [
-      ['n-name',    ext.project_name],
-      ['n-price',   ext.price != null ? String(ext.price) : ''],
-      ['n-area',    ext.location_area],
-      ['n-addr',    ext.address],
-      ['n-bping',   ext.building_ping != null ? String(ext.building_ping) : ''],
-      ['n-lping',   ext.land_ping != null ? String(ext.land_ping) : ''],
-      ['n-aping',   ext.authority_ping != null ? String(ext.authority_ping) : ''],
-      ['n-layout',  ext.layout],
-      ['n-floor',   ext.floor],
-      ['n-age',     ext.age],
-      ['n-parking', ext.parking],
-      ['n-case',    ext.case_number],
-    ];
-    mapping.forEach(function(pair) {
-      var el = document.getElementById(pair[0]);
-      if (!el) { console.warn('[fillLibForm] 找不到元素 #' + pair[0]); return; }
-      el.value = pair[1] || '';
-    });
-  }
-
-  // ── 圖片辨識（透過 Library 代理路由） ──
-  async function runLibExtractFromImage() {
-    if (!_libImageFile) return;
-    var statusEl = document.getElementById('lib-extract-status');
-    var btn = document.getElementById('lib-extract-btn');
-    statusEl.textContent = '辨識中…';
-    btn.disabled = true;
-    try {
-      var fd = new FormData();
-      fd.append('image', _libImageFile);
-      var r = await fetch('/api/extract-from-image', { method: 'POST', body: fd });
-      var d = await r.json();
-      if (d.ok && d.extracted) {
-        fillLibForm(d.extracted);
-        statusEl.textContent = '已帶入欄位，剩餘 ' + (d.points ?? '') + ' 點';
-        statusEl.className = 'text-xs text-emerald-400 mt-2 min-h-[1em]';
-      } else {
-        statusEl.textContent = d.error || '辨識失敗';
-        statusEl.className = 'text-xs text-rose-400 mt-2 min-h-[1em]';
-      }
-    } catch (e) {
-      statusEl.textContent = '連線失敗：' + (e.message || '');
-      statusEl.className = 'text-xs text-rose-400 mt-2 min-h-[1em]';
-    }
-    btn.disabled = false;
-  }
-
-  // ── 網址截圖辨識 ──
-  async function runLibExtractFromUrl() {
-    var url = (document.getElementById('lib-url-input').value || '').trim();
-    if (!url) { document.getElementById('lib-url-status').textContent = '請輸入網址'; return; }
-    var statusEl = document.getElementById('lib-url-status');
-    var btn = document.getElementById('lib-url-btn');
-    statusEl.textContent = '截圖與辨識中…（約 15–30 秒）';
-    statusEl.className = 'text-xs text-slate-400 mt-2 min-h-[1em]';
-    btn.disabled = true;
-    try {
-      // 1. 送出非同步工作，取得 job_id
-      var r = await fetch('/api/extract-from-url', {
-        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ url: url }),
-      });
-      var d = await r.json();
-      if (d.error) {
-        statusEl.textContent = d.error;
-        statusEl.className = 'text-xs text-rose-400 mt-2 min-h-[1em]';
-        btn.disabled = false;
-        return;
-      }
-      var jobId = d.job_id;
-      // 2. 輪詢結果（每 2 秒輪詢一次，最多 60 次 = 2 分鐘）
-      var dots = 0;
-      for (var i = 0; i < 60; i++) {
-        await new Promise(function(res) { setTimeout(res, 2000); });
-        dots = (dots + 1) % 4;
-        statusEl.textContent = '截圖與辨識中' + '.'.repeat(dots + 1) + '（約 15–30 秒）';
-        var pr = await fetch('/api/extract-from-url/poll/' + jobId);
-        var pd = await pr.json();
-        if (pd.error && pd.done === undefined) {
-          // 工作不存在
-          statusEl.textContent = pd.error;
-          statusEl.className = 'text-xs text-rose-400 mt-2 min-h-[1em]';
-          btn.disabled = false;
-          return;
-        }
-        if (pd.done) {
-          if (pd.ok && pd.extracted) {
-            // 顯示截圖預覽（在 console 點圖片可看 Screenshotone 截到什麼）
-            if (pd.debug_img) {
-              var img = new Image(); img.src = 'data:image/jpeg;base64,' + pd.debug_img;
-              console.log('[截圖辨識] 截圖預覽（右鍵另存可查看）:', img);
-            }
-            console.log('[截圖辨識] extracted:', JSON.stringify(pd.extracted));
-            fillLibForm(pd.extracted);
-            // 顯示辨識到的欄位名稱，方便確認
-            var keys = Object.keys(pd.extracted).filter(function(k){ return pd.extracted[k] != null && pd.extracted[k] !== ''; });
-            statusEl.textContent = '✅ 辨識完成，已帶入：' + (keys.length ? keys.join(', ') : '（無資料）');
-            statusEl.className = 'text-xs text-emerald-400 mt-2 min-h-[1em]';
-          } else {
-            statusEl.textContent = pd.error || '截圖或辨識失敗';
-            statusEl.className = 'text-xs text-rose-400 mt-2 min-h-[1em]';
-          }
-          btn.disabled = false;
-          return;
-        }
-      }
-      statusEl.textContent = '辨識逾時，請稍後再試';
-      statusEl.className = 'text-xs text-rose-400 mt-2 min-h-[1em]';
-    } catch (e) {
-      statusEl.textContent = '連線失敗：' + (e.message || '');
-      statusEl.className = 'text-xs text-rose-400 mt-2 min-h-[1em]';
-    }
-    btn.disabled = false;
-  }
-
-  // ── 載入 AD 歷史 ──
-  async function loadLibAdHistory() {
-    var sel = document.getElementById('lib-ad-history-select');
-    var first = sel.options[0];
-    sel.innerHTML = '';
-    sel.appendChild(first);
-    try {
-      var r = await fetch('/api/proxy/ad-history-list');
-      var list = await r.json();
-      if (Array.isArray(list) && list.length) {
-        list.forEach(function(p) {
-          var opt = document.createElement('option');
-          opt.value = p.id || '';
-          opt.textContent = (p.title || p.project_name || p.id || '未命名') + (p.created_at ? ' · ' + (p.created_at+'').slice(0,10) : '');
-          sel.appendChild(opt);
-        });
-      }
-    } catch (e) {}
-  }
-
-  // ── 從 AD 歷史匯入 ──
-  async function libImportFromAd() {
-    var sel = document.getElementById('lib-ad-history-select');
-    var id = (sel && sel.value || '').trim();
-    var statusEl = document.getElementById('lib-import-status');
-    if (!id) { statusEl.textContent = '請先選擇一筆 AD 歷史'; statusEl.className = 'text-xs text-amber-400 mt-2 min-h-[1em]'; return; }
-    statusEl.textContent = '匯入中…'; statusEl.className = 'text-xs text-slate-400 mt-2 min-h-[1em]';
-    try {
-      var r = await fetch('/api/proxy/import-from-ad-history', {
-        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ ad_history_id: id }),
-      });
-      var d = await r.json();
-      if (d.ok && d.property) {
-        fillLibForm(d.property);
-        if (d.property.env_description) document.getElementById('n-env').value = d.property.env_description;
-        statusEl.textContent = '已匯入並帶入表單，可編輯後儲存';
-        statusEl.className = 'text-xs text-emerald-400 mt-2 min-h-[1em]';
-      } else {
-        statusEl.textContent = d.error || '匯入失敗';
-        statusEl.className = 'text-xs text-rose-400 mt-2 min-h-[1em]';
-      }
-    } catch (e) {
-      statusEl.textContent = '連線失敗：' + (e.message || '');
-      statusEl.className = 'text-xs text-rose-400 mt-2 min-h-[1em]';
-    }
-  }
-
-  // ── 儲存新物件 ──
-  async function saveNewProp() {
-    var payload = {
-      project_name:   document.getElementById('n-name').value.trim(),
-      price:          document.getElementById('n-price').value.trim(),
-      location_area:  document.getElementById('n-area').value.trim(),
-      address:        document.getElementById('n-addr').value.trim(),
-      building_ping:  document.getElementById('n-bping').value.trim(),
-      land_ping:      document.getElementById('n-lping').value.trim(),
-      authority_ping: document.getElementById('n-aping').value.trim(),
-      layout:         document.getElementById('n-layout').value.trim(),
-      floor:          document.getElementById('n-floor').value.trim(),
-      age:            document.getElementById('n-age').value.trim(),
-      parking:        document.getElementById('n-parking').value.trim(),
-      case_number:    document.getElementById('n-case').value.trim(),
-      env_description:document.getElementById('n-env').value.trim(),
-    };
-    if (!payload.project_name && !payload.address) {
-      toast('至少填寫物件名稱或地址', 'error'); return;
-    }
-    // 傳入目前模式，讓後端決定存個人庫還是組織庫
-    if (typeof _libMode !== 'undefined') payload._mode = _libMode;
-    try {
-      var r = await fetch('/api/objects', {
-        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload),
-      });
-      var d = await r.json();
-      if (d.ok || d.id) {
-        toast(d.mode === 'org' ? '物件已儲存至組織庫' : '物件已儲存', 'success');
-        closeNewModal();
-        loadList();
-      } else {
-        toast('儲存失敗：' + (d.error || ''), 'error');
-      }
-    } catch (e) { toast('連線失敗：' + (e.message || ''), 'error'); }
-  }
-
-  // ── 取得物件 API URL（自動帶 org_id 或 user 參數）──
-  function objApiUrl(id) {
-    if (_currentOrgId) return '/api/objects/' + encodeURIComponent(id) + '?org_id=' + encodeURIComponent(_currentOrgId);
-    return apiUrl('/api/objects/' + encodeURIComponent(id));
-  }
-
-  // ── 編輯物件（沿用舊表單） ──
-  function editObj(id) {
-    document.getElementById('listPanel').classList.add('hidden');
-    document.getElementById('formPanel').classList.remove('hidden');
-    document.getElementById('detailPanel').classList.add('hidden');
-    document.getElementById('formTitle').textContent = '編輯物件';
-    document.getElementById('objForm').reset();
-    document.getElementById('objId').value = id;
-    fetch(objApiUrl(id)).then(r => r.json()).then(o => {
-      if (o.error) { toast(o.error, 'error'); return; }
-      fields.forEach(function(kv){ var k=kv[0]; var el=document.getElementById('f_'+k); if(el) el.value = o[k]!=null ? o[k] : ''; });
-      document.getElementById('objId').value = o.id || id;
-    });
-  }
-
-  function hideForm() {
-    document.getElementById('formPanel').classList.add('hidden');
-    document.getElementById('listPanel').classList.remove('hidden');
-    loadList();
-  }
-
-  document.getElementById('objForm').onsubmit = function(e) {
-    e.preventDefault();
-    var id = document.getElementById('objId').value;
-    var payload = {};
-    fields.forEach(function(kv){ var k=kv[0]; var el=document.getElementById('f_'+k); if(el) payload[k]=el.value; });
-    if (id) payload.id = id;
-    // 組織庫模式：在 body 帶 _org_id
-    if (_currentOrgId) payload._org_id = _currentOrgId;
-    fetch(objApiUrl(id), {
-      method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
-    }).then(r => r.json()).then(function(d){ if (d.error) toast(d.error, 'error'); else hideForm(); }).catch(function(){ toast('儲存失敗', 'error'); });
-  };
-
-  // ── 查看詳情 ──
-  function viewDetail(id) {
-    fetch(objApiUrl(id)).then(r => r.json()).then(o => {
-      if (o.error) { toast(o.error, 'error'); return; }
-      window._detailId = id;
-      document.getElementById('listPanel').classList.add('hidden');
-      document.getElementById('formPanel').classList.add('hidden');
-      document.getElementById('detailPanel').classList.remove('hidden');
-      document.getElementById('detailTitle').textContent = o.custom_title || o.project_name || o.address || id || '物件詳情';
-      var html = '';
-      fields.forEach(function(kv){ var k=kv[0], l=kv[1], v=o[k]; if (v==null||v==='') return; html += '<p><strong class="text-slate-400">'+escapeHtml(l)+'</strong>：'+escapeHtml(String(v))+'</p>'; });
-      if (o.ad_outputs && o.ad_outputs.length) {
-        html += '<div class="mt-4 pt-3 border-t border-slate-600">';
-        html += '<p class="text-xs text-slate-400 mb-3 font-medium">廣告產出</p>';
-        o.ad_outputs.forEach(function(ad) {
-          html += '<div class="mb-4 bg-slate-700/50 rounded-xl p-3 border border-slate-600">';
-          html += '<p class="text-xs font-semibold text-blue-400 mb-2">' + escapeHtml(ad.type || ad.title || '') + '</p>';
-          html += '<div class="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap">' + escapeHtml(ad.content || '（無內容）') + '</div>';
-          html += '</div>';
-        });
-        html += '</div>';
-      }
-      document.getElementById('detailContent').innerHTML = html || '<p class="text-slate-500">無內容</p>';
-    });
-  }
-
-  function editCurrentDetail() { if (window._detailId) editObj(window._detailId); }
-  function closeDetail() { document.getElementById('detailPanel').classList.add('hidden'); document.getElementById('listPanel').classList.remove('hidden'); loadList(); }
-
-  function delObj(id) {
-    if (!confirm('確定刪除此物件？')) return;
-    var delUrl = _currentOrgId
-      ? '/api/objects/' + encodeURIComponent(id) + '?org_id=' + encodeURIComponent(_currentOrgId)
-      : apiUrl('/api/objects/' + encodeURIComponent(id));
-    fetch(delUrl, { method: 'DELETE' }).then(r => r.json()).then(function(d){
-      if (d.error) toast(d.error, 'error'); else { toast('已刪除', 'success'); loadList(); }
-    });
-  }
-
-  try { loadUsers(); } catch(e) { console.error('loadUsers 失敗:', e); }
-  try { loadList();  } catch(e) { console.error('loadList 失敗:', e); }
+  // 我的物件相關函式已移至廣告文案工具（文案收藏）
 
   // ── URL 參數：自動切換到公司物件庫並定位到該物件 ──
   // 支援 ?prop_name=<案名>（直接搜尋，不需登入API）
@@ -4773,26 +4134,16 @@ OBJECTS_APP_HTML = """
 
   // ══ 分頁切換 ══
   function switchTab(tab) {
-    var paneMyEl       = document.getElementById('pane-my');
     var paneCompanyEl  = document.getElementById('pane-company');
     var paneSettingsEl = document.getElementById('pane-settings');
     var paneOrgEl      = document.getElementById('pane-org');
-    var btnNewObj       = document.getElementById('btn-new-obj');
-    var btnNewObjMobile = document.getElementById('btn-new-obj-mobile');
 
     // 全部隱藏（加 null check 防止任一元素不存在時崩潰）
-    if (paneMyEl)       paneMyEl.style.display       = 'none';
     if (paneCompanyEl)  paneCompanyEl.style.display  = 'none';
     if (paneSettingsEl) paneSettingsEl.style.display = 'none';
     if (paneOrgEl)      paneOrgEl.style.display      = 'none';
-    if (btnNewObj)       btnNewObj.style.display       = 'none';
-    if (btnNewObjMobile) btnNewObjMobile.style.display = 'none';
 
-    if (tab === 'my') {
-      if (paneMyEl) paneMyEl.style.display = 'block';
-      if (btnNewObj)       btnNewObj.style.display       = '';
-      if (btnNewObjMobile) btnNewObjMobile.style.display = '';
-    } else if (tab === 'company') {
+    if (tab === 'company') {
       if (paneCompanyEl) paneCompanyEl.style.display = 'block';
     } else if (tab === 'buyers') {
       if (paneBuyersEl) paneBuyersEl.style.display = 'block';
