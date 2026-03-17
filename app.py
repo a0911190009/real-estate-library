@@ -1153,8 +1153,10 @@ def _row_to_doc(headers, row):
     return data
 
 
-def _do_sync():
-    """執行同步（在背景執行緒中跑）。回傳結果 dict。"""
+def _do_sync(org_id=None):
+    """執行同步（在背景執行緒中跑）。回傳結果 dict。
+    org_id：寫入每筆文件的組織 ID，None 表示自動從管理員帳號查詢。
+    """
     import logging
     log = logging.getLogger("sync-properties")
     started = datetime.now(timezone.utc).isoformat()
@@ -1167,6 +1169,17 @@ def _do_sync():
         db = _get_db()
         if db is None:
             return {"ok": False, "error": "Firestore 未連線", "started": started}
+
+        # 自動查詢管理員的 org_id（用於標記每筆資料的組織歸屬）
+        if not org_id:
+            for admin_email in ADMIN_EMAILS:
+                org = _get_org_for_user(admin_email)
+                if org:
+                    org_id = org["org_id"]
+                    log.info(f"同步使用組織 org_id={org_id}（來自 {admin_email}）")
+                    break
+            if not org_id:
+                log.warning("管理員尚未加入任何組織，本次同步不寫入 org_id")
 
         col = db.collection("company_properties")
 
@@ -1186,6 +1199,9 @@ def _do_sync():
             doc_id = seq
             seen_ids.add(doc_id)
             d["_synced_at"] = started
+            # 標記組織歸屬，讓不同公司的資料互相隔離
+            if org_id:
+                d["org_id"] = org_id
             col.document(doc_id).set(d)
             written += 1
             if written % 200 == 0:
@@ -1290,11 +1306,18 @@ def api_sync_properties():
     if _sync_status["running"]:
         return jsonify({"error": "同步正在執行中，請稍後再試"}), 429
 
+    # 取得觸發者的 org_id（管理員登入時有 session，排程器則自動查詢）
+    trigger_org_id = None
+    if email:
+        org = _get_org_for_user(email)
+        if org:
+            trigger_org_id = org["org_id"]
+
     # 背景執行（避免 Cloud Scheduler timeout）
     def run():
         _sync_status["running"] = True
         try:
-            result = _do_sync()
+            result = _do_sync(org_id=trigger_org_id)
             _sync_status["last_result"] = result
             _sync_status["last_run"] = result.get("finished") or result.get("started")
         finally:
@@ -1451,6 +1474,18 @@ def api_company_properties_search():
     if err:
         return jsonify({"error": err[0]}), err[1]
 
+    # ── 組織存取控制 ──
+    # 必須是管理員、或屬於某個組織，才可使用公司物件庫
+    is_admin = _is_admin(email)
+    org_info = _get_org_for_user(email)
+    org_id = org_info["org_id"] if org_info else None
+
+    if not is_admin and not org_id:
+        return jsonify({
+            "error": "您尚未加入任何組織，請聯絡管理員將您加入公司組織後，才能使用公司物件庫。",
+            "need_org": True
+        }), 403
+
     db = _get_db()
     if db is None:
         return jsonify({"error": "Firestore 未連線"}), 503
@@ -1488,6 +1523,12 @@ def api_company_properties_search():
         # 全量讀取
         docs = list(query.stream())
         results = [{"id": d.id, **d.to_dict()} for d in docs]
+
+        # ── 組織資料隔離 ──
+        # 有 org_id 的用戶只看自己組織的資料（或尚未標記 org_id 的舊資料）
+        # 管理員且無 org_id 時看全部（初始設定期間的 fallback）
+        if org_id:
+            results = [r for r in results if r.get("org_id") == org_id or not r.get("org_id")]
 
         # Python 端：類別過濾（支援多選 + 「其他」群組）
         if categories:
@@ -2209,6 +2250,12 @@ def api_company_property_get(prop_id):
     if err:
         return jsonify({"error": err[0]}), err[1]
 
+    is_admin = _is_admin(email)
+    org_info = _get_org_for_user(email)
+    org_id = org_info["org_id"] if org_info else None
+    if not is_admin and not org_id:
+        return jsonify({"error": "您尚未加入任何組織，無法存取物件資料。", "need_org": True}), 403
+
     db = _get_db()
     if db is None:
         return jsonify({"error": "Firestore 未連線"}), 503
@@ -2219,6 +2266,10 @@ def api_company_property_get(prop_id):
             return jsonify({"error": "找不到物件"}), 404
 
         data = {"id": doc.id, **doc.to_dict()}
+
+        # 確認這筆資料屬於用戶的組織（有 org_id 的文件才做檢查）
+        if org_id and data.get("org_id") and data.get("org_id") != org_id:
+            return jsonify({"error": "無權存取此物件"}), 403
 
         # 只有管理員才能看敏感欄位
         if not _is_admin(email):
@@ -2664,6 +2715,12 @@ def api_company_properties_options():
     if err:
         return jsonify({"error": err[0]}), err[1]
 
+    is_admin = _is_admin(email)
+    org_info = _get_org_for_user(email)
+    org_id = org_info["org_id"] if org_info else None
+    if not is_admin and not org_id:
+        return jsonify({"error": "您尚未加入任何組織，無法取得篩選選項。", "need_org": True}), 403
+
     db = _get_db()
     if db is None:
         return jsonify({"error": "Firestore 未連線"}), 503
@@ -2675,6 +2732,9 @@ def api_company_properties_options():
         agents = set()
         for doc in col.stream():
             d = doc.to_dict()
+            # 只統計屬於自己組織的資料（or 尚未標記 org_id 的舊資料）
+            if org_id and d.get("org_id") and d.get("org_id") != org_id:
+                continue
             if d.get("物件類別"):
                 raw_categories.add(d["物件類別"])
             if d.get("鄉/市/鎮"):
@@ -4794,7 +4854,7 @@ OBJECTS_APP_HTML = """
       return fetch('/api/company-properties/search?' + p2.toString())
         .then(function(r) { return r.json(); })
         .then(function(data) {
-          if (data.error) return Promise.reject(data.error);
+          if (data.error) return Promise.reject(data);  // 傳整個 data object，保留 need_org 屬性
           var all = accumulated.concat(data.items || []);
           if (page < (data.pages || 1)) {
             return fetchAll(page + 1, all);
@@ -4808,7 +4868,21 @@ OBJECTS_APP_HTML = """
       : fetch('/api/company-properties/search?' + params.toString()).then(function(r){ return r.json(); });
 
     fetchPromise.then(function(data) {
-        if (data.error) { list.innerHTML = '<p class="text-red-400 text-center py-8">' + escapeHtml(data.error) + '</p>'; return; }
+        if (data.error) {
+          if (data.need_org) {
+            // 尚未加入組織 → 顯示友善說明，而非紅色錯誤
+            list.innerHTML = '<div style="text-align:center;padding:40px 20px;color:var(--txm);">'
+              + '<div style="font-size:2.5rem;margin-bottom:12px;">🏢</div>'
+              + '<p style="font-size:1rem;font-weight:600;color:var(--tx);margin-bottom:8px;">公司物件庫需要加入組織才能使用</p>'
+              + '<p style="font-size:0.875rem;">' + escapeHtml(data.error) + '</p>'
+              + '</div>';
+          } else {
+            list.innerHTML = '<p class="text-red-400 text-center py-8">' + escapeHtml(data.error) + '</p>';
+          }
+          document.getElementById('cp-info').classList.add('hidden');
+          document.getElementById('cp-pagination').classList.add('hidden');
+          return;
+        }
         var items = data.items || [];
         if (!items.length) {
           list.innerHTML = '<p class="text-center py-10" style="color:var(--txm);">找不到符合條件的物件</p>';
@@ -5125,7 +5199,18 @@ OBJECTS_APP_HTML = """
           });
         });
     }).catch(function(e) {
-      list.innerHTML = '<p class="text-red-400 text-center py-8">載入失敗：' + escapeHtml(String(e)) + '</p>';
+      // fetchAll reject 時傳的是 data object（含 error 和 need_org），一般網路錯誤是字串
+      if (e && e.need_org) {
+        list.innerHTML = '<div style="text-align:center;padding:40px 20px;color:var(--txm);">'
+          + '<div style="font-size:2.5rem;margin-bottom:12px;">🏢</div>'
+          + '<p style="font-size:1rem;font-weight:600;color:var(--tx);margin-bottom:8px;">公司物件庫需要加入組織才能使用</p>'
+          + '<p style="font-size:0.875rem;">' + escapeHtml(e.error || '') + '</p>'
+          + '</div>';
+        document.getElementById('cp-info').classList.add('hidden');
+        document.getElementById('cp-pagination').classList.add('hidden');
+      } else {
+        list.innerHTML = '<p class="text-red-400 text-center py-8">載入失敗：' + escapeHtml(String(e && e.error ? e.error : e)) + '</p>';
+      }
     });
   }
 
