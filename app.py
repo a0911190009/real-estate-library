@@ -2978,6 +2978,39 @@ def proxy_import_from_ad_history():
     return jsonify(data), code
 
 
+@app.route("/api/objects/for-service-selling", methods=["GET"])
+def api_objects_for_service_selling():
+    """供 AD 以 X-Service-Key 列出銷售中的公司物件（欄位轉為英文名）。"""
+    if not _verify_service_key():
+        return jsonify({"error": "需要有效的 X-Service-Key"}), 401
+    db = _get_db()
+    if not db:
+        return jsonify({"items": []})
+    try:
+        docs = db.collection("company_properties").stream()
+        items = []
+        for doc in docs:
+            r = doc.to_dict()
+            if not _is_selling(r):
+                continue
+            items.append({
+                "id":           doc.id,
+                "project_name": str(r.get("案名", "") or ""),
+                "address":      str(r.get("物件地址", "") or ""),
+                "price":        r.get("售價(萬)", ""),
+                "building_ping": r.get("建坪", ""),
+                "land_ping":    r.get("地坪", ""),
+                "case_number":  str(r.get("委託編號", "") or ""),
+                "location_area": str(r.get("鄉/市/鎮", "") or ""),
+            })
+        items.sort(key=lambda x: x["project_name"])
+        return jsonify({"items": items})
+    except Exception as e:
+        import logging
+        logging.warning("Library: for-service-selling 失敗: %s", e)
+        return jsonify({"items": [], "error": str(e)})
+
+
 @app.route("/")
 def index():
     email = session.get("user_email")
