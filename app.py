@@ -5401,7 +5401,6 @@ OBJECTS_APP_HTML = """
     var DARK_ONLY = ['oled'];
     var _style = 'navy';
     var _mode  = 'system';
-    var _PORTAL = (PORTAL_URL_JS || '').replace(/[/]$/, '');
 
     function _applyTheme() {
       var sys = window.matchMedia('(prefers-color-scheme: dark)').matches;
