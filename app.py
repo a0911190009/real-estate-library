@@ -90,6 +90,14 @@ app.config["SESSION_COOKIE_SECURE"] = True
 # Session 持久化：關閉瀏覽器後仍保留 30 天（避免每次都要重新登入）
 app.config["PERMANENT_SESSION_LIFETIME"] = 60 * 60 * 24 * 30  # 30 天（秒）
 
+# ─── 開發模式：自動模擬登入 ───
+@app.before_request
+def auto_login_dev():
+    """本地開發時，SKIP_AUTH=true 會自動模擬登入，跳過 Portal token 驗證"""
+    if os.getenv('SKIP_AUTH'):
+        session['user_email'] = 'dev@test.com'
+        session['user_name'] = '開發測試'
+
 PORTAL_URL = (os.environ.get("PORTAL_URL") or "").strip()
 BUYER_URL  = (os.environ.get("BUYER_URL") or "").strip()
 ADMIN_EMAILS = [e.strip() for e in (os.environ.get("ADMIN_EMAILS") or "").split(",") if e.strip()]
