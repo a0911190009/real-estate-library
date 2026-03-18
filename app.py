@@ -2149,6 +2149,268 @@ def api_word_snapshot_upload_csv():
     })
 
 
+@app.route("/api/word-review/analyze", methods=["POST"])
+def api_word_review_analyze():
+    """
+    分析 export_word_table.py 產出的 CSV 與 Firestore 的配對結果，
+    回傳高信心/中信心/衝突/未配對分組，但不寫入 Firestore。僅管理員。
+    """
+    import csv as _csv
+    import io as _io
+    from datetime import date as _date
+
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email):
+        return jsonify({"error": "僅管理員可使用"}), 403
+
+    if 'file' not in request.files:
+        return jsonify({"error": "請選擇 CSV 檔案"}), 400
+    f = request.files['file']
+    if not f.filename.lower().endswith('.csv'):
+        return jsonify({"error": "僅支援 .csv 格式"}), 400
+
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+
+    raw = f.read().decode('utf-8-sig')
+    reader = _csv.DictReader(_io.StringIO(raw))
+    rows = list(reader)
+    if not rows:
+        return jsonify({"error": "CSV 內容為空"}), 400
+
+    today = _date.today()
+
+    def _pe(s):
+        """解析各種到期日格式 → YYYY/MM/DD"""
+        s = str(s).strip()
+        if not s:
+            return ""
+        m = re.match(r'^(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日$', s)
+        if m:
+            try:
+                return f"{int(m.group(1))+1911}/{int(m.group(2)):02d}/{int(m.group(3)):02d}"
+            except Exception:
+                return ""
+        m = re.match(r'^(\d{1,2})/(\d{1,2})$', s)
+        if m:
+            try:
+                mo, dy = int(m.group(1)), int(m.group(2))
+                c = _date(today.year, mo, dy)
+                if c < today:
+                    c = _date(today.year + 1, mo, dy)
+                return c.strftime("%Y/%m/%d")
+            except Exception:
+                return ""
+        return ""
+
+    def _nn(s):
+        """正規化案名：去空白、去委託號碼"""
+        s = re.sub(r'\s+', '', str(s))
+        return re.sub(r'(?<!\d)\d{5,6}(?!\d)', '', s).strip()
+
+    def _pn(s):
+        """解析數字"""
+        try:
+            return float(str(s).replace(',', '').strip())
+        except Exception:
+            return None
+
+    def _sm(a, b, tol=0.10):
+        """兩數字是否在容差內相近"""
+        if a is None or b is None:
+            return None
+        if a == 0 and b == 0:
+            return True
+        if a == 0 or b == 0:
+            return False
+        return abs(a - b) / max(abs(a), abs(b)) <= tol
+
+    # 建立 CSV 索引
+    csv_by_name, csv_by_comm = {}, {}
+    for row in rows:
+        name = str(row.get('案名', '')).strip()
+        if not name:
+            continue
+        comm = str(row.get('委託號碼', '') or '').strip()
+        comm = comm.zfill(6) if comm.strip('0') else ''
+        price  = _pn(row.get('售價萬', ''))
+        expiry = _pe(row.get('到期日', ''))
+        area   = (_pn(row.get('面積坪')) or _pn(row.get('地坪'))
+                  or _pn(row.get('室內坪')) or _pn(row.get('建坪')))
+        key = _nn(name)
+        if not key:
+            continue
+        p = {'案名': name, '委託號碼': comm, '售價萬': price,
+             '面積坪': area, '委託到期日': expiry,
+             '經紀人': str(row.get('經紀人', '') or '').strip()}
+        csv_by_name.setdefault(key, []).append(p)
+        if comm and comm != '000000':
+            csv_by_comm[comm] = p
+
+    col  = db.collection("company_properties")
+    docs = list(col.stream())
+
+    high, medium, conflict = [], [], []
+    matched_comms = set()
+    matched_names = set()  # 已配對的 CSV 正規案名
+
+    for doc in docs:
+        dd  = doc.to_dict()
+        dbn = dd.get("案名", "")
+        dbc = str(dd.get("委託編號", "") or "").strip().zfill(6) if dd.get("委託編號") else ""
+        dbs = int(dd.get("資料序號", 0) or 0)
+        dba = (_pn(dd.get("地坪")) or _pn(dd.get("室內坪")) or _pn(dd.get("建坪")))
+        dbp = _pn(dd.get("售價(萬)"))
+        dbe = dd.get("委託到期日", "")
+        dbg = str(dd.get("經紀人", "") or "").strip()
+
+        match, match_by, score, name_changed = None, "", 0, False
+
+        # Step 1：委託號碼精確比對（最優先，硬資料識別）
+        if dbc and dbc != '000000':
+            cm = csv_by_comm.get(dbc)
+            if cm:
+                match = cm
+                match_by = "委託號碼"
+                score = 10
+                if cm.get('案名') and _nn(cm['案名']) != _nn(dbn):
+                    name_changed = True
+                matched_comms.add(dbc)
+
+        # Step 2：案名 + 特徵評分比對
+        if not match:
+            candidates = csv_by_name.get(_nn(dbn), [])
+            best, best_score = None, -999
+            for cand in candidates:
+                cc = cand.get('委託號碼', '')
+                cg = str(cand.get('經紀人', '') or '').strip()
+                # 委託號碼都有值且不同 → 明確是不同物件
+                if (cc and cc != '000000' and dbc and dbc != '000000' and cc != dbc):
+                    continue
+                s = 0
+                if dbg and cg:
+                    s += 5 if dbg == cg else -8  # 經紀人是最重要的辨識依據
+                ps  = _sm(dbp, cand.get('售價萬'), 0.05)
+                as_ = _sm(dba, cand.get('面積坪'), 0.10)
+                if ps  is True:  s += 3
+                if ps  is False: s -= 5
+                if as_ is True:  s += 2
+                if as_ is False: s -= 3
+                if cand.get('委託到期日'): s += 1
+                if s > best_score:
+                    best_score = s
+                    best = cand
+            if best is not None:
+                match = best
+                score = best_score
+                match_by = "案名比對"
+                matched_names.add(_nn(best.get('案名', '')))
+
+        if not match:
+            continue
+
+        item = {
+            "doc_id":    doc.id,
+            "db_name":   dbn,
+            "db_seq":    dbs,
+            "db_price":  dbp,
+            "db_expiry": dbe,
+            "db_agent":  dbg,
+            "csv_name":   match.get('案名', ''),
+            "csv_price":  match.get('售價萬'),
+            "csv_expiry": match.get('委託到期日', ''),
+            "csv_agent":  match.get('經紀人', ''),
+            "csv_comm":   match.get('委託號碼', ''),
+            "match_by":   match_by,
+            "score":      score,
+            "name_changed": name_changed,
+        }
+        # 信心分組：委託號碼命中或高評分 → 高信心；0-2分 → 中信心；負分 → 衝突
+        if match_by == "委託號碼" or score >= 3:
+            high.append(item)
+        elif score >= 0:
+            medium.append(item)
+        else:
+            item["conflict_reason"] = f"同名但特徵衝突（分數 {score}，可能是不同物件或助理打錯）"
+            conflict.append(item)
+
+    # 找 CSV 裡找不到 Firestore 對應的物件（理論上不應存在，但打錯字時可能發生）
+    unmatched = []
+    for key, payloads in csv_by_name.items():
+        for p in payloads:
+            cc = p.get('委託號碼', '')
+            if cc and cc in matched_comms:
+                continue
+            if _nn(p.get('案名', '')) in matched_names:
+                continue
+            unmatched.append({
+                "csv_name":   p.get('案名', ''),
+                "csv_price":  p.get('售價萬'),
+                "csv_expiry": p.get('委託到期日', ''),
+                "csv_agent":  p.get('經紀人', ''),
+                "csv_comm":   cc,
+                "reason": "Firestore 中找不到對應物件（可能案名差異大或助理打錯）",
+            })
+
+    return jsonify({
+        "ok":       True,
+        "csv_rows": len(rows),
+        "high":     high,
+        "medium":   medium,
+        "conflict": conflict,
+        "unmatched": unmatched,
+    })
+
+
+@app.route("/api/word-review/apply", methods=["POST"])
+def api_word_review_apply():
+    """
+    套用使用者在審查介面確認的配對結果，寫入 Firestore。僅管理員。
+    Body: {"items": [{"doc_id": "...", "price": ..., "expiry": "...",
+                      "name_changed": bool, "old_name": "...", "new_name": "..."}]}
+    """
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email):
+        return jsonify({"error": "僅管理員可使用"}), 403
+
+    data  = request.json or {}
+    items = data.get("items", [])
+    if not items:
+        return jsonify({"error": "沒有要套用的項目"}), 400
+
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+
+    col = db.collection("company_properties")
+    updated = 0
+    for it in items:
+        did = it.get("doc_id")
+        if not did:
+            continue
+        upd = {"銷售中": True}  # 確認在總表上 = 銷售中
+        if it.get("expiry"):
+            upd["委託到期日"] = it["expiry"]
+        if it.get("price") is not None:
+            upd["售價(萬)"] = it["price"]
+        if it.get("name_changed") and it.get("old_name") and it.get("new_name"):
+            upd["舊案名"] = it["old_name"]
+            upd["案名"]  = it["new_name"]
+        try:
+            col.document(did).update(upd)
+            updated += 1
+        except Exception:
+            pass
+
+    return jsonify({"ok": True, "updated": updated,
+                    "message": f"已更新 {updated} 筆物件（銷售中、售價、到期日）"})
+
+
 @app.route("/api/word-snapshot/meta", methods=["POST", "GET"])
 def api_word_snapshot_meta():
     """
@@ -3577,11 +3839,11 @@ OBJECTS_APP_HTML = """
       class="px-4 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold transition">
       🔄 同步 Sheets
     </button>
-    <!-- CSV 上傳（精確更新：銷售中+到期日+售價），可一併選 word_meta.json 更新總表日期 -->
+    <!-- 比對審查：上傳 CSV → 審查配對 → 確認後寫入（僅日盛房屋管理員） -->
     <label class="flex items-center gap-1 px-4 py-1.5 rounded-lg bg-teal-700 hover:bg-teal-600 text-white text-xs font-semibold transition cursor-pointer"
-      title="上傳 export_word_table.py 產出的 CSV（公寓/房屋/農地/建地）及 word_meta.json，精確更新 Firestore 銷售中、到期日、售價">
-      📊 上傳解析 CSV
-      <input type="file" accept=".csv,.json" multiple class="hidden" onchange="cpUploadCsv(this)">
+      title="上傳 export_word_table.py 產出的 CSV，審查高/中信心配對後寫入 Firestore">
+      🔍 比對審查
+      <input type="file" accept=".csv,.json" multiple class="hidden" onchange="cpOpenReview(this)">
     </label>
     <!-- 說明按鈕 -->
     <button onclick="document.getElementById('cp-sync-help-modal').style.display='flex'"
@@ -3613,9 +3875,9 @@ OBJECTS_APP_HTML = """
               <p style="color:var(--txm);font-size:11px;margin:6px 0 0;">⏱ 資料量大時需等待 1～10 分鐘，同步中請勿重複點擊。</p>
             </div>
             <div style="background:var(--bg-t);border:1px solid var(--bd);border-radius:10px;padding:12px 14px;">
-              <p style="color:var(--ac);font-weight:700;margin:0 0 4px;font-size:13px;">📊 上傳解析 CSV（推薦）</p>
-              <p style="color:var(--txs);font-size:12px;margin:0;">上傳由本機工具 <code style="background:var(--bg-p);padding:1px 5px;border-radius:4px;color:var(--ac);">export_word_table.py</code> 解析後產出的 CSV 檔（公寓/房屋/農地/建地）及 <code style="background:var(--bg-p);padding:1px 5px;border-radius:4px;color:var(--ac);">word_meta.json</code>，精確更新 Firestore 的<strong style="color:var(--tx);">銷售中狀態、委託到期日、最新售價</strong>。</p>
-              <p style="color:var(--txm);font-size:11px;margin:6px 0 0;">💡 一次可選取 4 個 CSV + 1 個 word_meta.json，共 5 個檔案一起上傳。</p>
+              <p style="color:var(--ac);font-weight:700;margin:0 0 4px;font-size:13px;">🔍 比對審查</p>
+              <p style="color:var(--txs);font-size:12px;margin:0;">上傳由本機工具 <code style="background:var(--bg-p);padding:1px 5px;border-radius:4px;color:var(--ac);">export_word_table.py</code> 產出的 CSV（公寓/房屋/農地/建地）及 <code style="background:var(--bg-p);padding:1px 5px;border-radius:4px;color:var(--ac);">word_meta.json</code>。系統分析與 Firestore 的配對結果，分為<strong style="color:var(--ok);">高信心</strong>、<strong style="color:var(--warn);">中信心</strong>、問題三組，讓你逐一確認後寫入。</p>
+              <p style="color:var(--txm);font-size:11px;margin:6px 0 0;">💡 一次可選取 4 個 CSV + 1 個 word_meta.json，共 5 個檔案一起選取。</p>
             </div>
           </div>
         </div>
@@ -3673,23 +3935,13 @@ OBJECTS_APP_HTML = """
           </div>
 
           <!-- 情境二 -->
-          <div style="background:var(--bg-t);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;margin-bottom:10px;">
-            <p style="color:var(--ac);font-size:12px;font-weight:700;margin:0 0 10px;">📌 情境二：公司發下新版物件總表 Word 檔（完整流程）</p>
-            <div style="display:flex;flex-direction:column;gap:7px;">
-              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--bg-h);color:var(--tx);border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">1</span><span style="color:var(--txs);font-size:12px;">把新 Word 檔存至：<br><code style="background:var(--bg-p);padding:1px 6px;border-radius:4px;color:var(--ac);font-size:11px;">/Users/chenweiliang/Documents/日盛同步/物件總表/</code></span></div>
-              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--bg-h);color:var(--tx);border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">2</span><span style="color:var(--txs);font-size:12px;">本機開啟<strong style="color:var(--tx);">物件總表比對審查</strong>：<code style="background:var(--bg-p);padding:1px 6px;border-radius:4px;color:var(--ac);font-size:11px;">python3 review_v2.py</code><br>瀏覽器開 <code style="background:var(--bg-p);padding:1px 6px;border-radius:4px;color:var(--ac);font-size:11px;">localhost:5100</code></span></div>
-              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--bg-h);color:var(--tx);border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">3</span><span style="color:var(--txs);font-size:12px;">在比對審查頁面依序按完所有按鈕（解析 Word → 套用高信心 → 送出決定 → 完成審查）</span></div>
-              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--ok);color:#fff;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">✓</span><span style="color:var(--ok);font-size:12px;"><strong>完成！已直接寫入 Firestore，不需要回此頁再按任何按鈕。</strong></span></div>
-            </div>
-          </div>
-
-          <!-- 情境三（快速流程） -->
           <div style="background:var(--bg-t);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;">
-            <p style="color:#a78bfa;font-size:12px;font-weight:700;margin:0 0 10px;">📌 情境三：快速更新（跳過比對審查）</p>
-            <div style="display:flex;flex-direction:column;gap:6px;">
-              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--bg-h);color:var(--tx);border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">1</span><span style="color:var(--txs);font-size:12px;">本機執行：<code style="background:var(--bg-p);padding:1px 6px;border-radius:4px;color:var(--ac);font-size:11px;">python3 export_word_table.py</code><br><span style="color:var(--txm);font-size:11px;">→ 產出 4 個 CSV + word_meta.json</span></span></div>
-              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--ok);color:#fff;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">2</span><span style="color:var(--txs);font-size:12px;">回此頁按「<strong style="color:var(--ac);">📊 上傳解析 CSV</strong>」，選取 5 個檔案一次上傳</span></div>
-              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:#78350f;color:#fbbf24;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">!</span><span style="color:var(--txs);font-size:12px;">跳過了人工比對確認，若 Word 有解析錯誤可能造成資料不準確，建議定期仍做完整流程（情境二）。</span></div>
+            <p style="color:var(--ac);font-size:12px;font-weight:700;margin:0 0 10px;">📌 情境二：公司發下新版物件總表 Word 檔</p>
+            <div style="display:flex;flex-direction:column;gap:7px;">
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--bg-h);color:var(--tx);border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">1</span><span style="color:var(--txs);font-size:12px;">本機執行：<code style="background:var(--bg-p);padding:1px 6px;border-radius:4px;color:var(--ac);font-size:11px;">python3 export_word_table.py</code><br><span style="color:var(--txm);font-size:11px;">→ 產出 4 個 CSV + word_meta.json（於 ~/Projects/）</span></span></div>
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--bg-h);color:var(--tx);border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">2</span><span style="color:var(--txs);font-size:12px;">回此頁按「<strong style="color:var(--ac);">🔍 比對審查</strong>」，選取 4 個 CSV（可一併選 word_meta.json）</span></div>
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--bg-h);color:var(--tx);border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">3</span><span style="color:var(--txs);font-size:12px;">審查介面顯示三組結果：✅ 高信心全選套用、⚠️ 中信心逐一確認、❓ 問題筆數供參考</span></div>
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--ok);color:#fff;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">✓</span><span style="color:var(--ok);font-size:12px;"><strong>按「套用確認的配對」→ 直接寫入 Firestore，完成！</strong></span></div>
             </div>
           </div>
         </div>
@@ -3703,12 +3955,92 @@ OBJECTS_APP_HTML = """
               <p style="color:var(--txs);font-size:12px;margin:0;">讀取 Word 物件總表，精確解析各類型（公寓/房屋/農地/建地）的欄位，輸出 CSV 檔。解析規則經過多次磨合，是目前最精確的版本。<br>路徑：<code style="background:var(--bg-p);padding:1px 5px;border-radius:4px;color:var(--ac);font-size:11px;">/Users/chenweiliang/Projects/export_word_table.py</code></p>
             </div>
             <div style="border-top:1px solid var(--bd);padding-top:10px;">
-              <p style="color:#a78bfa;font-weight:600;font-size:12px;margin:0 0 3px;"><code style="background:var(--bg-p);padding:1px 5px;border-radius:4px;">review_v2.py</code>（物件總表比對審查）</p>
-              <p style="color:var(--txs);font-size:12px;margin:0;">比對 Word 解析結果與 Firestore 現有資料，找出案名異動的物件、確認低/高信心配對，<strong style="color:var(--tx);">審查確認後直接寫回 Firestore</strong>（不需再回此頁上傳 CSV）。已確認的配對會記憶，下次自動套用。<br>路徑：<code style="background:var(--bg-p);padding:1px 5px;border-radius:4px;color:var(--ac);font-size:11px;">/Users/chenweiliang/Projects/review_v2.py</code></p>
+              <p style="color:#a78bfa;font-weight:600;font-size:12px;margin:0 0 3px;"><code style="background:var(--bg-p);padding:1px 5px;border-radius:4px;">review_v2.py</code>（舊版本機審查工具，已整合進雲端）</p>
+              <p style="color:var(--txs);font-size:12px;margin:0;">本機版比對審查工具，功能已整合進此頁的「🔍 比對審查」按鈕。<br>若需要使用舊版（含記憶庫功能），路徑：<code style="background:var(--bg-p);padding:1px 5px;border-radius:4px;color:var(--ac);font-size:11px;">/Users/chenweiliang/Projects/review_v2.py</code></p>
             </div>
           </div>
         </div>
 
+      </div>
+    </div>
+  </div>
+
+  <!-- 物件總表比對審查 Modal（僅管理員，日盛房屋專用） -->
+  <div id="cp-review-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:600;align-items:flex-start;justify-content:center;padding-top:32px;"
+    onclick="if(event.target===this)this.style.display='none'">
+    <div style="background:var(--bg-s);border:1px solid var(--bd);border-radius:16px;width:96%;max-width:800px;max-height:88vh;display:flex;flex-direction:column;box-shadow:var(--sh);position:relative;">
+      <!-- Header -->
+      <div style="padding:18px 24px 12px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:12px;">
+        <span style="font-size:15px;font-weight:700;color:var(--tx);">🔍 物件總表比對審查</span>
+        <span id="rv-subtitle" style="font-size:12px;color:var(--txs);"></span>
+        <button onclick="document.getElementById('cp-review-modal').style.display='none'"
+          style="margin-left:auto;background:none;border:none;color:var(--txm);font-size:20px;cursor:pointer;line-height:1;">✕</button>
+      </div>
+      <!-- Loading -->
+      <div id="rv-loading" style="padding:48px;text-align:center;color:var(--txs);font-size:14px;">
+        <div style="font-size:28px;margin-bottom:12px;">⏳</div>
+        <div id="rv-loading-text">分析中，請稍候…</div>
+      </div>
+      <!-- 結果區 -->
+      <div id="rv-results" style="display:none;flex:1;overflow:hidden;display:flex;flex-direction:column;">
+        <!-- Tabs -->
+        <div style="display:flex;gap:0;border-bottom:1px solid var(--bd);padding:0 24px;">
+          <button id="rv-tab-high-btn" onclick="rvTab('high')"
+            style="padding:10px 16px;font-size:12px;font-weight:600;border:none;background:none;border-bottom:2px solid var(--ac);color:var(--ac);cursor:pointer;">
+            ✅ 高信心 <span id="rv-count-high" style="background:var(--ac);color:#fff;border-radius:9px;padding:1px 7px;margin-left:4px;">0</span>
+          </button>
+          <button id="rv-tab-medium-btn" onclick="rvTab('medium')"
+            style="padding:10px 16px;font-size:12px;font-weight:600;border:none;background:none;border-bottom:2px solid transparent;color:var(--txm);cursor:pointer;">
+            ⚠️ 中信心 <span id="rv-count-medium" style="background:var(--bg-h);color:var(--txs);border-radius:9px;padding:1px 7px;margin-left:4px;">0</span>
+          </button>
+          <button id="rv-tab-issues-btn" onclick="rvTab('issues')"
+            style="padding:10px 16px;font-size:12px;font-weight:600;border:none;background:none;border-bottom:2px solid transparent;color:var(--txm);cursor:pointer;">
+            ❓ 問題 <span id="rv-count-issues" style="background:var(--bg-h);color:var(--txs);border-radius:9px;padding:1px 7px;margin-left:4px;">0</span>
+          </button>
+        </div>
+        <!-- Tab 內容 -->
+        <div style="flex:1;overflow-y:auto;padding:16px 24px;">
+          <!-- 高信心 -->
+          <div id="rv-pane-high">
+            <p style="font-size:12px;color:var(--txs);margin:0 0 10px;">以下物件配對信心高，預設全選。取消勾選即排除。</p>
+            <table style="width:100%;border-collapse:collapse;font-size:12px;">
+              <thead>
+                <tr style="color:var(--txm);border-bottom:1px solid var(--bd);">
+                  <th style="padding:6px 8px;text-align:left;font-weight:600;width:32px;">
+                    <input type="checkbox" id="rv-high-all" checked onchange="rvToggleAll(this)" style="cursor:pointer;">
+                  </th>
+                  <th style="padding:6px 8px;text-align:left;font-weight:600;">案名</th>
+                  <th style="padding:6px 8px;text-align:right;font-weight:600;">售價（萬）</th>
+                  <th style="padding:6px 8px;text-align:left;font-weight:600;">到期日</th>
+                  <th style="padding:6px 8px;text-align:left;font-weight:600;">配對方式</th>
+                </tr>
+              </thead>
+              <tbody id="rv-high-list"></tbody>
+            </table>
+          </div>
+          <!-- 中信心 -->
+          <div id="rv-pane-medium" style="display:none;">
+            <p style="font-size:12px;color:var(--txs);margin:0 0 10px;">以下物件配對有些不確定，請逐一確認。✅ 確認配對，❌ 跳過此筆。</p>
+            <div id="rv-medium-list" style="display:flex;flex-direction:column;gap:8px;"></div>
+          </div>
+          <!-- 問題（衝突 + 未配對） -->
+          <div id="rv-pane-issues" style="display:none;">
+            <p style="font-size:12px;color:var(--txs);margin:0 0 10px;">以下項目無法自動配對或特徵衝突，僅供參考，不會自動套用。</p>
+            <div id="rv-issues-list" style="display:flex;flex-direction:column;gap:8px;"></div>
+          </div>
+        </div>
+        <!-- Footer -->
+        <div style="padding:14px 24px;border-top:1px solid var(--bd);display:flex;align-items:center;gap:12px;background:var(--bg-s);">
+          <span id="rv-apply-count" style="font-size:12px;color:var(--txs);">已選 0 筆</span>
+          <button onclick="cpApplyReview()"
+            style="margin-left:auto;padding:8px 20px;border-radius:8px;background:var(--ac);color:#fff;border:none;font-size:13px;font-weight:700;cursor:pointer;">
+            ✅ 套用確認的配對
+          </button>
+          <button onclick="document.getElementById('cp-review-modal').style.display='none'"
+            style="padding:8px 16px;border-radius:8px;background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);font-size:12px;cursor:pointer;">
+            取消
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -4850,6 +5182,296 @@ OBJECTS_APP_HTML = """
     }
     uploadNext(0);
   }
+
+  // ── 物件總表比對審查（日盛房屋管理員專用）────────────────────────
+  // 全域狀態：審查結果與使用者選擇
+  var _rvData = { high: [], medium: [], conflict: [], unmatched: [] };
+  var _rvConfirmed = {};   // {doc_id: {doc_id, price, expiry, name_changed, old_name, new_name}}
+  var _rvMetaFiles = [];   // word_meta.json 暫存，等審查完再上傳
+
+  // 入口：使用者選取檔案後觸發
+  function cpOpenReview(input) {
+    if (!input.files || !input.files.length) return;
+    var allFiles = Array.from(input.files);
+    var jsonFiles = allFiles.filter(function(f){ return f.name.toLowerCase().endsWith('.json'); });
+    var csvFiles  = allFiles.filter(function(f){ return f.name.toLowerCase().endsWith('.csv'); });
+    _rvMetaFiles = jsonFiles;
+
+    if (!csvFiles.length) {
+      // 只選了 json → 直接上傳 meta
+      jsonFiles.forEach(function(jf){ _rvUploadMeta(jf); });
+      input.value = '';
+      return;
+    }
+
+    // 開啟 Modal，進入 loading 狀態
+    var modal = document.getElementById('cp-review-modal');
+    modal.style.display = 'flex';
+    document.getElementById('rv-loading').style.display = 'block';
+    document.getElementById('rv-results').style.display = 'none';
+    document.getElementById('rv-loading-text').textContent = '分析中（0/' + csvFiles.length + '）…';
+    document.getElementById('rv-subtitle').textContent = '';
+
+    // 重置狀態
+    _rvData = { high: [], medium: [], conflict: [], unmatched: [] };
+    _rvConfirmed = {};
+
+    // 逐一分析每個 CSV
+    var done = 0;
+    function analyzeNext(idx) {
+      if (idx >= csvFiles.length) {
+        _rvRender();
+        input.value = '';
+        return;
+      }
+      var fd = new FormData();
+      fd.append('file', csvFiles[idx]);
+      document.getElementById('rv-loading-text').textContent =
+        '分析中（' + (idx+1) + '/' + csvFiles.length + '）：' + csvFiles[idx].name;
+      fetch('/api/word-review/analyze', { method: 'POST', body: fd })
+        .then(function(r){ return r.json(); })
+        .then(function(d) {
+          if (d.error) { toast('❌ ' + d.error, 'error'); }
+          else {
+            _rvData.high     = _rvData.high.concat(d.high     || []);
+            _rvData.medium   = _rvData.medium.concat(d.medium   || []);
+            _rvData.conflict = _rvData.conflict.concat(d.conflict || []);
+            _rvData.unmatched = _rvData.unmatched.concat(d.unmatched || []);
+          }
+          analyzeNext(idx + 1);
+        })
+        .catch(function(){ toast('❌ 分析失敗：' + csvFiles[idx].name, 'error'); analyzeNext(idx+1); });
+    }
+    analyzeNext(0);
+  }
+
+  // 渲染審查結果
+  function _rvRender() {
+    var d = _rvData;
+    var issueCount = d.conflict.length + d.unmatched.length;
+
+    // 顯示結果區
+    document.getElementById('rv-loading').style.display = 'none';
+    document.getElementById('rv-results').style.display = 'flex';
+    document.getElementById('rv-subtitle').textContent =
+      '高信心 ' + d.high.length + ' 筆 ／ 中信心 ' + d.medium.length + ' 筆 ／ 問題 ' + issueCount + ' 筆';
+
+    // 更新 tab 數字
+    document.getElementById('rv-count-high').textContent   = d.high.length;
+    document.getElementById('rv-count-medium').textContent = d.medium.length;
+    document.getElementById('rv-count-issues').textContent = issueCount;
+
+    // 高信心表格
+    var highTbody = document.getElementById('rv-high-list');
+    highTbody.innerHTML = '';
+    d.high.forEach(function(item) {
+      // 預設加入確認清單
+      _rvConfirmed[item.doc_id] = {
+        doc_id: item.doc_id,
+        price:  item.csv_price,
+        expiry: item.csv_expiry,
+        name_changed: item.name_changed,
+        old_name: item.name_changed ? item.db_name  : '',
+        new_name: item.name_changed ? item.csv_name : '',
+      };
+      var priceStr = '';
+      if (item.csv_price !== null && item.csv_price !== undefined) {
+        if (item.db_price !== null && item.db_price !== undefined && item.db_price !== item.csv_price) {
+          priceStr = '<span style="color:var(--txm);text-decoration:line-through;">' + item.db_price + '</span>'
+                   + ' → <strong style="color:var(--ok);">' + item.csv_price + '</strong>';
+        } else {
+          priceStr = item.csv_price;
+        }
+      }
+      var nameStr = item.name_changed
+        ? '<span style="color:var(--warn);" title="案名改動">📝 ' + item.db_name + ' → ' + item.csv_name + '</span>'
+        : item.db_name;
+      var tr = document.createElement('tr');
+      tr.style.cssText = 'border-bottom:1px solid var(--bd);';
+      tr.innerHTML = '<td style="padding:6px 8px;"><input type="checkbox" checked data-docid="' + item.doc_id + '" onchange="rvToggleHigh(this)" style="cursor:pointer;"></td>'
+        + '<td style="padding:6px 8px;color:var(--tx);">' + nameStr + '</td>'
+        + '<td style="padding:6px 8px;text-align:right;">' + priceStr + '</td>'
+        + '<td style="padding:6px 8px;color:var(--txs);">' + (item.csv_expiry || '-') + '</td>'
+        + '<td style="padding:6px 8px;color:var(--txm);">' + item.match_by + '</td>';
+      highTbody.appendChild(tr);
+    });
+
+    // 中信心清單
+    var medList = document.getElementById('rv-medium-list');
+    medList.innerHTML = '';
+    d.medium.forEach(function(item) {
+      var priceStr = (item.csv_price !== null && item.csv_price !== undefined)
+        ? (item.db_price !== null && item.db_price !== item.csv_price
+            ? item.db_price + ' → ' + item.csv_price
+            : String(item.csv_price))
+        : '-';
+      var div = document.createElement('div');
+      div.style.cssText = 'background:var(--bg-t);border:1px solid var(--bd);border-radius:10px;padding:12px 14px;display:flex;align-items:flex-start;gap:10px;';
+      div.innerHTML =
+        '<div style="flex:1;">'
+        + '<div style="font-size:13px;font-weight:600;color:var(--tx);margin-bottom:4px;">' + item.db_name + '</div>'
+        + '<div style="font-size:11px;color:var(--txs);">售價：' + priceStr + ' 萬｜到期日：' + (item.csv_expiry || '-')
+        + '｜CSV 經紀人：' + (item.csv_agent || '-') + '｜Firestore 經紀人：' + (item.db_agent || '-')
+        + '｜評分：' + item.score + '</div>'
+        + '</div>'
+        + '<button onclick="rvAcceptMedium(this, \'' + item.doc_id + '\')"'
+        + '  data-item=\'' + JSON.stringify({doc_id:item.doc_id, price:item.csv_price, expiry:item.csv_expiry, name_changed:item.name_changed, old_name:item.db_name, new_name:item.csv_name}).replace(/'/g,"&#39;") + '\''
+        + '  style="padding:5px 12px;border-radius:7px;background:var(--ok);color:#fff;border:none;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;">✅ 確認</button>'
+        + '<button onclick="rvSkipMedium(this)"'
+        + '  style="padding:5px 12px;border-radius:7px;background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);font-size:12px;cursor:pointer;white-space:nowrap;">❌ 跳過</button>';
+      medList.appendChild(div);
+    });
+
+    // 問題清單（衝突 + 未配對）
+    var issueList = document.getElementById('rv-issues-list');
+    issueList.innerHTML = '';
+    d.conflict.forEach(function(item) {
+      var div = document.createElement('div');
+      div.style.cssText = 'background:var(--bg-t);border:1px solid var(--warn);border-radius:10px;padding:12px 14px;';
+      div.innerHTML = '<div style="font-size:12px;font-weight:600;color:var(--warn);margin-bottom:3px;">⚡ 同名但特徵衝突</div>'
+        + '<div style="font-size:13px;color:var(--tx);">' + item.db_name + '</div>'
+        + '<div style="font-size:11px;color:var(--txs);margin-top:3px;">Firestore 經紀人：' + (item.db_agent||'-') + '｜CSV 經紀人：' + (item.csv_agent||'-') + '｜' + (item.conflict_reason||'') + '</div>';
+      issueList.appendChild(div);
+    });
+    d.unmatched.forEach(function(item) {
+      var div = document.createElement('div');
+      div.style.cssText = 'background:var(--bg-t);border:1px solid var(--bd);border-radius:10px;padding:12px 14px;';
+      div.innerHTML = '<div style="font-size:12px;font-weight:600;color:var(--txm);margin-bottom:3px;">❓ 找不到對應 Firestore 物件</div>'
+        + '<div style="font-size:13px;color:var(--tx);">' + item.csv_name + '</div>'
+        + '<div style="font-size:11px;color:var(--txs);margin-top:3px;">經紀人：' + (item.csv_agent||'-') + '｜' + (item.reason||'') + '</div>';
+      issueList.appendChild(div);
+    });
+
+    rvTab('high');
+    _rvUpdateCount();
+  }
+
+  // 切換 Tab
+  function rvTab(name) {
+    ['high','medium','issues'].forEach(function(t) {
+      document.getElementById('rv-pane-' + t).style.display = (t===name) ? 'block' : 'none';
+      var btn = document.getElementById('rv-tab-' + t + '-btn');
+      if (t===name) {
+        btn.style.borderBottomColor = 'var(--ac)';
+        btn.style.color = 'var(--ac)';
+      } else {
+        btn.style.borderBottomColor = 'transparent';
+        btn.style.color = 'var(--txm)';
+      }
+    });
+  }
+
+  // 勾選/取消全選（高信心）
+  function rvToggleAll(cb) {
+    document.querySelectorAll('#rv-high-list input[type=checkbox]').forEach(function(el) {
+      el.checked = cb.checked;
+      var did = el.dataset.docid;
+      if (cb.checked) {
+        // 找回 data
+        var item = _rvData.high.find(function(x){ return x.doc_id === did; });
+        if (item) _rvConfirmed[did] = {doc_id:did, price:item.csv_price, expiry:item.csv_expiry, name_changed:item.name_changed, old_name:item.db_name, new_name:item.csv_name};
+      } else {
+        delete _rvConfirmed[did];
+      }
+    });
+    _rvUpdateCount();
+  }
+
+  // 單一高信心勾選切換
+  function rvToggleHigh(cb) {
+    var did = cb.dataset.docid;
+    if (cb.checked) {
+      var item = _rvData.high.find(function(x){ return x.doc_id === did; });
+      if (item) _rvConfirmed[did] = {doc_id:did, price:item.csv_price, expiry:item.csv_expiry, name_changed:item.name_changed, old_name:item.db_name, new_name:item.csv_name};
+    } else {
+      delete _rvConfirmed[did];
+    }
+    _rvUpdateCount();
+  }
+
+  // 中信心：確認一筆
+  function rvAcceptMedium(btn, docId) {
+    try {
+      var data = JSON.parse(btn.dataset.item.replace(/&#39;/g,"'"));
+      _rvConfirmed[docId] = data;
+    } catch(e) {
+      _rvConfirmed[docId] = {doc_id: docId};
+    }
+    btn.textContent = '✅ 已確認';
+    btn.disabled = true;
+    btn.style.opacity = '0.6';
+    btn.nextElementSibling.style.display = 'none';
+    _rvUpdateCount();
+  }
+
+  // 中信心：跳過一筆
+  function rvSkipMedium(btn) {
+    btn.textContent = '跳過';
+    btn.disabled = true;
+    btn.style.opacity = '0.5';
+    btn.previousElementSibling.style.display = 'none';
+  }
+
+  // 更新底部「已選 N 筆」
+  function _rvUpdateCount() {
+    var n = Object.keys(_rvConfirmed).length;
+    document.getElementById('rv-apply-count').textContent = '已選 ' + n + ' 筆';
+  }
+
+  // 套用確認的配對，寫入 Firestore
+  function cpApplyReview() {
+    var items = Object.values(_rvConfirmed);
+    if (!items.length) { toast('請先勾選要套用的物件', 'warn'); return; }
+    if (!confirm('確定要套用 ' + items.length + ' 筆配對結果，寫入 Firestore？')) return;
+
+    var btn = document.querySelector('#cp-review-modal [onclick="cpApplyReview()"]');
+    if (btn) { btn.disabled = true; btn.textContent = '寫入中…'; }
+
+    fetch('/api/word-review/apply', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({items: items}),
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(d) {
+      if (d.error) {
+        toast('❌ ' + d.error, 'error');
+        if (btn) { btn.disabled=false; btn.textContent='✅ 套用確認的配對'; }
+        return;
+      }
+      toast('✅ 已更新 ' + d.updated + ' 筆物件（銷售中、售價、到期日）', 'success');
+      document.getElementById('cp-review-modal').style.display = 'none';
+      // 上傳 word_meta.json（若有的話）
+      _rvMetaFiles.forEach(function(jf){ _rvUploadMeta(jf); });
+      _rvMetaFiles = [];
+      // 重新整理物件列表
+      setTimeout(function(){ cpFetch(); }, 600);
+    })
+    .catch(function(){ toast('❌ 套用失敗，請稍後再試', 'error'); });
+  }
+
+  // 上傳 word_meta.json（總表日期）
+  function _rvUploadMeta(jf) {
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      try {
+        var meta = JSON.parse(e.target.result);
+        fetch('/api/word-snapshot/meta', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(meta),
+        }).then(function(r){ return r.json(); }).then(function(d) {
+          if (d.ok) {
+            var el = document.getElementById('cp-doc-date');
+            if (el) el.textContent = '📄 總表：' + d.minguo;
+            toast('✅ 物件總表日期已更新：' + d.minguo, 'success');
+          }
+        }).catch(function(){});
+      } catch(e) {}
+    };
+    reader.readAsText(jf, 'utf-8');
+  }
+  // ────────────────────────────────────────────────────────────────────
 
   function cpFetch() {
     var list = document.getElementById('cp-list');
