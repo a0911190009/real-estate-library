@@ -3713,7 +3713,7 @@ OBJECTS_APP_HTML = """
     #app-sidebar .sb-logo{display:flex;align-items:center;justify-content:center;padding:14px 0;border-bottom:1px solid var(--bd);}
     #app-sidebar .sb-logo img{height:48px;width:48px;object-fit:contain;border-radius:8px;}
     #app-sidebar .sb-logo span{display:none;}
-    #app-sidebar nav{flex:1;padding:12px 0;display:flex;flex-direction:column;align-items:center;gap:4px;overflow-y:auto;min-height:0;}
+    #app-sidebar nav{flex:1;padding:12px 0;display:flex;flex-direction:column;align-items:center;gap:4px;overflow-y:auto;overflow-x:hidden;min-height:0;}
     #app-sidebar nav a{width:60px;height:60px;min-width:60px;min-height:60px;display:flex;align-items:center;justify-content:center;border-radius:14px;color:var(--txs);text-decoration:none;transition:background 0.15s,color 0.15s;position:relative;}
     #app-sidebar nav a img{width:36px;height:36px;object-fit:contain;}
     #app-sidebar nav a .sb-nav-text{display:none;}
