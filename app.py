@@ -3923,9 +3923,9 @@ OBJECTS_APP_HTML = """
 <div id="user-dropdown-backdrop" style="display:none;position:fixed;inset:0;z-index:499;" onclick="libCloseDropdown()"></div>
 
 <!-- 更多選單遮罩 -->
-<div id="more-menu-overlay" onclick="closeMoreMenu()" style="display:none;position:fixed;inset:0;z-index:240;background:rgba(0,0,0,0.4);"></div>
+<div id="more-menu-overlay" onclick="toggleMoreMenu()" style="display:none;position:fixed;inset:0;z-index:240;background:rgba(0,0,0,0.4);"></div>
 <!-- 更多選單面板（從底部滑出，含周邊調查、行事曆、實價登錄） -->
-<div id="more-menu" style="display:none;position:fixed;left:0;right:0;z-index:252;background:var(--bg-s);border-radius:20px 20px 0 0;border-top:1px solid var(--bd);padding:16px 16px 20px;padding-bottom:calc(84px + env(safe-area-inset-bottom));bottom:0;max-height:70vh;overflow-y:auto;transition:background 0.3s;">
+<div id="more-menu" style="display:none;position:fixed;left:0;right:0;z-index:252;background:var(--bg-s);border-radius:20px 20px 0 0;border-top:1px solid var(--bd);padding:16px 16px 20px;padding-bottom:calc(20px + env(safe-area-inset-bottom));bottom:calc(64px + env(safe-area-inset-bottom));max-height:70vh;overflow-y:auto;transition:background 0.3s;">
   <div style="width:36px;height:4px;background:var(--bd);border-radius:2px;margin:0 auto 16px;"></div>
   <div style="font-size:0.72rem;font-weight:700;color:var(--txm);margin-bottom:12px;text-transform:uppercase;letter-spacing:0.06em;">更多工具</div>
   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">
@@ -3959,7 +3959,7 @@ OBJECTS_APP_HTML = """
     <a id="tb-buyer" href="javascript:void(0)" class="app-tb-item">
       <img src="/static/tool-buyer.png" alt="" style="width:36px;height:36px;object-fit:contain;" /><span>買方</span>
     </a>
-    <button onclick="openMoreMenu()" class="app-tb-item" style="border:none;background:none;cursor:pointer;">
+    <button onclick="toggleMoreMenu()" class="app-tb-item" style="border:none;background:none;cursor:pointer;">
       <span style="font-size:1.4rem;line-height:1;">⋯</span><span>更多</span>
     </button>
   </div>
@@ -6568,14 +6568,13 @@ OBJECTS_APP_HTML = """
 </script>
 <script>
 /* ── 更多選單（手機） ── */
-function openMoreMenu(){
-  document.getElementById('more-menu').style.display='block';
-  document.getElementById('more-menu-overlay').style.display='block';
+function toggleMoreMenu(){
+  var m=document.getElementById('more-menu'),o=document.getElementById('more-menu-overlay');
+  var isOpen=m.style.display!=='none'&&m.style.display!=='';
+  m.style.display=isOpen?'none':'block';
+  o.style.display=isOpen?'none':'block';
 }
-function closeMoreMenu(){
-  document.getElementById('more-menu').style.display='none';
-  document.getElementById('more-menu-overlay').style.display='none';
-}
+function closeMoreMenu(){ toggleMoreMenu(); }
 /* 手機才顯示底部 Tab Bar */
 (function(){
   var tb=document.getElementById('app-tab-bar');
