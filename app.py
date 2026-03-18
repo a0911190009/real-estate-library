@@ -2411,6 +2411,43 @@ def api_word_review_apply():
                     "message": f"已更新 {updated} 筆物件（銷售中、售價、到期日）"})
 
 
+@app.route("/api/word-review/debug-doc", methods=["POST"])
+def api_word_review_debug_doc():
+    """暫時 debug 端點：上傳 .doc，回傳 antiword 原始輸出前 3000 字元"""
+    import tempfile, os, subprocess
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email):
+        return jsonify({"error": "僅管理員可使用"}), 403
+    if 'file' not in request.files:
+        return jsonify({"error": "請選擇檔案"}), 400
+    f = request.files['file']
+    tmp = tempfile.NamedTemporaryFile(suffix='.doc', delete=False)
+    try:
+        f.save(tmp.name)
+        tmp.close()
+        # 測試預設輸出
+        r1 = subprocess.run(["antiword", tmp.name],
+                            capture_output=True, text=True, encoding='utf-8', errors='replace')
+        # 測試 -x db 輸出
+        r2 = subprocess.run(["antiword", "-x", "db", tmp.name],
+                            capture_output=True, text=True, encoding='utf-8', errors='replace')
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+    return jsonify({
+        "default_rc": r1.returncode,
+        "default_stderr": r1.stderr[:500],
+        "default_stdout_head": r1.stdout[:2000],
+        "docbook_rc": r2.returncode,
+        "docbook_stderr": r2.stderr[:500],
+        "docbook_stdout_head": r2.stdout[:3000],
+    })
+
+
 @app.route("/api/word-review/upload-doc", methods=["POST"])
 def api_word_review_upload_doc():
     """
