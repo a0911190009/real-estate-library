@@ -3405,6 +3405,7 @@ OBJECTS_APP_HTML = """
 <head>
   <meta charset="utf-8">
   <link rel="icon" type="image/png" href="/static/favicon.png">
+  <link rel="apple-touch-icon" href="/static/logo.png">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>物件庫 - 房仲 AI 工具平台</title>
   <!-- 立刻清除 URL 中的 token，避免 Tailwind CDN 掃描到長字串造成 SyntaxError -->
