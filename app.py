@@ -3575,14 +3575,21 @@ def api_objects_for_service_selling():
             r = doc.to_dict()
             if not _is_selling(r):
                 continue
+            # 建坪：公寓優先用「室內坪」，房屋用「建坪」
+            building = r.get("建坪") or r.get("室內坪") or ""
             items.append({
-                "id":           doc.id,
-                "project_name": str(r.get("案名", "") or ""),
-                "address":      str(r.get("物件地址", "") or ""),
-                "price":        r.get("售價(萬)", ""),
-                "building_ping": r.get("建坪", ""),
-                "land_ping":    r.get("地坪", ""),
-                "case_number":  str(r.get("委託編號", "") or ""),
+                "id":            doc.id,
+                "project_name":  str(r.get("案名", "") or ""),
+                "address":       str(r.get("物件地址", "") or ""),
+                "price":         r.get("售價(萬)", ""),
+                "building_ping": building,
+                "land_ping":     r.get("地坪", ""),
+                "authority_ping": str(r.get("權狀坪數", "") or ""),
+                "layout":        str(r.get("格局", "") or ""),
+                "floor":         str(r.get("樓層", "") or r.get("樓別", "") or ""),
+                "age":           str(r.get("屋齡", "") or ""),
+                "parking":       str(r.get("車位", "") or ""),
+                "case_number":   str(r.get("委託編號", "") or ""),
                 "location_area": str(r.get("鄉/市/鎮", "") or ""),
             })
         items.sort(key=lambda x: x["project_name"])
