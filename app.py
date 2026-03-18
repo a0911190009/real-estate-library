@@ -2411,6 +2411,229 @@ def api_word_review_apply():
                     "message": f"已更新 {updated} 筆物件（銷售中、售價、到期日）"})
 
 
+@app.route("/api/word-review/upload-doc", methods=["POST"])
+def api_word_review_upload_doc():
+    """
+    直接上傳 Word .doc 物件總表，雲端解析後與 Firestore 比對，
+    回傳高信心/中信心/衝突/未配對分組，但不寫入 Firestore。僅管理員。
+    """
+    import tempfile, os
+    from datetime import date as _date
+
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email):
+        return jsonify({"error": "僅管理員可使用"}), 403
+
+    if 'file' not in request.files:
+        return jsonify({"error": "請選擇 .doc 檔案"}), 400
+    f = request.files['file']
+    if not f.filename.lower().endswith('.doc'):
+        return jsonify({"error": "僅支援 .doc 格式"}), 400
+
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+
+    # 儲存到暫存檔，antiword 需要實體路徑
+    tmp = tempfile.NamedTemporaryFile(suffix='.doc', delete=False)
+    try:
+        f.save(tmp.name)
+        tmp.close()
+        try:
+            import word_parser
+            parsed = word_parser.parse_doc(tmp.name)
+        except RuntimeError as e:
+            return jsonify({"error": f"Word 解析失敗：{e}"}), 500
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+
+    doc_date = parsed.get("doc_date")
+
+    # 合併四類物件為統一清單（格式與 CSV analyze 相同）
+    all_entries = (parsed.get("condo") or []) + (parsed.get("house") or []) + \
+                  (parsed.get("farm") or []) + (parsed.get("build") or [])
+
+    today = _date.today()
+
+    def _pe(s):
+        s = str(s).strip()
+        if not s:
+            return ""
+        m = re.match(r'^(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日$', s)
+        if m:
+            try:
+                return f"{int(m.group(1))+1911}/{int(m.group(2)):02d}/{int(m.group(3)):02d}"
+            except Exception:
+                return ""
+        m = re.match(r'^(\d{1,2})/(\d{1,2})$', s)
+        if m:
+            try:
+                mo, dy = int(m.group(1)), int(m.group(2))
+                c = _date(today.year, mo, dy)
+                if c < today:
+                    c = _date(today.year + 1, mo, dy)
+                return c.strftime("%Y/%m/%d")
+            except Exception:
+                return ""
+        return ""
+
+    def _nn(s):
+        s = re.sub(r'\s+', '', str(s))
+        return re.sub(r'(?<!\d)\d{5,6}(?!\d)', '', s).strip()
+
+    def _pn(s):
+        try:
+            return float(str(s).replace(',', '').strip())
+        except Exception:
+            return None
+
+    def _sm(a, b, tol=0.10):
+        if a is None or b is None:
+            return None
+        if a == 0 and b == 0:
+            return True
+        if a == 0 or b == 0:
+            return False
+        return abs(a - b) / max(abs(a), abs(b)) <= tol
+
+    # 建立條目索引
+    csv_by_name, csv_by_comm = {}, {}
+    for row in all_entries:
+        name = str(row.get('案名', '')).strip()
+        if not name:
+            continue
+        comm = str(row.get('委託號碼', '') or '').strip()
+        comm = comm.zfill(6) if comm.strip('0') else ''
+        price  = _pn(row.get('售價萬', ''))
+        expiry = _pe(row.get('到期日', ''))
+        area   = (_pn(row.get('面積坪')) or _pn(row.get('地坪'))
+                  or _pn(row.get('室內坪')) or _pn(row.get('建坪')))
+        key = _nn(name)
+        if not key:
+            continue
+        p = {'案名': name, '委託號碼': comm, '售價萬': price,
+             '面積坪': area, '委託到期日': expiry,
+             '經紀人': str(row.get('經紀人', '') or '').strip()}
+        csv_by_name.setdefault(key, []).append(p)
+        if comm and comm != '000000':
+            csv_by_comm[comm] = p
+
+    col  = db.collection("company_properties")
+    docs = list(col.stream())
+
+    high, medium, conflict = [], [], []
+    matched_comms = set()
+    matched_names = set()
+
+    for doc in docs:
+        dd  = doc.to_dict()
+        dbn = dd.get("案名", "")
+        dbc = str(dd.get("委託編號", "") or "").strip().zfill(6) if dd.get("委託編號") else ""
+        dbs = int(dd.get("資料序號", 0) or 0)
+        dba = (_pn(dd.get("地坪")) or _pn(dd.get("室內坪")) or _pn(dd.get("建坪")))
+        dbp = _pn(dd.get("售價(萬)"))
+        dbe = dd.get("委託到期日", "")
+        dbg = str(dd.get("經紀人", "") or "").strip()
+
+        match, match_by, score, name_changed = None, "", 0, False
+
+        if dbc and dbc != '000000':
+            cm = csv_by_comm.get(dbc)
+            if cm:
+                match = cm
+                match_by = "委託號碼"
+                score = 10
+                if cm.get('案名') and _nn(cm['案名']) != _nn(dbn):
+                    name_changed = True
+                matched_comms.add(dbc)
+
+        if not match:
+            candidates = csv_by_name.get(_nn(dbn), [])
+            best, best_score = None, -999
+            for cand in candidates:
+                cc = cand.get('委託號碼', '')
+                cg = str(cand.get('經紀人', '') or '').strip()
+                if (cc and cc != '000000' and dbc and dbc != '000000' and cc != dbc):
+                    continue
+                s = 0
+                if dbg and cg:
+                    s += 5 if dbg == cg else -8
+                ps  = _sm(dbp, cand.get('售價萬'), 0.05)
+                as_ = _sm(dba, cand.get('面積坪'), 0.10)
+                if ps  is True:  s += 3
+                if ps  is False: s -= 5
+                if as_ is True:  s += 2
+                if as_ is False: s -= 3
+                if cand.get('委託到期日'): s += 1
+                if s > best_score:
+                    best_score = s
+                    best = cand
+            if best is not None:
+                match = best
+                score = best_score
+                match_by = "案名比對"
+                matched_names.add(_nn(best.get('案名', '')))
+
+        if not match:
+            continue
+
+        item = {
+            "doc_id":    doc.id,
+            "db_name":   dbn,
+            "db_seq":    dbs,
+            "db_price":  dbp,
+            "db_expiry": dbe,
+            "db_agent":  dbg,
+            "csv_name":   match.get('案名', ''),
+            "csv_price":  match.get('售價萬'),
+            "csv_expiry": match.get('委託到期日', ''),
+            "csv_agent":  match.get('經紀人', ''),
+            "csv_comm":   match.get('委託號碼', ''),
+            "match_by":   match_by,
+            "score":      score,
+            "name_changed": name_changed,
+        }
+        if match_by == "委託號碼" or score >= 3:
+            high.append(item)
+        elif score >= 0:
+            medium.append(item)
+        else:
+            item["conflict_reason"] = f"同名但特徵衝突（分數 {score}，可能是不同物件或助理打錯）"
+            conflict.append(item)
+
+    unmatched = []
+    for key, payloads in csv_by_name.items():
+        for p in payloads:
+            cc = p.get('委託號碼', '')
+            if cc and cc in matched_comms:
+                continue
+            if _nn(p.get('案名', '')) in matched_names:
+                continue
+            unmatched.append({
+                "csv_name":   p.get('案名', ''),
+                "csv_price":  p.get('售價萬'),
+                "csv_expiry": p.get('委託到期日', ''),
+                "csv_agent":  p.get('經紀人', ''),
+                "csv_comm":   cc,
+                "reason": "Firestore 中找不到對應物件（可能案名差異大或助理打錯）",
+            })
+
+    return jsonify({
+        "ok":       True,
+        "csv_rows": len(all_entries),
+        "high":     high,
+        "medium":   medium,
+        "conflict": conflict,
+        "unmatched": unmatched,
+        "doc_date": doc_date,
+    })
+
+
 @app.route("/api/word-snapshot/meta", methods=["POST", "GET"])
 def api_word_snapshot_meta():
     """
@@ -3844,7 +4067,7 @@ OBJECTS_APP_HTML = """
     <label class="flex items-center gap-1 px-4 py-1.5 rounded-lg bg-teal-700 hover:bg-teal-600 text-white text-xs font-semibold transition cursor-pointer"
       title="上傳 export_word_table.py 產出的 CSV，審查高/中信心配對後寫入 Firestore">
       🔍 比對審查
-      <input type="file" accept=".csv,.json" multiple class="hidden" onchange="cpOpenReview(this)">
+      <input type="file" accept=".csv,.json,.doc" multiple class="hidden" onchange="cpOpenReview(this)">
     </label>
     <!-- 說明按鈕 -->
     <button onclick="document.getElementById('cp-sync-help-modal').style.display='flex'"
@@ -5196,16 +5419,60 @@ OBJECTS_APP_HTML = """
     var allFiles = Array.from(input.files);
     var jsonFiles = allFiles.filter(function(f){ return f.name.toLowerCase().endsWith('.json'); });
     var csvFiles  = allFiles.filter(function(f){ return f.name.toLowerCase().endsWith('.csv'); });
+    var docFiles  = allFiles.filter(function(f){ return f.name.toLowerCase().endsWith('.doc'); });
     _rvMetaFiles = jsonFiles;
 
+    // --- 路徑一：直接上傳 .doc（雲端解析） ---
+    if (docFiles.length) {
+      var modal = document.getElementById('cp-review-modal');
+      modal.style.display = 'flex';
+      document.getElementById('rv-loading').style.display = 'block';
+      document.getElementById('rv-results').style.display = 'none';
+      document.getElementById('rv-loading-text').textContent = '上傳並解析 Word 物件總表…';
+      document.getElementById('rv-subtitle').textContent = '';
+      _rvData = { high: [], medium: [], conflict: [], unmatched: [] };
+      _rvConfirmed = {};
+
+      var fd = new FormData();
+      fd.append('file', docFiles[0]);   // 每次只傳一個 .doc
+      fetch('/api/word-review/upload-doc', { method: 'POST', body: fd })
+        .then(function(r){ return r.json(); })
+        .then(function(d) {
+          if (d.error) {
+            toast('❌ ' + d.error, 'error');
+            modal.style.display = 'none';
+            input.value = '';
+            return;
+          }
+          // 更新總表日期顯示
+          if (d.doc_date) {
+            var el = document.getElementById('cp-doc-date');
+            if (el) el.textContent = '📄 總表：' + d.doc_date;
+          }
+          // 合併分析結果
+          _rvData.high      = d.high      || [];
+          _rvData.medium    = d.medium    || [];
+          _rvData.conflict  = d.conflict  || [];
+          _rvData.unmatched = d.unmatched || [];
+          _rvRender();
+          input.value = '';
+        })
+        .catch(function(e){
+          toast('❌ 上傳失敗，請稍後再試', 'error');
+          modal.style.display = 'none';
+          input.value = '';
+        });
+      return;
+    }
+
+    // --- 路徑二：只選了 json → 直接上傳 meta ---
     if (!csvFiles.length) {
-      // 只選了 json → 直接上傳 meta
       jsonFiles.forEach(function(jf){ _rvUploadMeta(jf); });
       input.value = '';
       return;
     }
 
-    // 開啟 Modal，進入 loading 狀態
+    // --- 路徑三：CSV 逐一分析 ---
     var modal = document.getElementById('cp-review-modal');
     modal.style.display = 'flex';
     document.getElementById('rv-loading').style.display = 'block';
@@ -5218,7 +5485,6 @@ OBJECTS_APP_HTML = """
     _rvConfirmed = {};
 
     // 逐一分析每個 CSV
-    var done = 0;
     function analyzeNext(idx) {
       if (idx >= csvFiles.length) {
         _rvRender();
