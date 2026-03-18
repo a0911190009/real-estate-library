@@ -3875,6 +3875,7 @@ OBJECTS_APP_HTML = """
     <a href="javascript:void(0)" id="sb-buyer" class="hidden"><img src="/static/tool-buyer.png" alt="" /><span class="sb-nav-text">買方管理</span><span class="sb-tooltip">買方管理</span></a>
     <a href="javascript:void(0)" id="sb-survey" class="hidden"><img src="/static/tool-survey.png" alt="" /><span class="sb-nav-text">周邊調查</span><span class="sb-tooltip">周邊調查</span></a>
     <a href="javascript:void(0)" id="sb-calendar" class="hidden"><img src="/static/tool-calendar.png" alt="" /><span class="sb-nav-text">業務行事曆</span><span class="sb-tooltip">業務行事曆</span></a>
+    <a href="javascript:void(0)" id="sb-notes" class="hidden"><img src="/static/tool-doc.png" alt="" /><span class="sb-nav-text">記事本</span><span class="sb-tooltip">記事本</span></a>
   </nav>
   <div class="sb-user">
     <!-- 桌機：只顯示頭像，文字隱藏 -->
@@ -3936,6 +3937,9 @@ OBJECTS_APP_HTML = """
     </a>
     <a id="more-price" href="javascript:void(0)" onclick="closeMoreMenu()" style="display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px 4px;border-radius:12px;background:var(--bg-t,#f5f5f7);text-decoration:none;color:var(--tx);">
       <img src="/static/tool-price.png" alt="" style="width:42px;height:42px;object-fit:contain;" /><span style="font-size:0.65rem;font-weight:600;">實價登錄</span>
+    </a>
+    <a id="more-notes" href="javascript:void(0)" onclick="closeMoreMenu()" style="display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px 4px;border-radius:12px;background:var(--bg-t,#f5f5f7);text-decoration:none;color:var(--tx);">
+      <img src="/static/tool-doc.png" alt="" style="width:42px;height:42px;object-fit:contain;" /><span style="font-size:0.65rem;font-weight:600;">記事本</span>
     </a>
   </div>
 </div>
@@ -6421,6 +6425,10 @@ OBJECTS_APP_HTML = """
         if (sbSurvey) { sbSurvey.href = portalBase + '/api/enter/survey'; sbSurvey.target = 'tool-survey'; sbSurvey.classList.remove('hidden'); }
         var sbCalendar = document.getElementById('sb-calendar');
         if (sbCalendar) { sbCalendar.href = portalBase + '/api/enter/calendar'; sbCalendar.target = 'tool-calendar'; sbCalendar.classList.remove('hidden'); }
+        var sbNotes = document.getElementById('sb-notes');
+        if (sbNotes) { sbNotes.href = portalBase + '/notes'; sbNotes.target = 'tool-portal'; sbNotes.classList.remove('hidden'); }
+        var moreNotes = document.getElementById('more-notes');
+        if (moreNotes) { moreNotes.href = portalBase + '/notes'; moreNotes.target = 'tool-portal'; }
         var ddPlans = document.getElementById('dd-plans');
         if (ddPlans) { ddPlans.href = plansUrl; ddPlans.classList.remove('hidden'); }
         var ddAccount = document.getElementById('dd-account');
