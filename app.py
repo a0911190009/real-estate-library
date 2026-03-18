@@ -3982,7 +3982,7 @@ OBJECTS_APP_HTML = """
         <div id="rv-loading-text">分析中，請稍候…</div>
       </div>
       <!-- 結果區 -->
-      <div id="rv-results" style="display:none;flex:1;overflow:hidden;display:flex;flex-direction:column;">
+      <div id="rv-results" style="display:none;flex:1;overflow:hidden;flex-direction:column;">
         <!-- Tabs -->
         <div style="display:flex;gap:0;border-bottom:1px solid var(--bd);padding:0 24px;">
           <button id="rv-tab-high-btn" onclick="rvTab('high')"
@@ -5314,9 +5314,9 @@ OBJECTS_APP_HTML = """
         + '｜CSV 經紀人：' + (item.csv_agent || '-') + '｜Firestore 經紀人：' + (item.db_agent || '-')
         + '｜評分：' + item.score + '</div>'
         + '</div>'
-        + '<button onclick="rvAcceptMedium(this, \'' + item.doc_id + '\')"'
-        + '  data-item=\'' + JSON.stringify({doc_id:item.doc_id, price:item.csv_price, expiry:item.csv_expiry, name_changed:item.name_changed, old_name:item.db_name, new_name:item.csv_name}).replace(/'/g,"&#39;") + '\''
-        + '  style="padding:5px 12px;border-radius:7px;background:var(--ok);color:#fff;border:none;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;">✅ 確認</button>'
+        + '<button onclick="rvAcceptMedium(this)" data-docid="' + item.doc_id + '"'
+        + ' data-item="' + JSON.stringify({doc_id:item.doc_id, price:item.csv_price, expiry:item.csv_expiry, name_changed:item.name_changed, old_name:item.db_name, new_name:item.csv_name}).replace(/"/g,"&quot;") + '"'
+        + ' style="padding:5px 12px;border-radius:7px;background:var(--ok);color:#fff;border:none;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;">✅ 確認</button>'
         + '<button onclick="rvSkipMedium(this)"'
         + '  style="padding:5px 12px;border-radius:7px;background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);font-size:12px;cursor:pointer;white-space:nowrap;">❌ 跳過</button>';
       medList.appendChild(div);
@@ -5390,9 +5390,10 @@ OBJECTS_APP_HTML = """
   }
 
   // 中信心：確認一筆
-  function rvAcceptMedium(btn, docId) {
+  function rvAcceptMedium(btn) {
+    var docId = btn.dataset.docid;
     try {
-      var data = JSON.parse(btn.dataset.item.replace(/&#39;/g,"'"));
+      var data = JSON.parse(btn.dataset.item);
       _rvConfirmed[docId] = data;
     } catch(e) {
       _rvConfirmed[docId] = {doc_id: docId};
