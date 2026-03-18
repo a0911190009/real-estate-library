@@ -37,15 +37,69 @@ STATUSES     = {'空', '自', '租', '空租', '空/自', '部分空'}
 # ────────────────────────────────────────────
 
 def get_word_text(path):
-    """使用 antiword 將 .doc 轉換為純文字（Linux/Cloud Run 環境）"""
+    """
+    使用 antiword -x db 將 .doc 轉為 DocBook XML，再轉成 tab 分隔文字。
+    antiword 預設輸出用空格排版，無法用 split('\t') 切出欄位；
+    改用 -x db 取得結構化 XML，解析表格後重組為 tab-separated 格式，
+    讓後面的 state machine 解析器繼續可以使用。
+    """
     import subprocess
     result = subprocess.run(
-        ["antiword", path],
+        ["antiword", "-x", "db", path],
         capture_output=True, text=True, encoding='utf-8', errors='replace'
     )
     if result.returncode != 0:
         raise RuntimeError(f"antiword 轉換失敗：{result.stderr[:200]}")
-    return result.stdout
+    return _docbook_to_tabtext(result.stdout)
+
+
+def _docbook_to_tabtext(xml_str):
+    """
+    將 antiword -x db 輸出的 DocBook XML 轉成 tab-separated 文字。
+    - 表格每 row 輸出一行，欄位以 \t 分隔（與原 textutil 輸出一致）
+    - 段落 <para> 直接輸出純文字（保留段落標題讓 state machine 偵測）
+    """
+    import xml.etree.ElementTree as ET
+
+    # 移除 DOCTYPE 宣告（ET 不支援外部 DTD，會拋 ParseError）
+    # antiword 輸出格式：<!DOCTYPE article PUBLIC "..." "..." []>
+    xml_str = re.sub(r'<!DOCTYPE\s.*?\]\s*>', '', xml_str, flags=re.DOTALL)
+    xml_str = re.sub(r'<!DOCTYPE\s[^>]*>', '', xml_str, flags=re.DOTALL)
+
+    # 找到根元素起點（容錯）
+    m = re.search(r'<article\b', xml_str)
+    if m:
+        xml_str = xml_str[m.start():]
+
+    try:
+        root = ET.fromstring(xml_str)
+    except ET.ParseError as e:
+        raise RuntimeError(f"DocBook XML 解析失敗：{e}")
+
+    lines = []
+
+    def get_text(elem):
+        """遞迴取得元素所有文字內容，合併成一個字串"""
+        return ' '.join(t.strip() for t in elem.itertext() if t.strip())
+
+    def walk(elem):
+        tag = elem.tag  # antiword 的 DocBook 不帶 namespace
+        if tag in ('table', 'informaltable'):
+            # 走遍 tgroup → tbody → row → entry
+            for row in elem.iter('row'):
+                cells = [get_text(entry) for entry in row if entry.tag == 'entry']
+                if cells:
+                    lines.append('\t'.join(cells))
+        elif tag == 'para':
+            t = get_text(elem)
+            if t:
+                lines.append(t)
+        else:
+            for child in elem:
+                walk(child)
+
+    walk(root)
+    return '\n'.join(lines)
 
 
 def extract_doc_date(text):
