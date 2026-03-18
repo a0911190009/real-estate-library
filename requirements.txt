@@ -6,3 +6,4 @@ google-cloud-storage>=2.0
 google-cloud-firestore>=2.16.0
 google-genai>=1.0
 requests>=2.31
+python-docx>=1.1

@@ -2464,17 +2464,19 @@ def api_word_review_upload_doc():
         return jsonify({"error": "僅管理員可使用"}), 403
 
     if 'file' not in request.files:
-        return jsonify({"error": "請選擇 .doc 檔案"}), 400
+        return jsonify({"error": "請選擇 .doc 或 .docx 檔案"}), 400
     f = request.files['file']
-    if not f.filename.lower().endswith('.doc'):
-        return jsonify({"error": "僅支援 .doc 格式"}), 400
+    fname_lower = f.filename.lower()
+    if not (fname_lower.endswith('.doc') or fname_lower.endswith('.docx')):
+        return jsonify({"error": "僅支援 .doc / .docx 格式"}), 400
 
     db = _get_db()
     if db is None:
         return jsonify({"error": "Firestore 未連線"}), 503
 
-    # 儲存到暫存檔，antiword 需要實體路徑
-    tmp = tempfile.NamedTemporaryFile(suffix='.doc', delete=False)
+    # 儲存到暫存檔（antiword / python-docx 需要實體路徑）
+    suffix = '.docx' if fname_lower.endswith('.docx') else '.doc'
+    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
     try:
         f.save(tmp.name)
         tmp.close()
@@ -4113,7 +4115,7 @@ OBJECTS_APP_HTML = """
     <label class="flex items-center gap-1 px-4 py-1.5 rounded-lg bg-teal-700 hover:bg-teal-600 text-white text-xs font-semibold transition cursor-pointer"
       title="上傳 export_word_table.py 產出的 CSV，審查高/中信心配對後寫入 Firestore">
       🔍 比對審查
-      <input type="file" accept=".csv,.json,.doc" multiple class="hidden" onchange="cpOpenReview(this)">
+      <input type="file" accept=".csv,.json,.doc,.docx" multiple class="hidden" onchange="cpOpenReview(this)">
     </label>
     <!-- 說明按鈕 -->
     <button onclick="document.getElementById('cp-sync-help-modal').style.display='flex'"
@@ -5465,7 +5467,7 @@ OBJECTS_APP_HTML = """
     var allFiles = Array.from(input.files);
     var jsonFiles = allFiles.filter(function(f){ return f.name.toLowerCase().endsWith('.json'); });
     var csvFiles  = allFiles.filter(function(f){ return f.name.toLowerCase().endsWith('.csv'); });
-    var docFiles  = allFiles.filter(function(f){ return f.name.toLowerCase().endsWith('.doc'); });
+    var docFiles  = allFiles.filter(function(f){ return f.name.toLowerCase().endsWith('.doc') || f.name.toLowerCase().endsWith('.docx'); });
     _rvMetaFiles = jsonFiles;
 
     // --- 路徑一：直接上傳 .doc（雲端解析） ---

@@ -1447,12 +1447,57 @@ def dedup_by_address(entries):
 # 統一入口函數（供 app.py import 使用）
 # ────────────────────────────────────────────
 
+def get_word_text_from_docx(path):
+    """
+    使用 python-docx 將 .docx 轉換為 \x07 分隔文字（與 textutil 輸出格式一致）。
+    需要用 Microsoft Word 另存為 .docx 格式（非 textutil/antiword 轉換），
+    才能保留完整的表格結構（公寓/住家/別墅/店住/農地/建地均可解析）。
+    """
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    doc = Document(path)
+    lines = []
+
+    # 按文件順序處理段落與表格（而非 doc.paragraphs / doc.tables 各自迭代）
+    for child in doc.element.body:
+        tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+
+        if tag == 'p':  # 段落
+            text = ''.join(
+                t.text for t in child.iter(qn('w:t')) if t.text
+            ).strip()
+            if text:
+                lines.append(text)
+
+        elif tag == 'tbl':  # 表格
+            for tr in child.iter(qn('w:tr')):
+                seen = set()
+                cells = []
+                for tc in tr.iter(qn('w:tc')):
+                    if id(tc) not in seen:
+                        seen.add(id(tc))
+                        cell_text = ''.join(
+                            t.text for t in tc.iter(qn('w:t')) if t.text
+                        ).strip()
+                        cells.append(cell_text)
+                if any(c for c in cells):
+                    lines.append('\x07'.join(cells))
+
+    return '\n'.join(lines)
+
+
 def parse_doc(path):
     """
-    解析 .doc 物件總表，回傳四類物件的清單與文件日期。
+    解析 .doc 或 .docx 物件總表，回傳四類物件的清單與文件日期。
+    - .docx（Microsoft Word 另存）：完整解析所有類別（推薦）
+    - .doc：僅農地/建地可解析（antiword 無法提取公寓/住家段）
     回傳 dict: {"condo": [...], "house": [...], "farm": [...], "build": [...], "doc_date": {...} or None}
     """
-    text = get_word_text(path)
+    if path.lower().endswith('.docx'):
+        text = get_word_text_from_docx(path)
+    else:
+        text = get_word_text(path)
     doc_date = extract_doc_date(text)
 
     # 公寓
