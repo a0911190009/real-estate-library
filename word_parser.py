@@ -55,21 +55,21 @@ def get_word_text(path):
 
 def _docbook_to_tabtext(xml_str):
     """
-    將 antiword -x db 輸出的 DocBook XML 轉成 tab-separated 文字。
-    - 表格每 row 輸出一行，欄位以 \t 分隔（與原 textutil 輸出一致）
-    - 段落 <para> 直接輸出純文字（保留段落標題讓 state machine 偵測）
+    將 antiword -x db 輸出的 DocBook XML 轉成 \x07 分隔文字（與 macOS textutil 輸出一致）。
+    - 表格每 row 輸出一行，欄位以 \x07 分隔
+    - 若 row 只有一個 entry（農地/建地段），直接輸出純文字（無 \x07）
+    - 段落 <para> 若不含表格，輸出純文字；若含 informaltable，遞迴走子元素
     """
     import xml.etree.ElementTree as ET
 
-    # 移除 DOCTYPE 宣告（ET 不支援外部 DTD，會拋 ParseError）
-    # antiword 輸出格式：<!DOCTYPE article PUBLIC "..." "..." []>
-    xml_str = re.sub(r'<!DOCTYPE\s.*?\]\s*>', '', xml_str, flags=re.DOTALL)
-    xml_str = re.sub(r'<!DOCTYPE\s[^>]*>', '', xml_str, flags=re.DOTALL)
-
-    # 找到根元素起點（容錯）
-    m = re.search(r'<article\b', xml_str)
+    # antiword -x db 輸出的根元素是 <book>，找到它當起點，
+    # 同時丟棄前面的 XML 宣告和 DOCTYPE（ET 不支援外部 DTD）
+    m = re.search(r'<book\b', xml_str)
     if m:
         xml_str = xml_str[m.start():]
+    else:
+        # fallback：移除 DOCTYPE
+        xml_str = re.sub(r'<!DOCTYPE\s.*?>', '', xml_str, flags=re.DOTALL)
 
     try:
         root = ET.fromstring(xml_str)
@@ -79,21 +79,35 @@ def _docbook_to_tabtext(xml_str):
     lines = []
 
     def get_text(elem):
-        """遞迴取得元素所有文字內容，合併成一個字串"""
-        return ' '.join(t.strip() for t in elem.itertext() if t.strip())
+        """遞迴取得元素所有文字內容，合併成一個字串（保留內部空白）"""
+        parts = []
+        for t in elem.itertext():
+            s = t.strip()
+            if s:
+                parts.append(s)
+        return ' '.join(parts)
 
     def walk(elem):
-        tag = elem.tag  # antiword 的 DocBook 不帶 namespace
+        tag = elem.tag  # antiword 的 DocBook 不帶 XML namespace
         if tag in ('table', 'informaltable'):
             # 走遍 tgroup → tbody → row → entry
             for row in elem.iter('row'):
                 cells = [get_text(entry) for entry in row if entry.tag == 'entry']
                 if cells:
-                    lines.append('\t'.join(cells))
+                    # 農地/建地段是單欄 table，每 row 只有 1 個 entry → 直接輸出文字（不加 \x07）
+                    # 公寓/住家段是多欄 table → 用 \x07 分隔，與 textutil 輸出格式一致
+                    lines.append('\x07'.join(cells))
         elif tag == 'para':
-            t = get_text(elem)
-            if t:
-                lines.append(t)
+            # para 可能包含 informaltable（antiword 特殊結構）
+            # 若有表格子元素 → 遞迴走；否則輸出純文字
+            has_table = any(child.tag in ('table', 'informaltable') for child in elem)
+            if has_table:
+                for child in elem:
+                    walk(child)
+            else:
+                t = get_text(elem)
+                if t:
+                    lines.append(t)
         else:
             for child in elem:
                 walk(child)
@@ -345,7 +359,7 @@ def collect_tab_tokens(text, section_type):
     in_section = False
 
     for line in text.split('\n'):
-        parts_raw = [p.strip() for p in line.split('\t')]  # 使用 \t 作為分隔符
+        parts_raw = [p.strip() for p in line.split('\x07')]  # 使用 \x07（與 textutil 輸出一致）
 
         # 租件標題行 → 跳過
         if '押金' in parts_raw and '租金' in parts_raw:
@@ -817,7 +831,7 @@ def parse_farm_entries(text):
     # 找農地段
     start_idx = None
     for idx, line in enumerate(all_lines):
-        if line == '編 號':
+        if line == '編 號' or nospace(line) == '編號':   # 容錯：antiword 可能省略空格
             nxt = [l for l in all_lines[idx+1:idx+5] if l]
             if nxt and nospace(nxt[0]) == '農地':
                 start_idx = idx
@@ -827,7 +841,7 @@ def parse_farm_entries(text):
 
     end_idx = len(all_lines)
     for idx in range(start_idx + 2, len(all_lines)):
-        if all_lines[idx] == '編 號':
+        if all_lines[idx] == '編 號' or nospace(all_lines[idx]) == '編號':
             nxt = [l for l in all_lines[idx+1:idx+5] if l]
             if nxt and nospace(nxt[0]) == '建地':
                 end_idx = idx
@@ -1091,7 +1105,7 @@ def parse_build_entries(text):
 
     start_idx = None
     for idx, line in enumerate(all_lines):
-        if line == '編 號':
+        if line == '編 號' or nospace(line) == '編號':   # 容錯：antiword 可能省略空格
             nxt = [l for l in all_lines[idx+1:idx+5] if l]
             if nxt and nospace(nxt[0]) == '建地':
                 start_idx = idx
