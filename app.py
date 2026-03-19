@@ -2628,7 +2628,7 @@ def api_word_review_upload_doc():
         if not key:
             continue
 
-        match, match_by, score, name_changed = None, "", 0, False
+        match, match_by, score, name_changed, best_has_hard = None, "", 0, False, False
 
         # 1. 先嘗試委託號碼精確比對
         if comm and comm != '000000':
