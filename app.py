@@ -2666,16 +2666,41 @@ def api_word_review_upload_doc():
                 score = best_score
                 match_by = "硬資料比對（面積）" if best_has_hard else "案名比對"
 
-        # 找不到對應 → 問題（Word 有但 Firestore 無，新物件尚未匯入）
+        # 找不到對應 → 前綴模糊搜尋找近似候選，供人工比對
         if not match:
-            unmatched.append({
-                "csv_name":   name,
-                "csv_price":  price,
-                "csv_expiry": expiry,
-                "csv_agent":  agent,
-                "csv_comm":   comm,
-                "reason": "Firestore 找不到對應（新物件尚未匯入，或案名差異大）",
-            })
+            near_miss, nm_score = None, -999
+            prefix = key[:min(len(key), 6)] if len(key) >= 4 else ''
+            if prefix:
+                for db_key, db_cands in db_by_name.items():
+                    if db_key.startswith(prefix) or prefix in db_key:
+                        for cand in db_cands:
+                            s = _agent_score(str(cand.get('經紀人','') or '').strip(), agent)
+                            if _sm(price, _pn(cand.get('售價(萬)')), 0.10) is True: s += 2
+                            if s > nm_score:
+                                nm_score = s
+                                near_miss = cand
+            um = {
+                "csv_name":     name,
+                "csv_price":    price,
+                "csv_expiry":   expiry,
+                "csv_agent":    agent,
+                "csv_comm":     comm,
+                "csv_land":     _pn(row.get('地坪')) or _pn(row.get('面積坪')),
+                "csv_build":    _pn(row.get('建坪')),
+                "csv_interior": _pn(row.get('室內坪')),
+            }
+            if near_miss:
+                um["nm_doc_id"]   = near_miss['_doc_id']
+                um["nm_name"]     = str(near_miss.get('案名', '') or '')
+                um["nm_price"]    = _pn(near_miss.get('售價(萬)'))
+                um["nm_agent"]    = str(near_miss.get('經紀人', '') or '').strip()
+                um["nm_seq"]      = str(near_miss.get('資料序號', '') or '')
+                um["nm_expiry"]   = near_miss.get('委託到期日', '')
+                um["nm_land"]     = _pn(near_miss.get('地坪'))
+                um["nm_build"]    = _pn(near_miss.get('建坪'))
+                um["nm_interior"] = _pn(near_miss.get('室內坪'))
+                um["nm_score"]    = nm_score
+            unmatched.append(um)
             continue
 
         dbn = str(match.get('案名', '') or '')
@@ -6051,12 +6076,64 @@ OBJECTS_APP_HTML = """
         + '<div style="font-size:11px;color:var(--txm);margin-top:2px;">Word 面積：' + csvArea + '｜售價：' + (item.csv_price!==null?item.csv_price+'萬':'-') + '｜經紀人：' + (item.csv_agent||'-') + '</div>';
       issueList.appendChild(div);
     });
-    d.unmatched.forEach(function(item) {
+    d.unmatched.forEach(function(item, idx) {
+      var cardId = 'unm-' + idx;
+      function fmtR(label, val) {
+        if (val === null || val === undefined || val === '') return '';
+        return '<div style="font-size:11px;color:var(--txs);margin-top:2px;"><span style="color:var(--txm);font-weight:600;">'
+          + label + '：</span>' + val + '</div>';
+      }
+      function fmtArea(land, build, interior) {
+        var p = [];
+        if (land)     p.push('地坪 ' + land + '坪');
+        if (build)    p.push('建坪 ' + build + '坪');
+        if (interior) p.push('室內 ' + interior + '坪');
+        return p.join('｜');
+      }
+      var leftCol = '<div style="flex:1;min-width:0;">'
+        + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;text-transform:uppercase;">Word 物件總表</div>'
+        + '<div style="font-size:13px;color:var(--tx);font-weight:600;">' + item.csv_name + '</div>'
+        + fmtR('售價', item.csv_price!=null ? item.csv_price+' 萬' : '')
+        + fmtR('面積', fmtArea(item.csv_land, item.csv_build, item.csv_interior))
+        + fmtR('委託號', item.csv_comm)
+        + fmtR('到期', item.csv_expiry)
+        + fmtR('經紀人', item.csv_agent)
+        + '</div>';
+      var rightCol, buttons = '';
+      if (item.nm_doc_id) {
+        var nmItemJson = JSON.stringify({
+          doc_id: item.nm_doc_id,
+          price: item.csv_price, expiry: item.csv_expiry,
+          name_changed: (item.nm_name !== item.csv_name),
+          old_name: item.nm_name, new_name: item.csv_name
+        }).replace(/"/g, '&quot;');
+        rightCol = '<div style="flex:1;min-width:0;padding-left:12px;border-left:1px solid var(--bd);">'
+          + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;">FIRESTORE 近似候選（分數 ' + item.nm_score + '）</div>'
+          + '<div style="font-size:13px;color:var(--tx);font-weight:600;' + (item.nm_name!==item.csv_name?'color:var(--warn);':'') + '">' + item.nm_name + '</div>'
+          + fmtR('售價', item.nm_price!=null ? item.nm_price+' 萬' : '')
+          + fmtR('面積', fmtArea(item.nm_land, item.nm_build, item.nm_interior))
+          + fmtR('序號', item.nm_seq)
+          + fmtR('到期', item.nm_expiry)
+          + fmtR('經紀人', item.nm_agent)
+          + '</div>';
+        buttons = '<div style="margin-top:8px;display:flex;gap:8px;">'
+          + '<button onclick="rvAcceptUnmatched(this)" data-cardid="' + cardId + '"'
+          + ' data-item="' + nmItemJson + '"'
+          + ' style="padding:4px 12px;border-radius:7px;background:var(--ok);color:#fff;border:none;font-size:12px;font-weight:700;cursor:pointer;">✅ 是同一物件</button>'
+          + '<button onclick="rvSkipUnmatched(this)" data-cardid="' + cardId + '"'
+          + ' style="padding:4px 12px;border-radius:7px;background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);font-size:12px;cursor:pointer;">— 略過</button>'
+          + '</div>';
+      } else {
+        rightCol = '<div style="flex:1;min-width:0;padding-left:12px;border-left:1px solid var(--bd);">'
+          + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;">FIRESTORE</div>'
+          + '<div style="font-size:12px;color:var(--txm);margin-top:8px;">❓ 未找到近似物件</div>'
+          + '<div style="font-size:11px;color:var(--txs);margin-top:4px;">新物件，需先匯入 Sheets</div>'
+          + '</div>';
+      }
       var div = document.createElement('div');
-      div.style.cssText = 'background:var(--bg-t);border:1px solid var(--bd);border-radius:10px;padding:12px 14px;';
-      div.innerHTML = '<div style="font-size:12px;font-weight:600;color:var(--txm);margin-bottom:3px;">❓ Word 有此物件，Firestore 找不到（新物件尚未匯入）</div>'
-        + '<div style="font-size:13px;color:var(--tx);">' + item.csv_name + '</div>'
-        + '<div style="font-size:11px;color:var(--txs);margin-top:3px;">經紀人：' + (item.csv_agent||'-') + '｜售價：' + (item.csv_price!==null&&item.csv_price!==undefined?item.csv_price+' 萬':'-') + '｜委託號：' + (item.csv_comm||'-') + '</div>';
+      div.id = cardId;
+      div.style.cssText = 'border:1px solid var(--bd);border-radius:10px;padding:12px 14px;';
+      div.innerHTML = '<div style="display:flex;gap:0;">' + leftCol + rightCol + '</div>' + buttons;
       issueList.appendChild(div);
     });
 
@@ -6128,6 +6205,27 @@ OBJECTS_APP_HTML = """
     btn.textContent = '跳過';
     btn.disabled = true;
     btn.style.opacity = '0.5';
+    btn.previousElementSibling.style.display = 'none';
+  }
+
+  // 問題：確認近似候選是同一物件
+  function rvAcceptUnmatched(btn) {
+    var cardId = btn.getAttribute('data-cardid');
+    var raw = btn.getAttribute('data-item').replace(/&quot;/g, '"');
+    var item = JSON.parse(raw);
+    _rvConfirmed[item.doc_id] = item;
+    _rvUpdateCount();
+    var card = document.getElementById(cardId);
+    if (card) { card.style.opacity = '0.5'; card.style.borderColor = 'var(--ok)'; }
+    btn.disabled = true; btn.textContent = '✅ 已確認';
+    btn.nextElementSibling.style.display = 'none';
+  }
+  // 問題：略過此筆
+  function rvSkipUnmatched(btn) {
+    var cardId = btn.getAttribute('data-cardid');
+    var card = document.getElementById(cardId);
+    if (card) card.style.opacity = '0.4';
+    btn.disabled = true; btn.textContent = '略過';
     btn.previousElementSibling.style.display = 'none';
   }
 
