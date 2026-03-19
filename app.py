@@ -2731,8 +2731,10 @@ def api_word_review_upload_doc():
                     "db_price":  _pn(near_miss.get('售價(萬)')),
                     "db_expiry": near_miss.get('委託到期日', ''),
                     "db_agent":  str(near_miss.get('經紀人', '') or '').strip(),
+                    "db_addr":   str(near_miss.get('物件地址', '') or '').strip(),
                     "csv_name":  name, "csv_price": price, "csv_expiry": expiry,
                     "csv_agent": agent, "csv_comm": comm,
+                    "csv_addr":  csv_addr_nm,
                     "match_by":  "近似候選升中信心",
                     "score":     nm_score,
                     "name_changed": _nn(str(near_miss.get('案名','') or '')) != _nn(name),
@@ -2791,6 +2793,7 @@ def api_word_review_upload_doc():
             "db_price":      dbp,
             "db_expiry":     dbe,
             "db_agent":      dbg,
+            "db_addr":       str(match.get('物件地址', '') or '').strip(),
             "db_land":       db_land,
             "db_build":      db_build,
             "db_interior":   db_interior,
@@ -2799,6 +2802,7 @@ def api_word_review_upload_doc():
             "csv_expiry":    expiry,
             "csv_agent":     agent,
             "csv_comm":      comm,
+            "csv_addr":      str(row.get('物件地址', '') or '').strip(),
             "csv_land":      csv_land,
             "csv_build":     csv_build,
             "csv_interior":  csv_interior,
@@ -4526,22 +4530,13 @@ OBJECTS_APP_HTML = """
         <div style="flex:1;overflow-y:auto;padding:16px 24px;">
           <!-- 高信心 -->
           <div id="rv-pane-high">
-            <p style="font-size:12px;color:var(--txs);margin:0 0 10px;">以下物件配對信心高，預設全選。取消勾選即排除。</p>
-            <table style="width:100%;border-collapse:collapse;font-size:12px;">
-              <thead>
-                <tr style="color:var(--txm);border-bottom:1px solid var(--bd);">
-                  <th style="padding:6px 8px;text-align:left;font-weight:600;width:32px;">
-                    <input type="checkbox" id="rv-high-all" checked onchange="rvToggleAll(this)" style="cursor:pointer;">
-                  </th>
-                  <th style="padding:6px 8px;text-align:left;font-weight:600;">案名</th>
-                  <th style="padding:6px 8px;text-align:right;font-weight:600;">Firestore現價</th>
-                  <th style="padding:6px 8px;text-align:right;font-weight:600;">Word新價</th>
-                  <th style="padding:6px 8px;text-align:left;font-weight:600;">到期日</th>
-                  <th style="padding:6px 8px;text-align:left;font-weight:600;">配對方式</th>
-                </tr>
-              </thead>
-              <tbody id="rv-high-list"></tbody>
-            </table>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+              <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--txs);cursor:pointer;">
+                <input type="checkbox" id="rv-high-all" checked onchange="rvToggleAll(this)"> 全選／全消
+              </label>
+              <span style="font-size:12px;color:var(--txs);">以下物件配對信心高，預設全選。取消勾選即排除。</span>
+            </div>
+            <div id="rv-high-list" style="display:flex;flex-direction:column;gap:8px;"></div>
           </div>
           <!-- 中信心 -->
           <div id="rv-pane-medium" style="display:none;">
@@ -6059,9 +6054,67 @@ OBJECTS_APP_HTML = """
     document.getElementById('rv-count-medium').textContent = d.medium.length;
     document.getElementById('rv-count-issues').textContent = issueCount;
 
-    // 高信心表格
-    var highTbody = document.getElementById('rv-high-list');
-    highTbody.innerHTML = '';
+    // ── 共用工具函數 ──────────────────────────────────────────────
+    // 單一欄位行（空值不顯示）
+    function fmtR(label, val) {
+      if (val === null || val === undefined || val === '') return '';
+      return '<div style="font-size:11px;color:var(--txs);margin-top:2px;"><span style="color:var(--txm);font-weight:600;">'
+        + label + '：</span>' + val + '</div>';
+    }
+    // 售價顯示（有變動則標綠）
+    function fmtPrice(dbP, csvP) {
+      if (csvP === null || csvP === undefined) return '-';
+      if (dbP !== null && dbP !== undefined && dbP !== csvP)
+        return '<span style="color:var(--txm);text-decoration:line-through;">' + dbP + '</span>'
+          + ' <strong style="color:var(--ok);">→ ' + csvP + '</strong> 萬';
+      return csvP + ' 萬';
+    }
+    // 比對方式 → 人類可讀說明
+    function fmtMatchReason(item, type) {
+      var m = item.match_by || '', s = item.score;
+      var icon = type === 'high' ? '✅' : (type === 'medium' ? '⚠️' : '⚡');
+      if (m === '委託號碼')        return icon + ' 委託號碼精確命中（最可靠）';
+      if (m === '資料序號')        return icon + ' 資料序號直接命中（最可靠）';
+      if (m === '物件地址')        return icon + ' 物件地址精確命中';
+      if (type === 'high') {
+        if (m.indexOf('面積') >= 0) return icon + ' 面積硬資料吻合，評分 ' + s + ' 分';
+        return icon + ' ' + m + '（評分 ' + s + ' 分）';
+      }
+      if (type === 'medium') {
+        if (m === '案名比對（無面積驗證）')
+          return icon + ' Firestore 無面積資料，無法以硬資料確認，僅靠案名比對（評分 ' + s + ' 分）';
+        if (m === '近似候選升中信心')
+          return icon + ' 案名略有不同，但地址／售價相符，請確認是否同一物件（評分 ' + s + ' 分）';
+        if (m.indexOf('面積') >= 0)
+          return icon + ' 面積有對應，但評分 ' + s + ' 分，未達高信心門檻（需 ≥3），請確認';
+        return icon + ' ' + m + '，評分 ' + s + ' 分，未達高信心門檻';
+      }
+      // conflict
+      return icon + ' 已確認面積硬資料，兩邊數字明顯不符，推斷非同一物件（' + (item.conflict_reason||'') + '）';
+    }
+    // 兩欄硬資料欄位（左：Word；右：Firestore）
+    function fmtHardCols(item, isRight) {
+      var addr = isRight ? item.db_addr   : item.csv_addr;
+      var land = isRight ? item.db_land   : item.csv_land;
+      var bld  = isRight ? item.db_build  : item.csv_build;
+      var inn  = isRight ? item.db_interior : item.csv_interior;
+      // 面積欄位有差異時標紅
+      function cmpStyle(a, b) {
+        if (a === null || a === undefined || b === null || b === undefined) return '';
+        return (Math.abs(a - b) / Math.max(a, b) > 0.02) ? 'color:var(--warn);font-weight:700;' : '';
+      }
+      var landStyle = isRight ? cmpStyle(item.db_land,  item.csv_land)  : '';
+      var bldStyle  = isRight ? cmpStyle(item.db_build, item.csv_build) : '';
+      var innStyle  = isRight ? cmpStyle(item.db_interior, item.csv_interior) : '';
+      return fmtR('地址', addr)
+        + (land!==null&&land!==undefined ? '<div style="font-size:11px;color:var(--txs);margin-top:2px;' + landStyle + '"><span style="color:var(--txm);font-weight:600;">地坪：</span>' + land + ' 坪</div>' : '')
+        + (bld !==null&&bld !==undefined ? '<div style="font-size:11px;color:var(--txs);margin-top:2px;' + bldStyle  + '"><span style="color:var(--txm);font-weight:600;">建坪：</span>' + bld  + ' 坪</div>' : '')
+        + (inn !==null&&inn !==undefined ? '<div style="font-size:11px;color:var(--txs);margin-top:2px;' + innStyle  + '"><span style="color:var(--txm);font-weight:600;">室內坪：</span>' + inn + ' 坪</div>' : '');
+    }
+
+    // ── 高信心卡片 ──────────────────────────────────────────────
+    var highList = document.getElementById('rv-high-list');
+    highList.innerHTML = '';
     d.high.forEach(function(item) {
       // 預設加入確認清單
       _rvConfirmed[item.doc_id] = {
@@ -6072,93 +6125,109 @@ OBJECTS_APP_HTML = """
         old_name: item.name_changed ? item.db_name  : '',
         new_name: item.name_changed ? item.csv_name : '',
       };
-      // Firestore現價（舊）
-      var dbPriceStr = (item.db_price !== null && item.db_price !== undefined) ? item.db_price : '-';
-      // Word新價（新），若與 Firestore 不同則標綠色
-      var csvPriceStr = '-';
-      if (item.csv_price !== null && item.csv_price !== undefined) {
-        if (item.db_price !== null && item.db_price !== undefined && item.db_price !== item.csv_price) {
-          csvPriceStr = '<strong style="color:var(--ok);">' + item.csv_price + '</strong>';
-        } else {
-          csvPriceStr = item.csv_price;
-        }
-      }
-      var nameStr = item.name_changed
-        ? '<span style="color:var(--warn);" title="案名改動">📝 ' + item.db_name + ' → ' + item.csv_name + '</span>'
+      var nameLabel = item.name_changed
+        ? '<span style="color:var(--warn);">📝 ' + item.db_name + ' → ' + item.csv_name + '</span>'
         : item.db_name;
-      var tr = document.createElement('tr');
-      tr.style.cssText = 'border-bottom:1px solid var(--bd);';
-      tr.innerHTML = '<td style="padding:6px 8px;"><input type="checkbox" checked data-docid="' + item.doc_id + '" onchange="rvToggleHigh(this)" style="cursor:pointer;"></td>'
-        + '<td style="padding:6px 8px;color:var(--tx);">' + nameStr + '</td>'
-        + '<td style="padding:6px 8px;text-align:right;color:var(--txm);">' + dbPriceStr + '</td>'
-        + '<td style="padding:6px 8px;text-align:right;">' + csvPriceStr + '</td>'
-        + '<td style="padding:6px 8px;color:var(--txs);">' + (item.csv_expiry || '-') + '</td>'
-        + '<td style="padding:6px 8px;color:var(--txm);">' + item.match_by + '</td>';
-      highTbody.appendChild(tr);
+      var leftCol = '<div style="flex:1;min-width:0;">'
+        + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;text-transform:uppercase;">Word 物件總表</div>'
+        + '<div style="font-size:13px;color:var(--tx);font-weight:600;">' + (item.csv_name || item.db_name) + '</div>'
+        + fmtR('售價', item.csv_price!=null ? item.csv_price+' 萬' : '')
+        + fmtHardCols(item, false)
+        + fmtR('委託號', item.csv_comm)
+        + fmtR('到期', item.csv_expiry)
+        + fmtR('經紀人', item.csv_agent)
+        + '</div>';
+      var rightCol = '<div style="flex:1;min-width:0;padding-left:12px;border-left:1px solid var(--bd);">'
+        + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;">FIRESTORE 現有</div>'
+        + '<div style="font-size:13px;color:var(--tx);font-weight:600;">' + nameLabel + '</div>'
+        + fmtR('售價', fmtPrice(item.db_price, item.csv_price))
+        + fmtHardCols(item, true)
+        + fmtR('序號', item.db_seq ? String(item.db_seq) : '')
+        + fmtR('到期', item.db_expiry)
+        + fmtR('經紀人', item.db_agent)
+        + '</div>';
+      var div = document.createElement('div');
+      div.style.cssText = 'border:1px solid var(--ok);border-radius:10px;padding:10px 14px;';
+      div.innerHTML = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">'
+        + '<input type="checkbox" checked data-docid="' + item.doc_id + '" onchange="rvToggleHigh(this)" style="cursor:pointer;flex-shrink:0;">'
+        + '<span style="font-size:11px;color:var(--ok);">' + fmtMatchReason(item, 'high') + '</span>'
+        + '</div>'
+        + '<div style="display:flex;gap:0;">' + leftCol + rightCol + '</div>';
+      highList.appendChild(div);
     });
 
-    // 中信心清單
+    // ── 中信心卡片 ──────────────────────────────────────────────
     var medList = document.getElementById('rv-medium-list');
     medList.innerHTML = '';
     d.medium.forEach(function(item) {
-      var priceStr = (item.csv_price !== null && item.csv_price !== undefined)
-        ? (item.db_price !== null && item.db_price !== item.csv_price
-            ? item.db_price + ' → ' + item.csv_price
-            : String(item.csv_price))
-        : '-';
+      var nameLabel = item.name_changed
+        ? '<span style="color:var(--warn);">📝 ' + item.db_name + ' → ' + item.csv_name + '</span>'
+        : (item.db_name || item.csv_name);
+      var leftCol = '<div style="flex:1;min-width:0;">'
+        + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;text-transform:uppercase;">Word 物件總表</div>'
+        + '<div style="font-size:13px;color:var(--tx);font-weight:600;">' + (item.csv_name || item.db_name) + '</div>'
+        + fmtR('售價', item.csv_price!=null ? item.csv_price+' 萬' : '')
+        + fmtHardCols(item, false)
+        + fmtR('委託號', item.csv_comm)
+        + fmtR('到期', item.csv_expiry)
+        + fmtR('經紀人', item.csv_agent)
+        + '</div>';
+      var rightCol = '<div style="flex:1;min-width:0;padding-left:12px;border-left:1px solid var(--bd);">'
+        + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;">FIRESTORE 現有</div>'
+        + '<div style="font-size:13px;color:var(--tx);font-weight:600;">' + nameLabel + '</div>'
+        + fmtR('售價', fmtPrice(item.db_price, item.csv_price))
+        + fmtHardCols(item, true)
+        + fmtR('序號', item.db_seq ? String(item.db_seq) : '')
+        + fmtR('到期', item.db_expiry)
+        + fmtR('經紀人', item.db_agent)
+        + '</div>';
+      var itemJson = JSON.stringify({
+        doc_id: item.doc_id, price: item.csv_price, expiry: item.csv_expiry,
+        name_changed: item.name_changed, old_name: item.db_name, new_name: item.csv_name
+      }).replace(/"/g, '&quot;');
       var div = document.createElement('div');
-      div.style.cssText = 'background:var(--bg-t);border:1px solid var(--bd);border-radius:10px;padding:12px 14px;display:flex;align-items:flex-start;gap:10px;';
-      div.innerHTML =
-        '<div style="flex:1;">'
-        + '<div style="font-size:13px;font-weight:600;color:var(--tx);margin-bottom:4px;">' + item.db_name + '</div>'
-        + '<div style="font-size:11px;color:var(--txs);">售價：' + priceStr + ' 萬｜到期日：' + (item.csv_expiry || '-')
-        + '｜CSV 經紀人：' + (item.csv_agent || '-') + '｜Firestore 經紀人：' + (item.db_agent || '-')
-        + '｜評分：' + item.score + '</div>'
-        + '</div>'
-        + '<button onclick="rvAcceptMedium(this)" data-docid="' + item.doc_id + '"'
-        + ' data-item="' + JSON.stringify({doc_id:item.doc_id, price:item.csv_price, expiry:item.csv_expiry, name_changed:item.name_changed, old_name:item.db_name, new_name:item.csv_name}).replace(/"/g,"&quot;") + '"'
-        + ' style="padding:5px 12px;border-radius:7px;background:var(--ok);color:#fff;border:none;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;">✅ 確認</button>'
-        + '<button onclick="rvSkipMedium(this)"'
-        + '  style="padding:5px 12px;border-radius:7px;background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);font-size:12px;cursor:pointer;white-space:nowrap;">❌ 跳過</button>';
+      div.style.cssText = 'border:1px solid var(--bd);border-radius:10px;padding:10px 14px;';
+      div.innerHTML = '<div style="font-size:11px;color:var(--warn);margin-bottom:6px;">' + fmtMatchReason(item, 'medium') + '</div>'
+        + '<div style="display:flex;gap:0;">' + leftCol + rightCol + '</div>'
+        + '<div style="margin-top:8px;display:flex;gap:8px;">'
+        + '<button onclick="rvAcceptMedium(this)" data-docid="' + item.doc_id + '" data-item="' + itemJson + '"'
+        + ' style="padding:4px 12px;border-radius:7px;background:var(--ok);color:#fff;border:none;font-size:12px;font-weight:700;cursor:pointer;">✅ 確認配對</button>'
+        + '<button onclick="rvSkipMedium(this)" style="padding:4px 12px;border-radius:7px;background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);font-size:12px;cursor:pointer;">❌ 跳過</button>'
+        + '</div>';
       medList.appendChild(div);
     });
 
-    // 問題清單（衝突 + 未配對）
+    // ── 問題清單（衝突 + 未配對）──────────────────────────────
     var issueList = document.getElementById('rv-issues-list');
     issueList.innerHTML = '';
     d.conflict.forEach(function(item) {
-      // 組成面積對照字串
-      function fmtArea(land, build, interior) {
-        var parts = [];
-        if (land     !== null && land     !== undefined) parts.push('地坪 ' + land + '坪');
-        if (build    !== null && build    !== undefined) parts.push('建坪 ' + build + '坪');
-        if (interior !== null && interior !== undefined) parts.push('室內 ' + interior + '坪');
-        return parts.length ? parts.join('｜') : '-';
-      }
-      var dbArea  = fmtArea(item.db_land,  item.db_build,  item.db_interior);
-      var csvArea = fmtArea(item.csv_land, item.csv_build, item.csv_interior);
+      var leftCol = '<div style="flex:1;min-width:0;">'
+        + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;text-transform:uppercase;">Word 物件總表</div>'
+        + '<div style="font-size:13px;color:var(--tx);font-weight:600;">' + item.csv_name + '</div>'
+        + fmtR('售價', item.csv_price!=null ? item.csv_price+' 萬' : '')
+        + fmtHardCols(item, false)
+        + fmtR('委託號', item.csv_comm)
+        + fmtR('到期', item.csv_expiry)
+        + fmtR('經紀人', item.csv_agent)
+        + '</div>';
+      var rightCol = '<div style="flex:1;min-width:0;padding-left:12px;border-left:1px solid var(--bd);">'
+        + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;">FIRESTORE 現有</div>'
+        + '<div style="font-size:13px;color:var(--tx);font-weight:600;">' + item.db_name + '</div>'
+        + fmtR('售價', item.db_price!=null ? item.db_price+' 萬' : '')
+        + fmtHardCols(item, true)
+        + fmtR('序號', item.db_seq ? String(item.db_seq) : '')
+        + fmtR('到期', item.db_expiry)
+        + fmtR('經紀人', item.db_agent)
+        + '</div>';
       var div = document.createElement('div');
-      div.style.cssText = 'background:var(--bg-t);border:1px solid var(--warn);border-radius:10px;padding:12px 14px;';
-      div.innerHTML = '<div style="font-size:12px;font-weight:600;color:var(--warn);margin-bottom:3px;">⚡ 同名但面積衝突（' + (item.conflict_reason||'') + '）</div>'
-        + '<div style="font-size:13px;color:var(--tx);margin-bottom:4px;">' + item.db_name + '</div>'
-        + '<div style="font-size:11px;color:var(--txs);">Firestore 面積：' + dbArea + '｜售價：' + (item.db_price!==null?item.db_price+'萬':'-') + '｜經紀人：' + (item.db_agent||'-') + '</div>'
-        + '<div style="font-size:11px;color:var(--txm);margin-top:2px;">Word 面積：' + csvArea + '｜售價：' + (item.csv_price!==null?item.csv_price+'萬':'-') + '｜經紀人：' + (item.csv_agent||'-') + '</div>';
+      div.style.cssText = 'background:var(--bg-t);border:1px solid var(--warn);border-radius:10px;padding:10px 14px;';
+      div.innerHTML = '<div style="font-size:11px;font-weight:600;color:var(--warn);margin-bottom:6px;">'
+        + fmtMatchReason(item, 'conflict') + '</div>'
+        + '<div style="display:flex;gap:0;">' + leftCol + rightCol + '</div>';
       issueList.appendChild(div);
     });
     d.unmatched.forEach(function(item, idx) {
       var cardId = 'unm-' + idx;
-      function fmtR(label, val) {
-        if (val === null || val === undefined || val === '') return '';
-        return '<div style="font-size:11px;color:var(--txs);margin-top:2px;"><span style="color:var(--txm);font-weight:600;">'
-          + label + '：</span>' + val + '</div>';
-      }
-      function fmtArea(land, build, interior) {
-        var p = [];
-        if (land)     p.push('地坪 ' + land + '坪');
-        if (build)    p.push('建坪 ' + build + '坪');
-        if (interior) p.push('室內 ' + interior + '坪');
-        return p.join('｜');
-      }
       var leftCol = '<div style="flex:1;min-width:0;">'
         + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;text-transform:uppercase;">Word 物件總表</div>'
         + '<div style="font-size:13px;color:var(--tx);font-weight:600;">' + item.csv_name + '</div>'
