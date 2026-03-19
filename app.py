@@ -2517,7 +2517,7 @@ def api_word_review_upload_doc():
         return abs(a - b) / max(abs(a), abs(b)) <= tol
 
     def _agent_score(ag_db, ag_csv):
-        """比較經紀人，支援空格或頓號分隔的多位承攬人（集合比對，順序無關）"""
+        """比較經紀人（軟資料）：換手正常，不扣分；同人或有交集才加分"""
         if not ag_db or not ag_csv:
             return 0
         import re as _re
@@ -2525,9 +2525,39 @@ def api_word_review_upload_doc():
             return set(_re.split(r'[\s、,，]+', s.strip()))
         db_set  = _split(ag_db)
         csv_set = _split(ag_csv)
-        if db_set == csv_set:   return 5   # 完全相同（含順序不同）
-        if db_set & csv_set:    return 3   # 有交集（共同承攬）
-        return -8                           # 完全不同
+        if db_set == csv_set:   return 3   # 完全相同 +3
+        if db_set & csv_set:    return 1   # 有交集 +1
+        return 0                            # 完全不同 → 不扣分（換手正常）
+
+    def _hard_area_score(w_row, d_row):
+        """不動產硬資料：面積欄位精確比對（2% 容差）
+        同一物件的實體面積不會因換手或改價而改變，是最可靠的比對基準。
+        回傳 (score, has_hard_match)
+        """
+        score = 0
+        has_hard = False
+        # (Word欄, Firestore欄, 命中加分) — 同一 Firestore 欄只比一次
+        pairs = [
+            ('地坪',   '地坪',   8),   # 房屋地坪
+            ('面積坪', '地坪',   8),   # 農地/建地：Word面積坪 vs Firestore地坪（已換算成坪）
+            ('建坪',   '建坪',   6),   # 公寓建坪
+            ('室內坪', '室內坪', 5),   # 公寓室內坪
+        ]
+        checked_db = set()
+        for wf, df, pts in pairs:
+            if df in checked_db:
+                continue
+            wv = _pn(w_row.get(wf))
+            dv = _pn(d_row.get(df))
+            if not wv or not dv:
+                continue
+            checked_db.add(df)
+            if _sm(wv, dv, 0.02):           # 2% 容差：硬資料命中
+                score += pts
+                has_hard = True
+            elif not _sm(wv, dv, 0.20):     # 差距超過 20%：幾乎確定是不同物件
+                score -= pts
+        return score, has_hard
 
     # 從 Firestore 載入所有物件並建立索引（Word 是主體，Firestore 是查詢對象）
     col     = db.collection("company_properties")
@@ -2577,10 +2607,10 @@ def api_word_review_upload_doc():
                 if cm.get('案名') and _nn(str(cm['案名'])) != _nn(name):
                     name_changed = True
 
-        # 2. 再嘗試案名 + 特徵評分比對
+        # 2. 再嘗試案名 + 特徵評分比對（含硬資料面積比對）
         if not match:
             candidates = db_by_name.get(key, [])
-            best, best_score = None, -999
+            best, best_score, best_has_hard = None, -999, False
             for cand in candidates:
                 cc = str(cand.get('委託編號', '') or '').strip()
                 cc = cc.zfill(6) if cc.strip('0') else ''
@@ -2588,23 +2618,25 @@ def api_word_review_upload_doc():
                 # 兩邊都有委託號且不吻合 → 不同物件，跳過
                 if comm and comm != '000000' and cc and cc != '000000' and comm != cc:
                     continue
-                s = _agent_score(cg, agent)
+                # 硬資料：面積精確比對（地坪/建坪/室內坪/面積坪，2% 容差）
+                area_sc, has_hard = _hard_area_score(row, cand)
+                s = area_sc
+                # 售價：輔助參考（正常波動不扣重分）
                 dbp = _pn(cand.get('售價(萬)'))
-                dba = (_pn(cand.get('地坪')) or _pn(cand.get('室內坪')) or _pn(cand.get('建坪')))
                 ps  = _sm(price, dbp, 0.05)
-                as_ = _sm(area, dba, 0.10)
-                if ps  is True:  s += 3
-                if ps  is False: s -= 5
-                if as_ is True:  s += 2
-                if as_ is False: s -= 3
+                if ps is True:                            s += 2
+                elif ps is False and not _sm(price, dbp, 0.30): s -= 2
+                # 經紀人：軟資料，換手正常 → 只加分不扣分
+                s += _agent_score(cg, agent)
                 if cand.get('委託到期日'): s += 1
                 if s > best_score:
                     best_score = s
                     best = cand
+                    best_has_hard = has_hard
             if best is not None:
                 match = best
                 score = best_score
-                match_by = "案名比對"
+                match_by = "硬資料比對（面積）" if best_has_hard else "案名比對"
 
         # 找不到對應 → 問題（Word 有但 Firestore 無，新物件尚未匯入）
         if not match:
