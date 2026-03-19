@@ -1452,37 +1452,35 @@ def get_word_text_from_docx(path):
     使用 python-docx 將 .docx 轉換為 \x07 分隔文字（與 textutil 輸出格式一致）。
     需要用 Microsoft Word 另存為 .docx 格式（非 textutil/antiword 轉換），
     才能保留完整的表格結構（公寓/住家/別墅/店住/農地/建地均可解析）。
+
+    注意：不可用 id(tc) 去重，因為 lxml 會重用 proxy 物件導致不同 cell 的 id() 相同。
+    改用 doc.tables 高層 API，row.cells 回傳的 Cell._tc 是穩定的 XML element 參考，
+    可直接用作 set 的元素去除合併儲存格重複。
     """
     from docx import Document
-    from docx.oxml.ns import qn
 
     doc = Document(path)
     lines = []
 
-    # 按文件順序處理段落與表格（而非 doc.paragraphs / doc.tables 各自迭代）
-    for child in doc.element.body:
-        tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+    # 先加入段落文字（文件標題/日期）
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        if text:
+            lines.append(text)
 
-        if tag == 'p':  # 段落
-            text = ''.join(
-                t.text for t in child.iter(qn('w:t')) if t.text
-            ).strip()
-            if text:
-                lines.append(text)
-
-        elif tag == 'tbl':  # 表格
-            for tr in child.iter(qn('w:tr')):
-                seen = set()
-                cells = []
-                for tc in tr.iter(qn('w:tc')):
-                    if id(tc) not in seen:
-                        seen.add(id(tc))
-                        cell_text = ''.join(
-                            t.text for t in tc.iter(qn('w:t')) if t.text
-                        ).strip()
-                        cells.append(cell_text)
-                if any(c for c in cells):
-                    lines.append('\x07'.join(cells))
+    # 再按文件順序處理所有表格
+    for tbl in doc.tables:
+        for row in tbl.rows:
+            # row.cells 對合併儲存格回傳相同的 Cell 物件；
+            # 用 cell._tc（底層 XML element，可 hash）去重，避免合併格重複計入
+            seen = set()
+            cells = []
+            for cell in row.cells:
+                if cell._tc not in seen:
+                    seen.add(cell._tc)
+                    cells.append(cell.text.replace('\n', ' ').strip())
+            if any(cells):
+                lines.append('\x07'.join(cells))
 
     return '\n'.join(lines)
 
