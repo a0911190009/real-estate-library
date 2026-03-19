@@ -1444,6 +1444,258 @@ def dedup_by_address(entries):
 
 
 # ────────────────────────────────────────────
+# .docx 農地/建地直接解析（表格欄位已知，不走舊 state machine）
+# ────────────────────────────────────────────
+
+def _parse_docx_farm_tab(text):
+    """
+    解析 .docx 版農地段（\x07 分隔的表格行）。
+    農地表頭：編 號 | 農地 | 區域 | 面積 | 分售/坪售 | 總價 | Sale | 到期
+    """
+    entries = []
+    in_farm = False
+
+    def _agent(s):
+        """把縮寫字元轉全名"""
+        names = [AGENT_MAP[c] for c in str(s).strip().replace(' ', '') if c in AGENT_MAP]
+        return '、'.join(names) if names else str(s).strip()
+
+    for line in text.split('\n'):
+        parts = [p.strip() for p in line.split('\x07')]
+        ns_parts = [nospace(p) for p in parts]
+
+        # 偵測農地段標題行（第1欄 nospace='編號' 且第2欄含'農'）
+        if len(parts) >= 2 and ns_parts[0] == '編號' and '農' in ns_parts[1]:
+            in_farm = True
+            continue
+
+        # 建地段標題行 → 停止
+        if in_farm and len(parts) >= 2 and ns_parts[0] == '編號' and '建' in ns_parts[1]:
+            break
+
+        if not in_farm:
+            continue
+
+        # 跳過只有表頭詞彙的行（多餘的小標題行）
+        if not any(re.search(r'[\u4e00-\u9fff]', p) and not nospace(p) in {
+            '農地', '農     地', '區域', '面積', '面      積',
+            '分售', '分    售', '總價', '總      價', 'Sale', 'sale', '到期'
+        } for p in parts):
+            continue
+
+        col0 = parts[0] if len(parts) > 0 else ''   # 委託號碼/網路沒上/地區合併欄
+        col1 = parts[1] if len(parts) > 1 else ''   # 案名
+        col2 = parts[2] if len(parts) > 2 else ''   # 區域
+        col3 = parts[3] if len(parts) > 3 else ''   # 面積
+        col4 = parts[4] if len(parts) > 4 else ''   # 分售/坪售
+        col5 = parts[5] if len(parts) > 5 else ''   # 總價
+        col6 = parts[6] if len(parts) > 6 else ''   # 經紀人
+        col7 = parts[7] if len(parts) > 7 else ''   # 到期
+
+        # 案名欄必須有中文才是有效資料行
+        if not re.search(r'[\u4e00-\u9fff]', col1):
+            continue
+        # 案名欄是表頭關鍵字 → 跳過
+        if nospace(col1) in {'農地', '農     地'}:
+            continue
+
+        # 委託號碼：可能在 col0，或嵌在案名中
+        no = ''
+        if re.match(r'^\d{5,6}$', col0.strip()):
+            no = col0.strip().zfill(6)
+        else:
+            no = extract_commission_no(col1)
+
+        # 上網
+        online = "否" if (is_online_note(col0) or is_online_note(col1)) else "是"
+
+        # 案名：去除嵌入委託號碼與備註
+        name = clean_name(col1)
+
+        # 面積解析
+        size_text = col3.strip()
+        area_ping = ''
+        # 格式：「2.73分」「302.5坪(共1.03分)」「18.75坪」
+        m_fen = re.match(r'^([\d,\.]+)\s*分$', size_text)
+        m_ping = re.findall(r'([\d,\.]+)\s*坪', re.sub(r'\([^)]*\)', '', size_text))
+        if m_fen:
+            area_ping = str(round(float(m_fen.group(1).replace(',', '')) * FEN_TO_PING, 1))
+        elif m_ping:
+            try:
+                area_ping = str(round(float(m_ping[0].replace(',', '')), 1))
+            except Exception:
+                pass
+
+        # 分售/坪售單價
+        unit_price = parse_unit_price(col4) if col4 else None
+
+        # 總價 + 末尾民國年
+        minguo = None
+        m_year = re.search(r'\s+(1\d{2})\s*$', col5)
+        if m_year:
+            yr = int(m_year.group(1))
+            if 100 <= yr <= 120:
+                minguo = yr
+        total = parse_price(col5)
+
+        # 到期日
+        expiry_raw = col7.strip()
+        has_k = has_key(expiry_raw)
+        expiry_clean = re.sub(r'\s*[kK]', '', expiry_raw).strip()
+        if minguo and re.match(r'^\d{1,2}/\d{1,2}$', expiry_clean):
+            mo, dy = expiry_clean.split('/')
+            expiry_clean = f"{minguo}年{int(mo)}月{int(dy)}日"
+
+        entries.append({
+            "類型":     "農地",
+            "委託號碼": no,
+            "案名":     name,
+            "區域":     col2.strip(),
+            "面積原文": size_text,
+            "面積坪":   area_ping,
+            "分售單價萬": str(unit_price) if unit_price else "",
+            "售價萬":   str(total) if total else "",
+            "到期日":   expiry_clean,
+            "有鑰匙":   "是" if has_k else "",
+            "經紀人":   _agent(col6),
+            "上網":     online,
+        })
+
+    return entries
+
+
+def _parse_docx_build_tab(text):
+    """
+    解析 .docx 版建地段（\x07 分隔的表格行）。
+    建地表頭：編 號 | 建地 | 面積 | 坪售 | 總價 | Sale | 到期
+
+    特殊情況：案名欄有未閉合括號時，括號內容（含面積）溢入同行 col2；
+    col1+col2 合併重新解析，col3 以後才是坪售/總價/Sale/到期。
+    例：col1='大面寬店面建地 (中興路一段'  col2='近泰安街)  53.54坪'
+    """
+    entries = []
+    in_build = False
+
+    def _agent(s):
+        names = [AGENT_MAP[c] for c in str(s).strip().replace(' ', '') if c in AGENT_MAP]
+        return '、'.join(names) if names else str(s).strip()
+
+    for line in text.split('\n'):
+        parts = [p.strip() for p in line.split('\x07')]
+        ns_parts = [nospace(p) for p in parts]
+
+        # 偵測建地段標題行
+        if len(parts) >= 2 and ns_parts[0] == '編號' and '建' in ns_parts[1]:
+            in_build = True
+            continue
+
+        if not in_build:
+            continue
+
+        if not any(parts):
+            continue
+
+        col0 = parts[0] if len(parts) > 0 else ''
+        col1 = parts[1] if len(parts) > 1 else ''
+        col2 = parts[2] if len(parts) > 2 else ''
+        col3 = parts[3] if len(parts) > 3 else ''
+        col4 = parts[4] if len(parts) > 4 else ''
+        col5 = parts[5] if len(parts) > 5 else ''
+        col6 = parts[6] if len(parts) > 6 else ''
+
+        # 案名欄必須有中文才是有效資料行
+        if not re.search(r'[\u4e00-\u9fff]', col1):
+            continue
+        if nospace(col1) in {'建地', '建     地'}:
+            continue
+
+        # ── 括號溢欄：col1 有未閉合括號 → col1+col2 合併為名稱+面積，col3~ 才是後續欄 ──
+        if col1.count('(') > col1.count(')'):
+            name_area_raw = col1 + col2
+            no_bracket = re.sub(r'\([^)]*\)', '', name_area_raw)
+            m_ping = re.findall(r'([\d,\.]+)\s*坪', no_bracket) or \
+                     re.findall(r'([\d,\.]+)\s*坪', name_area_raw)
+            try:
+                area_ping = str(round(float(m_ping[-1].replace(',', '')), 1)) if m_ping else ''
+            except Exception:
+                area_ping = ''
+            area_text = name_area_raw
+            name = clean_name(re.split(r'\s*\(', col1)[0])
+            no   = extract_commission_no(col1) or extract_commission_no(col0)
+            online = "否" if (is_online_note(col0) or is_online_note(col1)) else "是"
+            col_sell  = col3
+            col_total = col4
+            col_sale  = col5
+            col_exp   = col6
+        else:
+            # 正常欄位對應
+            if re.match(r'^\d{5,6}$', col0.strip()):
+                no = col0.strip().zfill(6)
+            elif is_online_note(col0) or not col0.strip():
+                no = extract_commission_no(col1)
+            else:
+                no = extract_commission_no(col1) or extract_commission_no(col0)
+
+            online    = "否" if (is_online_note(col0) or is_online_note(col1)) else "是"
+            name      = clean_name(col1)
+            area_text = col2.strip()
+
+            # 面積：去括號後找坪數，找不到再含括號
+            no_bracket = re.sub(r'\([^)]*\)', '', area_text)
+            m_ping = re.findall(r'([\d,\.]+)\s*坪', no_bracket) or \
+                     re.findall(r'([\d,\.]+)\s*坪', area_text)
+            try:
+                area_ping = str(round(float(m_ping[-1].replace(',', '')), 1)) if m_ping else ''
+            except Exception:
+                area_ping = ''
+
+            col_sell  = col3
+            col_total = col4
+            col_sale  = col5
+            col_exp   = col6
+
+        # 坪售單價
+        unit_price = parse_unit_price(col_sell) if col_sell else None
+
+        # 總價 + 末尾民國年
+        minguo = None
+        m_year = re.search(r'\s+(1\d{2})\s*$', col_total)
+        if m_year:
+            yr = int(m_year.group(1))
+            if 100 <= yr <= 120:
+                minguo = yr
+        total = parse_price(col_total)
+
+        # 售出止
+        sold = '售出止' in col_exp
+
+        # 到期日
+        expiry_raw   = col_exp.strip()
+        has_k        = has_key(expiry_raw)
+        expiry_clean = re.sub(r'\s*[kK]', '', expiry_raw).replace('售出止', '').strip()
+        if minguo and re.match(r'^\d{1,2}/\d{1,2}$', expiry_clean):
+            mo, dy = expiry_clean.split('/')
+            expiry_clean = f"{minguo}年{int(mo)}月{int(dy)}日"
+
+        entries.append({
+            "類型":       "建地",
+            "委託號碼":   no,
+            "案名":       name,
+            "面積原文":   area_text,
+            "面積坪":     area_ping,
+            "坪售單價萬": str(unit_price) if unit_price else "",
+            "售價萬":     str(total) if total else "",
+            "到期日":     expiry_clean,
+            "有鑰匙":     "是" if has_k else "",
+            "經紀人":     _agent(col_sale),
+            "上網":       online,
+            "售出止":     "是" if sold else "",
+        })
+
+    return entries
+
+
+# ────────────────────────────────────────────
 # 統一入口函數（供 app.py import 使用）
 # ────────────────────────────────────────────
 
@@ -1509,10 +1761,16 @@ def parse_doc(path):
     house = dedup_by_address(house)
 
     # 農地
-    farm = parse_farm_entries(text)
+    if path.lower().endswith('.docx'):
+        farm = _parse_docx_farm_tab(text)
+    else:
+        farm = parse_farm_entries(text)
 
     # 建地
-    build = parse_build_entries(text)
+    if path.lower().endswith('.docx'):
+        build = _parse_docx_build_tab(text)
+    else:
+        build = parse_build_entries(text)
 
     return {
         "condo": condo,
