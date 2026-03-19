@@ -2593,6 +2593,7 @@ def api_word_review_upload_doc():
 
     db_by_comm = {}   # 委託編號 → Firestore doc dict
     db_by_name = {}   # 正規案名 → list of Firestore doc dict
+    db_by_addr = {}   # 正規化地址 → Firestore doc dict（地址精確命中用）
     for doc in db_docs:
         dd = doc.to_dict()
         dd['_doc_id'] = doc.id
@@ -2604,6 +2605,10 @@ def api_word_review_upload_doc():
         key = _nn(dbn)
         if key:
             db_by_name.setdefault(key, []).append(dd)
+        # 地址索引（正規化去空白）
+        dba = re.sub(r'\s+', '', str(dd.get('物件地址', '') or ''))
+        if dba and len(dba) >= 6:
+            db_by_addr[dba] = dd
 
     # 以 Word 條目為主，逐一在 Firestore 找對應物件
     # Word 是目前在架物件的唯一真相；Firestore 是歷史全量（從未清除）
@@ -2634,6 +2639,18 @@ def api_word_review_upload_doc():
                 score = 10
                 if cm.get('案名') and _nn(str(cm['案名'])) != _nn(name):
                     name_changed = True
+
+        # 1.5. 地址精確命中（地址是硬資料，地址相同就是同物件）
+        if not match:
+            row_addr = re.sub(r'\s+', '', str(row.get('物件地址', '') or ''))
+            if row_addr and len(row_addr) >= 6:
+                cm = db_by_addr.get(row_addr)
+                if cm:
+                    match = cm
+                    match_by = "地址比對"
+                    score = 8
+                    if cm.get('案名') and _nn(str(cm['案名'])) != _nn(name):
+                        name_changed = True
 
         # 2. 再嘗試案名 + 特徵評分比對（含硬資料面積比對）
         if not match:
@@ -2682,16 +2699,40 @@ def api_word_review_upload_doc():
                             if csv_addr_nm and cand_addr:
                                 if csv_addr_nm == cand_addr:
                                     s += 6  # 地址完全相符 → 高信心
-                                elif csv_addr_nm[:8] in cand_addr or cand_addr[:8] in csv_addr_nm:
+                                elif csv_addr_nm in cand_addr or cand_addr in csv_addr_nm:
+                                    # 子字串包含：如 Firestore 地址多了「台東縣」前綴
                                     s += 2  # 地址部分相符
                                 else:
-                                    s -= 8  # 地址不同 → 幾乎確定是不同物件
+                                    s -= 8  # 地址不同（如 286號 vs 288號）→ 幾乎確定是不同物件
                             if s > nm_score:
                                 nm_score = s
                                 near_miss = cand
             # 地址不符時（分數太低）不顯示近似候選，避免誤導
             if near_miss is not None and nm_score < 0:
                 near_miss = None
+            # 近似候選分數很高（地址+經紀人+售價全吻合）→ 直接升為中信心，不留在問題區
+            if near_miss is not None and nm_score >= 8:
+                item_nm = {
+                    "doc_id":    near_miss['_doc_id'],
+                    "db_name":   str(near_miss.get('案名', '') or ''),
+                    "db_seq":    str(int(near_miss.get('資料序號', 0) or 0)),
+                    "db_price":  _pn(near_miss.get('售價(萬)')),
+                    "db_expiry": near_miss.get('委託到期日', ''),
+                    "db_agent":  str(near_miss.get('經紀人', '') or '').strip(),
+                    "csv_name":  name, "csv_price": price, "csv_expiry": expiry,
+                    "csv_agent": agent, "csv_comm": comm,
+                    "match_by":  "近似候選升中信心",
+                    "score":     nm_score,
+                    "name_changed": _nn(str(near_miss.get('案名','') or '')) != _nn(name),
+                    "db_land":   _pn(near_miss.get('地坪')),
+                    "db_build":  _pn(near_miss.get('建坪')),
+                    "db_interior": _pn(near_miss.get('室內坪')),
+                    "csv_land":  _pn(row.get('地坪')) or _pn(row.get('面積坪')),
+                    "csv_build": _pn(row.get('建坪')),
+                    "csv_interior": _pn(row.get('室內坪')),
+                }
+                medium.append(item_nm)
+                continue
             um = {
                 "csv_name":     name,
                 "csv_price":    price,
