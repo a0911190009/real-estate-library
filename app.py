@@ -2527,7 +2527,17 @@ def api_word_review_upload_doc():
 
     def _nn(s):
         s = re.sub(r'\s+', '', str(s))
+        s = re.sub(r'[（(][^）)]*[）)]', '', s)  # 去除括號附註如(二筆)，避免同物件因標注不同而無法比對
         return re.sub(r'(?<!\d)\d{5,6}(?!\d)', '', s).strip()
+
+    def _ca(s):
+        """去除地址末尾附帶的民國年或委託號碼（Word解析時可能殘留）"""
+        s = str(s)
+        s = re.sub(r'\s+1\d\d\s*$', '', s)       # 末尾空格+民國年
+        s = re.sub(r'\s+\d{5,6}\s*$', '', s)     # 末尾空格+委託號碼
+        s = re.sub(r'(號)(1\d\d)\s*$', r'\1', s)  # 末尾無空格民國年
+        s = re.sub(r'(號)(\d{5,6})\s*$', r'\1', s)  # 末尾無空格委託號
+        return s.strip()
 
     def _pn(s):
         try:
@@ -2642,7 +2652,7 @@ def api_word_review_upload_doc():
 
         # 1.5. 地址精確命中（地址是硬資料，地址相同就是同物件）
         if not match:
-            row_addr = re.sub(r'\s+', '', str(row.get('物件地址', '') or ''))
+            row_addr = re.sub(r'\s+', '', _ca(str(row.get('物件地址', '') or '')))
             if row_addr and len(row_addr) >= 6:
                 cm = db_by_addr.get(row_addr)
                 if cm:
@@ -2686,13 +2696,15 @@ def api_word_review_upload_doc():
         # 找不到對應 → 前綴模糊搜尋找近似候選，供人工比對
         if not match:
             near_miss, nm_score = None, -999
-            csv_addr_nm = str(row.get('物件地址', '') or '').strip()
+            csv_addr_nm = _ca(str(row.get('物件地址', '') or '')).strip()
             prefix = key[:min(len(key), 6)] if len(key) >= 4 else ''
             if prefix:
                 for db_key, db_cands in db_by_name.items():
                     if db_key.startswith(prefix) or prefix in db_key:
                         for cand in db_cands:
-                            s = _agent_score(str(cand.get('經紀人','') or '').strip(), agent)
+                            area_sc, _ = _hard_area_score(row, cand)  # 面積也納入近似候選評分
+                            s = area_sc
+                            s += _agent_score(str(cand.get('經紀人','') or '').strip(), agent)
                             if _sm(price, _pn(cand.get('售價(萬)')), 0.10) is True: s += 2
                             # 地址：硬資料，不同地址就是不同物件
                             cand_addr = str(cand.get('物件地址', '') or '').strip()
@@ -2739,7 +2751,7 @@ def api_word_review_upload_doc():
                 "csv_expiry":   expiry,
                 "csv_agent":    agent,
                 "csv_comm":     comm,
-                "csv_addr":     str(row.get('物件地址', '') or '').strip(),
+                "csv_addr":     _ca(str(row.get('物件地址', '') or '')).strip(),
                 "csv_land":     _pn(row.get('地坪')) or _pn(row.get('面積坪')),
                 "csv_build":    _pn(row.get('建坪')),
                 "csv_interior": _pn(row.get('室內坪')),
@@ -2756,6 +2768,7 @@ def api_word_review_upload_doc():
                 um["nm_build"]    = _pn(near_miss.get('建坪'))
                 um["nm_interior"] = _pn(near_miss.get('室內坪'))
                 um["nm_score"]    = nm_score
+                um["nm_comm"]     = str(near_miss.get('委託編號', '') or '').strip()
             unmatched.append(um)
             continue
 
@@ -6166,6 +6179,46 @@ OBJECTS_APP_HTML = """
           name_changed: (item.nm_name !== item.csv_name),
           old_name: item.nm_name, new_name: item.csv_name
         }).replace(/"/g, '&quot;');
+        // 比對說明：逐欄檢視吻合狀況，幫助判斷是否為同一物件
+        var reasonLines = [];
+        if (item.nm_price != null && item.csv_price != null) {
+          var pd = Math.abs(item.nm_price - item.csv_price) / (Math.max(Math.abs(item.nm_price), Math.abs(item.csv_price)) || 1);
+          reasonLines.push({ok: pd < 0.05, txt: '售價 ' + item.csv_price + '萬' + (pd >= 0.05 ? '（DB:' + item.nm_price + '萬）' : '')});
+        }
+        var wA = item.csv_land != null ? item.csv_land : (item.csv_build != null ? item.csv_build : item.csv_interior);
+        var dA = item.nm_land != null ? item.nm_land : (item.nm_build != null ? item.nm_build : item.nm_interior);
+        if (wA != null && dA != null) {
+          var ad = Math.abs(wA - dA) / (Math.max(Math.abs(wA), Math.abs(dA)) || 1);
+          reasonLines.push({ok: ad < 0.02, txt: '面積 ' + wA + '坪' + (ad >= 0.02 ? '（DB:' + dA + '坪，差' + (ad*100).toFixed(1) + '%）' : ' ≈ ' + dA + '坪')});
+        }
+        if (item.nm_agent || item.csv_agent) {
+          var agMatch = (item.nm_agent || '') === (item.csv_agent || '');
+          reasonLines.push({ok: agMatch, txt: '經紀人 ' + (item.csv_agent||'—') + (agMatch ? '' : ' → ' + (item.nm_agent||'—'))});
+        }
+        var na = item.nm_addr || '', ca = item.csv_addr || '';
+        if (na || ca) {
+          if (!na || !ca) {
+            reasonLines.push({ok: null, txt: '地址 Word:' + (ca||'無') + ' / DB:' + (na||'無')});
+          } else if (na === ca || na.indexOf(ca) >= 0 || ca.indexOf(na) >= 0) {
+            reasonLines.push({ok: true, txt: '地址相符'});
+          } else {
+            reasonLines.push({ok: false, txt: '地址不符 ' + ca + ' / ' + na});
+          }
+        }
+        if (item.csv_comm) {
+          var nmComm = item.nm_comm || '';
+          reasonLines.push({ok: null, txt: '委託號 Word:' + item.csv_comm + (nmComm ? '  DB:' + nmComm : '（DB:無）')});
+        }
+        var reasonHtml = '';
+        if (reasonLines.length) {
+          reasonHtml = '<div style="margin-top:6px;padding:5px 7px;background:rgba(128,128,128,0.06);border-radius:6px;">'
+            + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:2px;">比對說明</div>'
+            + reasonLines.map(function(r){
+                var icon = r.ok === true ? '✓' : r.ok === false ? '✗' : '—';
+                var color = r.ok === true ? 'var(--ok)' : r.ok === false ? 'var(--err)' : 'var(--txm)';
+                return '<div style="font-size:11px;color:' + color + ';margin-top:1px;">' + icon + ' ' + r.txt + '</div>';
+              }).join('') + '</div>';
+        }
         rightCol = '<div style="flex:1;min-width:0;padding-left:12px;border-left:1px solid var(--bd);">'
           + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;">FIRESTORE 近似候選（分數 ' + item.nm_score + '）</div>'
           + '<div style="font-size:13px;color:var(--tx);font-weight:600;' + (item.nm_name!==item.csv_name?'color:var(--warn);':'') + '">' + item.nm_name + '</div>'
@@ -6177,6 +6230,7 @@ OBJECTS_APP_HTML = """
           + fmtR('序號', item.nm_seq)
           + fmtR('到期', item.nm_expiry)
           + fmtR('經紀人', item.nm_agent)
+          + reasonHtml
           + '</div>';
         buttons = '<div style="margin-top:8px;display:flex;gap:8px;">'
           + '<button onclick="rvAcceptUnmatched(this)" data-cardid="' + cardId + '"'
