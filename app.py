@@ -2242,7 +2242,7 @@ def api_word_review_analyze():
         return -8                       # 完全不同人
 
     # 建立 CSV 索引
-    csv_by_name, csv_by_comm = {}, {}
+    csv_by_name, csv_by_comm, csv_by_seq, csv_by_addr = {}, {}, {}, {}
     for row in rows:
         name = str(row.get('案名', '')).strip()
         if not name:
@@ -2253,15 +2253,24 @@ def api_word_review_analyze():
         expiry = _pe(row.get('到期日', ''))
         area   = (_pn(row.get('面積坪')) or _pn(row.get('地坪'))
                   or _pn(row.get('室內坪')) or _pn(row.get('建坪')))
+        addr   = re.sub(r'\s+', '', str(row.get('物件地址', '') or ''))
         key = _nn(name)
         if not key:
             continue
         p = {'案名': name, '委託號碼': comm, '售價萬': price,
              '面積坪': area, '委託到期日': expiry,
-             '經紀人': str(row.get('經紀人', '') or '').strip()}
+             '經紀人': str(row.get('經紀人', '') or '').strip(),
+             '物件地址': addr}
         csv_by_name.setdefault(key, []).append(p)
         if comm and comm != '000000':
             csv_by_comm[comm] = p
+        # 資料序號直接索引（export_word_table.py 已對應 Firestore 序號）
+        seq = str(row.get('資料序號', '') or '').strip()
+        if seq and seq.isdigit():
+            csv_by_seq[seq] = p
+        # 物件地址索引（公寓/房屋類精確命中）
+        if addr and len(addr) >= 6:
+            csv_by_addr.setdefault(addr, []).append(p)
 
     col  = db.collection("company_properties")
     docs = list(col.stream())
@@ -2274,16 +2283,27 @@ def api_word_review_analyze():
         dd  = doc.to_dict()
         dbn = dd.get("案名", "")
         dbc = str(dd.get("委託編號", "") or "").strip().zfill(6) if dd.get("委託編號") else ""
-        dbs = int(dd.get("資料序號", 0) or 0)
+        dbs = str(int(dd.get("資料序號", 0) or 0))  # Firestore 資料序號
         dba = (_pn(dd.get("地坪")) or _pn(dd.get("室內坪")) or _pn(dd.get("建坪")))
         dbp = _pn(dd.get("售價(萬)"))
         dbe = dd.get("委託到期日", "")
         dbg = str(dd.get("經紀人", "") or "").strip()
+        dbaddr = re.sub(r'\s+', '', str(dd.get('物件地址', '') or ''))
 
         match, match_by, score, name_changed = None, "", 0, False
 
-        # Step 1：委託號碼精確比對（最優先，硬資料識別）
-        if dbc and dbc != '000000':
+        # Step 0：資料序號精確命中（最優先，export_word_table.py 已對應好）
+        if dbs and dbs != '0':
+            cm = csv_by_seq.get(dbs)
+            if cm:
+                match = cm
+                match_by = "資料序號"
+                score = 10
+                if cm.get('案名') and _nn(cm['案名']) != _nn(dbn):
+                    name_changed = True
+
+        # Step 1：委託號碼精確比對
+        if not match and dbc and dbc != '000000':
             cm = csv_by_comm.get(dbc)
             if cm:
                 match = cm
@@ -2292,6 +2312,14 @@ def api_word_review_analyze():
                 if cm.get('案名') and _nn(cm['案名']) != _nn(dbn):
                     name_changed = True
                 matched_comms.add(dbc)
+
+        # Step 1.5：物件地址精確命中（公寓/房屋類，地址是硬資料）
+        if not match and dbaddr and len(dbaddr) >= 6:
+            addr_cands = csv_by_addr.get(dbaddr, [])
+            if addr_cands:
+                match = addr_cands[0]
+                match_by = "地址比對"
+                score = 8
 
         # Step 2：案名 + 特徵評分比對
         if not match:
