@@ -2228,6 +2228,16 @@ def api_word_review_analyze():
             return False
         return abs(a - b) / max(abs(a), abs(b)) <= tol
 
+    def _agent_score(ag_a, ag_b):
+        """比較經紀人，支援空格分隔的多位承攬人（集合比對，順序無關）"""
+        if not ag_a or not ag_b:
+            return 0
+        set_a = set(ag_a.split())
+        set_b = set(ag_b.split())
+        if set_a == set_b:  return 5   # 完全相同（含多人同時承攬）
+        if set_a & set_b:   return 3   # 有交集（共同承攬部分相符）
+        return -8                       # 完全不同人
+
     # 建立 CSV 索引
     csv_by_name, csv_by_comm = {}, {}
     for row in rows:
@@ -2290,9 +2300,7 @@ def api_word_review_analyze():
                 # 委託號碼都有值且不同 → 明確是不同物件
                 if (cc and cc != '000000' and dbc and dbc != '000000' and cc != dbc):
                     continue
-                s = 0
-                if dbg and cg:
-                    s += 5 if dbg == cg else -8  # 經紀人是最重要的辨識依據
+                s = _agent_score(dbg, cg)  # 經紀人集合比對（支援多位承攬人）
                 ps  = _sm(dbp, cand.get('售價萬'), 0.05)
                 as_ = _sm(dba, cand.get('面積坪'), 0.10)
                 if ps  is True:  s += 3
@@ -2505,6 +2513,16 @@ def api_word_review_upload_doc():
             return False
         return abs(a - b) / max(abs(a), abs(b)) <= tol
 
+    def _agent_score(ag_db, ag_csv):
+        """比較經紀人，支援空格分隔的多位承攬人（集合比對，順序無關）"""
+        if not ag_db or not ag_csv:
+            return 0
+        db_set  = set(ag_db.split())
+        csv_set = set(ag_csv.split())
+        if db_set == csv_set:   return 5   # 完全相同
+        if db_set & csv_set:    return 3   # 有交集（共同承攬）
+        return -8                           # 完全不同
+
     # 從 Firestore 載入所有物件並建立索引（Word 是主體，Firestore 是查詢對象）
     col     = db.collection("company_properties")
     db_docs = list(col.stream())
@@ -2564,9 +2582,7 @@ def api_word_review_upload_doc():
                 # 兩邊都有委託號且不吻合 → 不同物件，跳過
                 if comm and comm != '000000' and cc and cc != '000000' and comm != cc:
                     continue
-                s = 0
-                if agent and cg:
-                    s += 5 if agent == cg else -8
+                s = _agent_score(cg, agent)
                 dbp = _pn(cand.get('售價(萬)'))
                 dba = (_pn(cand.get('地坪')) or _pn(cand.get('室內坪')) or _pn(cand.get('建坪')))
                 ps  = _sm(price, dbp, 0.05)
