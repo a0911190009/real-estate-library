@@ -2411,41 +2411,6 @@ def api_word_review_apply():
                     "message": f"已更新 {updated} 筆物件（銷售中、售價、到期日）"})
 
 
-@app.route("/api/word-review/debug-doc", methods=["POST"])
-def api_word_review_debug_doc():
-    """暫時 debug 端點：上傳 .doc，回傳 antiword 原始輸出前 3000 字元"""
-    import tempfile, os, subprocess
-    email, err = _require_user()
-    if err:
-        return jsonify({"error": err[0]}), err[1]
-    if not _is_admin(email):
-        return jsonify({"error": "僅管理員可使用"}), 403
-    if 'file' not in request.files:
-        return jsonify({"error": "請選擇檔案"}), 400
-    f = request.files['file']
-    tmp = tempfile.NamedTemporaryFile(suffix='.doc', delete=False)
-    try:
-        f.save(tmp.name)
-        tmp.close()
-        # 測試預設輸出
-        r1 = subprocess.run(["antiword", tmp.name],
-                            capture_output=True, text=True, encoding='utf-8', errors='replace')
-        # 測試 -x db 輸出
-        r2 = subprocess.run(["antiword", "-x", "db", tmp.name],
-                            capture_output=True, text=True, encoding='utf-8', errors='replace')
-    finally:
-        try:
-            os.unlink(tmp.name)
-        except Exception:
-            pass
-    return jsonify({
-        "default_rc": r1.returncode,
-        "default_stderr": r1.stderr[:500],
-        "default_stdout_head": r1.stdout[:2000],
-        "docbook_rc": r2.returncode,
-        "docbook_stderr": r2.stderr[:500],
-        "docbook_stdout_head": r2.stdout[:3000],
-    })
 
 
 @app.route("/api/word-review/upload-doc", methods=["POST"])
@@ -2540,8 +2505,27 @@ def api_word_review_upload_doc():
             return False
         return abs(a - b) / max(abs(a), abs(b)) <= tol
 
-    # 建立條目索引
-    csv_by_name, csv_by_comm = {}, {}
+    # 從 Firestore 載入所有物件並建立索引（Word 是主體，Firestore 是查詢對象）
+    col     = db.collection("company_properties")
+    db_docs = list(col.stream())
+
+    db_by_comm = {}   # 委託編號 → Firestore doc dict
+    db_by_name = {}   # 正規案名 → list of Firestore doc dict
+    for doc in db_docs:
+        dd = doc.to_dict()
+        dd['_doc_id'] = doc.id
+        dbc = str(dd.get("委託編號", "") or "").strip()
+        dbc = dbc.zfill(6) if dbc.strip('0') else ''
+        if dbc and dbc != '000000':
+            db_by_comm[dbc] = dd
+        dbn = str(dd.get("案名", "") or "").strip()
+        key = _nn(dbn)
+        if key:
+            db_by_name.setdefault(key, []).append(dd)
+
+    # 以 Word 條目為主，逐一在 Firestore 找對應物件
+    # Word 是目前在架物件的唯一真相；Firestore 是歷史全量（從未清除）
+    high, medium, conflict, unmatched = [], [], [], []
     for row in all_entries:
         name = str(row.get('案名', '')).strip()
         if not name:
@@ -2552,58 +2536,41 @@ def api_word_review_upload_doc():
         expiry = _pe(row.get('到期日', ''))
         area   = (_pn(row.get('面積坪')) or _pn(row.get('地坪'))
                   or _pn(row.get('室內坪')) or _pn(row.get('建坪')))
-        key = _nn(name)
+        agent  = str(row.get('經紀人', '') or '').strip()
+        key    = _nn(name)
         if not key:
             continue
-        p = {'案名': name, '委託號碼': comm, '售價萬': price,
-             '面積坪': area, '委託到期日': expiry,
-             '經紀人': str(row.get('經紀人', '') or '').strip()}
-        csv_by_name.setdefault(key, []).append(p)
-        if comm and comm != '000000':
-            csv_by_comm[comm] = p
-
-    col  = db.collection("company_properties")
-    docs = list(col.stream())
-
-    high, medium, conflict = [], [], []
-    matched_comms = set()
-    matched_names = set()
-
-    for doc in docs:
-        dd  = doc.to_dict()
-        dbn = dd.get("案名", "")
-        dbc = str(dd.get("委託編號", "") or "").strip().zfill(6) if dd.get("委託編號") else ""
-        dbs = int(dd.get("資料序號", 0) or 0)
-        dba = (_pn(dd.get("地坪")) or _pn(dd.get("室內坪")) or _pn(dd.get("建坪")))
-        dbp = _pn(dd.get("售價(萬)"))
-        dbe = dd.get("委託到期日", "")
-        dbg = str(dd.get("經紀人", "") or "").strip()
 
         match, match_by, score, name_changed = None, "", 0, False
 
-        if dbc and dbc != '000000':
-            cm = csv_by_comm.get(dbc)
+        # 1. 先嘗試委託號碼精確比對
+        if comm and comm != '000000':
+            cm = db_by_comm.get(comm)
             if cm:
                 match = cm
                 match_by = "委託號碼"
                 score = 10
-                if cm.get('案名') and _nn(cm['案名']) != _nn(dbn):
+                if cm.get('案名') and _nn(str(cm['案名'])) != _nn(name):
                     name_changed = True
-                matched_comms.add(dbc)
 
+        # 2. 再嘗試案名 + 特徵評分比對
         if not match:
-            candidates = csv_by_name.get(_nn(dbn), [])
+            candidates = db_by_name.get(key, [])
             best, best_score = None, -999
             for cand in candidates:
-                cc = cand.get('委託號碼', '')
+                cc = str(cand.get('委託編號', '') or '').strip()
+                cc = cc.zfill(6) if cc.strip('0') else ''
                 cg = str(cand.get('經紀人', '') or '').strip()
-                if (cc and cc != '000000' and dbc and dbc != '000000' and cc != dbc):
+                # 兩邊都有委託號且不吻合 → 不同物件，跳過
+                if comm and comm != '000000' and cc and cc != '000000' and comm != cc:
                     continue
                 s = 0
-                if dbg and cg:
-                    s += 5 if dbg == cg else -8
-                ps  = _sm(dbp, cand.get('售價萬'), 0.05)
-                as_ = _sm(dba, cand.get('面積坪'), 0.10)
+                if agent and cg:
+                    s += 5 if agent == cg else -8
+                dbp = _pn(cand.get('售價(萬)'))
+                dba = (_pn(cand.get('地坪')) or _pn(cand.get('室內坪')) or _pn(cand.get('建坪')))
+                ps  = _sm(price, dbp, 0.05)
+                as_ = _sm(area, dba, 0.10)
                 if ps  is True:  s += 3
                 if ps  is False: s -= 5
                 if as_ is True:  s += 2
@@ -2616,25 +2583,38 @@ def api_word_review_upload_doc():
                 match = best
                 score = best_score
                 match_by = "案名比對"
-                matched_names.add(_nn(best.get('案名', '')))
 
+        # 找不到對應 → 問題（Word 有但 Firestore 無，新物件尚未匯入）
         if not match:
+            unmatched.append({
+                "csv_name":   name,
+                "csv_price":  price,
+                "csv_expiry": expiry,
+                "csv_agent":  agent,
+                "csv_comm":   comm,
+                "reason": "Firestore 找不到對應（新物件尚未匯入，或案名差異大）",
+            })
             continue
 
+        dbn = str(match.get('案名', '') or '')
+        dbs = int(match.get('資料序號', 0) or 0)
+        dbp = _pn(match.get('售價(萬)'))
+        dbe = match.get('委託到期日', '')
+        dbg = str(match.get('經紀人', '') or '').strip()
         item = {
-            "doc_id":    doc.id,
-            "db_name":   dbn,
-            "db_seq":    dbs,
-            "db_price":  dbp,
-            "db_expiry": dbe,
-            "db_agent":  dbg,
-            "csv_name":   match.get('案名', ''),
-            "csv_price":  match.get('售價萬'),
-            "csv_expiry": match.get('委託到期日', ''),
-            "csv_agent":  match.get('經紀人', ''),
-            "csv_comm":   match.get('委託號碼', ''),
-            "match_by":   match_by,
-            "score":      score,
+            "doc_id":       match['_doc_id'],
+            "db_name":      dbn,
+            "db_seq":       dbs,
+            "db_price":     dbp,
+            "db_expiry":    dbe,
+            "db_agent":     dbg,
+            "csv_name":     name,
+            "csv_price":    price,
+            "csv_expiry":   expiry,
+            "csv_agent":    agent,
+            "csv_comm":     comm,
+            "match_by":     match_by,
+            "score":        score,
             "name_changed": name_changed,
         }
         if match_by == "委託號碼" or score >= 3:
@@ -2642,25 +2622,8 @@ def api_word_review_upload_doc():
         elif score >= 0:
             medium.append(item)
         else:
-            item["conflict_reason"] = f"同名但特徵衝突（分數 {score}，可能是不同物件或助理打錯）"
+            item["conflict_reason"] = f"同名但特徵衝突（分數 {score}，可能是不同物件或資料有誤）"
             conflict.append(item)
-
-    unmatched = []
-    for key, payloads in csv_by_name.items():
-        for p in payloads:
-            cc = p.get('委託號碼', '')
-            if cc and cc in matched_comms:
-                continue
-            if _nn(p.get('案名', '')) in matched_names:
-                continue
-            unmatched.append({
-                "csv_name":   p.get('案名', ''),
-                "csv_price":  p.get('售價萬'),
-                "csv_expiry": p.get('委託到期日', ''),
-                "csv_agent":  p.get('經紀人', ''),
-                "csv_comm":   cc,
-                "reason": "Firestore 中找不到對應物件（可能案名差異大或助理打錯）",
-            })
 
     return jsonify({
         "ok":       True,
@@ -4286,7 +4249,8 @@ OBJECTS_APP_HTML = """
                     <input type="checkbox" id="rv-high-all" checked onchange="rvToggleAll(this)" style="cursor:pointer;">
                   </th>
                   <th style="padding:6px 8px;text-align:left;font-weight:600;">案名</th>
-                  <th style="padding:6px 8px;text-align:right;font-weight:600;">售價（萬）</th>
+                  <th style="padding:6px 8px;text-align:right;font-weight:600;">Firestore現價</th>
+                  <th style="padding:6px 8px;text-align:right;font-weight:600;">Word新價</th>
                   <th style="padding:6px 8px;text-align:left;font-weight:600;">到期日</th>
                   <th style="padding:6px 8px;text-align:left;font-weight:600;">配對方式</th>
                 </tr>
@@ -4301,7 +4265,7 @@ OBJECTS_APP_HTML = """
           </div>
           <!-- 問題（衝突 + 未配對） -->
           <div id="rv-pane-issues" style="display:none;">
-            <p style="font-size:12px;color:var(--txs);margin:0 0 10px;">以下項目無法自動配對或特徵衝突，僅供參考，不會自動套用。</p>
+            <p style="font-size:12px;color:var(--txs);margin:0 0 10px;">以下 Word 條目在 Firestore 找不到對應（新物件尚未匯入），或同名但特徵衝突。僅供參考，不會自動套用。</p>
             <div id="rv-issues-list" style="display:flex;flex-direction:column;gap:8px;"></div>
           </div>
         </div>
@@ -5506,6 +5470,7 @@ OBJECTS_APP_HTML = """
           _rvData.medium    = d.medium    || [];
           _rvData.conflict  = d.conflict  || [];
           _rvData.unmatched = d.unmatched || [];
+          _rvData.csv_rows  = d.csv_rows  || 0;
           _rvRender();
           input.value = '';
         })
@@ -5572,8 +5537,9 @@ OBJECTS_APP_HTML = """
     // 顯示結果區
     document.getElementById('rv-loading').style.display = 'none';
     document.getElementById('rv-results').style.display = 'flex';
+    var totalWord = d.csv_rows || (d.high.length + d.medium.length + d.conflict.length + d.unmatched.length);
     document.getElementById('rv-subtitle').textContent =
-      '高信心 ' + d.high.length + ' 筆 ／ 中信心 ' + d.medium.length + ' 筆 ／ 問題 ' + issueCount + ' 筆';
+      'Word 共 ' + totalWord + ' 筆｜高信心 ' + d.high.length + ' ／ 中信心 ' + d.medium.length + ' ／ 問題 ' + issueCount;
 
     // 更新 tab 數字
     document.getElementById('rv-count-high').textContent   = d.high.length;
@@ -5593,13 +5559,15 @@ OBJECTS_APP_HTML = """
         old_name: item.name_changed ? item.db_name  : '',
         new_name: item.name_changed ? item.csv_name : '',
       };
-      var priceStr = '';
+      // Firestore現價（舊）
+      var dbPriceStr = (item.db_price !== null && item.db_price !== undefined) ? item.db_price : '-';
+      // Word新價（新），若與 Firestore 不同則標綠色
+      var csvPriceStr = '-';
       if (item.csv_price !== null && item.csv_price !== undefined) {
         if (item.db_price !== null && item.db_price !== undefined && item.db_price !== item.csv_price) {
-          priceStr = '<span style="color:var(--txm);text-decoration:line-through;">' + item.db_price + '</span>'
-                   + ' → <strong style="color:var(--ok);">' + item.csv_price + '</strong>';
+          csvPriceStr = '<strong style="color:var(--ok);">' + item.csv_price + '</strong>';
         } else {
-          priceStr = item.csv_price;
+          csvPriceStr = item.csv_price;
         }
       }
       var nameStr = item.name_changed
@@ -5609,7 +5577,8 @@ OBJECTS_APP_HTML = """
       tr.style.cssText = 'border-bottom:1px solid var(--bd);';
       tr.innerHTML = '<td style="padding:6px 8px;"><input type="checkbox" checked data-docid="' + item.doc_id + '" onchange="rvToggleHigh(this)" style="cursor:pointer;"></td>'
         + '<td style="padding:6px 8px;color:var(--tx);">' + nameStr + '</td>'
-        + '<td style="padding:6px 8px;text-align:right;">' + priceStr + '</td>'
+        + '<td style="padding:6px 8px;text-align:right;color:var(--txm);">' + dbPriceStr + '</td>'
+        + '<td style="padding:6px 8px;text-align:right;">' + csvPriceStr + '</td>'
         + '<td style="padding:6px 8px;color:var(--txs);">' + (item.csv_expiry || '-') + '</td>'
         + '<td style="padding:6px 8px;color:var(--txm);">' + item.match_by + '</td>';
       highTbody.appendChild(tr);
@@ -5655,9 +5624,9 @@ OBJECTS_APP_HTML = """
     d.unmatched.forEach(function(item) {
       var div = document.createElement('div');
       div.style.cssText = 'background:var(--bg-t);border:1px solid var(--bd);border-radius:10px;padding:12px 14px;';
-      div.innerHTML = '<div style="font-size:12px;font-weight:600;color:var(--txm);margin-bottom:3px;">❓ 找不到對應 Firestore 物件</div>'
+      div.innerHTML = '<div style="font-size:12px;font-weight:600;color:var(--txm);margin-bottom:3px;">❓ Word 有此物件，Firestore 找不到（新物件尚未匯入）</div>'
         + '<div style="font-size:13px;color:var(--tx);">' + item.csv_name + '</div>'
-        + '<div style="font-size:11px;color:var(--txs);margin-top:3px;">經紀人：' + (item.csv_agent||'-') + '｜' + (item.reason||'') + '</div>';
+        + '<div style="font-size:11px;color:var(--txs);margin-top:3px;">經紀人：' + (item.csv_agent||'-') + '｜售價：' + (item.csv_price!==null&&item.csv_price!==undefined?item.csv_price+' 萬':'-') + '｜委託號：' + (item.csv_comm||'-') + '</div>';
       issueList.appendChild(div);
     });
 
