@@ -2229,11 +2229,14 @@ def api_word_review_analyze():
         return abs(a - b) / max(abs(a), abs(b)) <= tol
 
     def _agent_score(ag_a, ag_b):
-        """比較經紀人，支援空格分隔的多位承攬人（集合比對，順序無關）"""
+        """比較經紀人，支援空格或頓號分隔的多位承攬人（集合比對，順序無關）"""
         if not ag_a or not ag_b:
             return 0
-        set_a = set(ag_a.split())
-        set_b = set(ag_b.split())
+        import re as _re
+        def _split(s):
+            return set(_re.split(r'[\s、,，]+', s.strip()))
+        set_a = _split(ag_a)
+        set_b = _split(ag_b)
         if set_a == set_b:  return 5   # 完全相同（含多人同時承攬）
         if set_a & set_b:   return 3   # 有交集（共同承攬部分相符）
         return -8                       # 完全不同人
@@ -2514,12 +2517,15 @@ def api_word_review_upload_doc():
         return abs(a - b) / max(abs(a), abs(b)) <= tol
 
     def _agent_score(ag_db, ag_csv):
-        """比較經紀人，支援空格分隔的多位承攬人（集合比對，順序無關）"""
+        """比較經紀人，支援空格或頓號分隔的多位承攬人（集合比對，順序無關）"""
         if not ag_db or not ag_csv:
             return 0
-        db_set  = set(ag_db.split())
-        csv_set = set(ag_csv.split())
-        if db_set == csv_set:   return 5   # 完全相同
+        import re as _re
+        def _split(s):
+            return set(_re.split(r'[\s、,，]+', s.strip()))
+        db_set  = _split(ag_db)
+        csv_set = _split(ag_csv)
+        if db_set == csv_set:   return 5   # 完全相同（含順序不同）
         if db_set & csv_set:    return 3   # 有交集（共同承攬）
         return -8                           # 完全不同
 
