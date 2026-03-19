@@ -6476,6 +6476,9 @@ OBJECTS_APP_HTML = """
     }).catch(function(){ window.location.reload(); });
   }
 
+  // 頁面載入後直接顯示「公司物件庫」分頁
+  switchTab('company');
+
   // ══ 主題系統 ══
   (function() {
     var STYLE_MODES = {
