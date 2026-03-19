@@ -2685,6 +2685,7 @@ def api_word_review_upload_doc():
                 "csv_expiry":   expiry,
                 "csv_agent":    agent,
                 "csv_comm":     comm,
+                "csv_addr":     str(row.get('物件地址', '') or '').strip(),
                 "csv_land":     _pn(row.get('地坪')) or _pn(row.get('面積坪')),
                 "csv_build":    _pn(row.get('建坪')),
                 "csv_interior": _pn(row.get('室內坪')),
@@ -2696,6 +2697,7 @@ def api_word_review_upload_doc():
                 um["nm_agent"]    = str(near_miss.get('經紀人', '') or '').strip()
                 um["nm_seq"]      = str(near_miss.get('資料序號', '') or '')
                 um["nm_expiry"]   = near_miss.get('委託到期日', '')
+                um["nm_addr"]     = str(near_miss.get('物件地址', '') or '').strip()
                 um["nm_land"]     = _pn(near_miss.get('地坪'))
                 um["nm_build"]    = _pn(near_miss.get('建坪'))
                 um["nm_interior"] = _pn(near_miss.get('室內坪'))
@@ -6094,7 +6096,10 @@ OBJECTS_APP_HTML = """
         + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;text-transform:uppercase;">Word 物件總表</div>'
         + '<div style="font-size:13px;color:var(--tx);font-weight:600;">' + item.csv_name + '</div>'
         + fmtR('售價', item.csv_price!=null ? item.csv_price+' 萬' : '')
-        + fmtR('面積', fmtArea(item.csv_land, item.csv_build, item.csv_interior))
+        + fmtR('地址', item.csv_addr)
+        + fmtR('地坪', item.csv_land!=null ? item.csv_land+' 坪' : '')
+        + fmtR('建坪', item.csv_build!=null ? item.csv_build+' 坪' : '')
+        + fmtR('室內坪', item.csv_interior!=null ? item.csv_interior+' 坪' : '')
         + fmtR('委託號', item.csv_comm)
         + fmtR('到期', item.csv_expiry)
         + fmtR('經紀人', item.csv_agent)
@@ -6111,7 +6116,10 @@ OBJECTS_APP_HTML = """
           + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;">FIRESTORE 近似候選（分數 ' + item.nm_score + '）</div>'
           + '<div style="font-size:13px;color:var(--tx);font-weight:600;' + (item.nm_name!==item.csv_name?'color:var(--warn);':'') + '">' + item.nm_name + '</div>'
           + fmtR('售價', item.nm_price!=null ? item.nm_price+' 萬' : '')
-          + fmtR('面積', fmtArea(item.nm_land, item.nm_build, item.nm_interior))
+          + fmtR('地址', item.nm_addr)
+          + fmtR('地坪', item.nm_land!=null ? item.nm_land+' 坪' : '')
+          + fmtR('建坪', item.nm_build!=null ? item.nm_build+' 坪' : '')
+          + fmtR('室內坪', item.nm_interior!=null ? item.nm_interior+' 坪' : '')
           + fmtR('序號', item.nm_seq)
           + fmtR('到期', item.nm_expiry)
           + fmtR('經紀人', item.nm_agent)
