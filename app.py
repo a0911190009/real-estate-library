@@ -3565,6 +3565,91 @@ def api_objects_for_service_selling():
         return jsonify({"items": [], "error": str(e)})
 
 
+# ══ 資料庫檢視 API（管理員限定）══
+@app.route("/api/firestore/collections")
+def api_firestore_collections():
+    """列出 Firestore 所有頂層集合名稱"""
+    email = session.get("user_email")
+    if not email or not _is_admin(email):
+        return jsonify({"error": "僅管理員可用"}), 403
+    db = _get_db()
+    # 取得所有頂層集合
+    cols = [c.id for c in db.collections()]
+    cols.sort()
+    return jsonify({"collections": cols})
+
+
+@app.route("/api/firestore/browse")
+def api_firestore_browse():
+    """讀取指定集合的文件，以表格方式呈現"""
+    email = session.get("user_email")
+    if not email or not _is_admin(email):
+        return jsonify({"error": "僅管理員可用"}), 403
+
+    collection = request.args.get("collection", "").strip()
+    if not collection:
+        return jsonify({"error": "請指定集合名稱"}), 400
+
+    keyword = request.args.get("keyword", "").strip()
+    page = max(1, int(request.args.get("page", 1)))
+    per_page = min(200, max(10, int(request.args.get("per_page", 50))))
+
+    db = _get_db()
+    docs = []
+    for doc in db.collection(collection).stream():
+        d = doc.to_dict() or {}
+        d["__doc_id__"] = doc.id
+        docs.append(d)
+
+    # 關鍵字搜尋：在所有欄位值中搜尋
+    if keyword:
+        kw = keyword.lower()
+        filtered = []
+        for d in docs:
+            for v in d.values():
+                if kw in str(v).lower():
+                    filtered.append(d)
+                    break
+        docs = filtered
+
+    total = len(docs)
+
+    # 收集所有欄位名（動態）
+    all_keys = set()
+    for d in docs:
+        all_keys.update(d.keys())
+    # __doc_id__ 放最前面，其他排序
+    all_keys.discard("__doc_id__")
+    columns = ["__doc_id__"] + sorted(all_keys)
+
+    # 分頁
+    start = (page - 1) * per_page
+    end = start + per_page
+    page_docs = docs[start:end]
+
+    # 把值轉成字串方便前端顯示
+    rows = []
+    for d in page_docs:
+        row = {}
+        for col in columns:
+            val = d.get(col, "")
+            if isinstance(val, dict) or isinstance(val, list):
+                row[col] = json.dumps(val, ensure_ascii=False, default=str)[:200]
+            else:
+                row[col] = str(val) if val is not None else ""
+        rows.append(row)
+
+    return jsonify({
+        "collection": collection,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "pages": (total + per_page - 1) // per_page,
+        "columns": columns,
+        "rows": rows,
+    })
+
+
 @app.route("/")
 def index():
     email = session.get("user_email")
@@ -3937,6 +4022,11 @@ OBJECTS_APP_HTML = """
     <button id="tab-company" onclick="switchTab('company')"
       class="tab-btn flex-1 py-2 text-sm font-medium border-b-2 transition" style="color:var(--ac);border-color:var(--ac);">
       🏢 公司物件庫
+    </button>
+    <!-- 資料庫檢視 tab：僅管理員看得到（由 JS 控制顯示） -->
+    <button id="tab-dbview" onclick="switchTab('dbview')"
+      class="tab-btn hidden flex-1 py-2 text-sm font-medium border-b-2 border-transparent transition" style="color:var(--txs);">
+      📊 資料庫
     </button>
     <!-- 設定 tab：僅管理員看得到（由 JS 控制顯示） -->
     <button id="tab-settings" onclick="switchTab('settings')"
@@ -4379,6 +4469,49 @@ OBJECTS_APP_HTML = """
   </div>
 </div>
 
+<!-- ══ 資料庫檢視分頁（管理員限定）══ -->
+<div id="pane-dbview" style="display:none;max-width:95vw;" class="mx-auto px-4 py-6">
+  <div class="flex items-center justify-between mb-4 flex-wrap gap-3">
+    <h2 class="font-bold text-lg" style="color:var(--tx);">📊 Firestore 資料庫檢視</h2>
+    <div class="flex items-center gap-2 flex-wrap">
+      <!-- 集合選擇 -->
+      <select id="dbv-collection"
+        onchange="dbvLoadCollection()"
+        class="rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
+        <option value="">選擇集合…</option>
+      </select>
+      <!-- 搜尋 -->
+      <input id="dbv-keyword" type="text" placeholder="搜尋關鍵字…"
+        class="rounded-lg px-3 py-2 text-sm focus:outline-none w-48" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);"
+        onkeydown="if(event.key==='Enter')dbvLoadCollection()">
+      <button onclick="dbvLoadCollection()"
+        class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition">搜尋</button>
+      <!-- 每頁筆數 -->
+      <select id="dbv-perpage"
+        onchange="dbvLoadCollection()"
+        class="rounded-lg px-2 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
+        <option value="20">20 筆</option>
+        <option value="50" selected>50 筆</option>
+        <option value="100">100 筆</option>
+        <option value="200">200 筆</option>
+      </select>
+    </div>
+  </div>
+  <!-- 統計資訊 -->
+  <div id="dbv-info" class="text-sm mb-3" style="color:var(--txs);"></div>
+  <!-- 表格容器（可水平捲動） -->
+  <div class="rounded-xl overflow-hidden" style="border:1px solid var(--bd);">
+    <div style="overflow-x:auto;">
+      <table id="dbv-table" class="w-full text-sm" style="min-width:600px;">
+        <thead id="dbv-thead"></thead>
+        <tbody id="dbv-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+  <!-- 分頁控制 -->
+  <div id="dbv-pager" class="flex items-center justify-center gap-3 mt-4"></div>
+</div>
+
 <!-- ══ 組織設定分頁（屬於組織的人才看得到）══ -->
 <div id="pane-org" style="display:none" class="max-w-2xl mx-auto px-4 py-6">
   <h2 class="font-bold text-lg mb-1" style="color:var(--tx);">🏢 組織設定</h2>
@@ -4465,10 +4598,12 @@ OBJECTS_APP_HTML = """
   const isAdmin   = __IS_ADMIN_JSON__;
   const BUYER_URL = __BUYER_URL__;
 
-  // 管理員才顯示「設定」tab
+  // 管理員才顯示「設定」和「資料庫檢視」tab
   if (isAdmin) {
     var settingsTab = document.getElementById('tab-settings');
     if (settingsTab) settingsTab.classList.remove('hidden');
+    var dbviewTab = document.getElementById('tab-dbview');
+    if (dbviewTab) dbviewTab.classList.remove('hidden');
   }
 
   // ══ 組織（Org）功能 JS ══
@@ -4831,11 +4966,13 @@ OBJECTS_APP_HTML = """
     var paneCompanyEl  = document.getElementById('pane-company');
     var paneSettingsEl = document.getElementById('pane-settings');
     var paneOrgEl      = document.getElementById('pane-org');
+    var paneDbviewEl   = document.getElementById('pane-dbview');
 
     // 全部隱藏（加 null check 防止任一元素不存在時崩潰）
     if (paneCompanyEl)  paneCompanyEl.style.display  = 'none';
     if (paneSettingsEl) paneSettingsEl.style.display = 'none';
     if (paneOrgEl)      paneOrgEl.style.display      = 'none';
+    if (paneDbviewEl)   paneDbviewEl.style.display   = 'none';
 
     if (tab === 'company') {
       if (paneCompanyEl) paneCompanyEl.style.display = 'block';
@@ -4849,6 +4986,9 @@ OBJECTS_APP_HTML = """
     } else if (tab === 'org') {
       if (paneOrgEl) paneOrgEl.style.display = 'block';
       orgLoadMembers();  // 進入組織設定頁自動載入成員列表
+    } else if (tab === 'dbview') {
+      if (paneDbviewEl) paneDbviewEl.style.display = 'block';
+      dbvInit();  // 進入資料庫檢視頁自動載入集合列表
     }
 
     // 分頁按鈕樣式
@@ -4875,6 +5015,184 @@ OBJECTS_APP_HTML = """
         cpLoadSyncStatus();
         cpLoadWordSnapshotStatus();
       }
+    }
+  }
+
+  // ══ 資料庫檢視功能（管理員限定）══
+  var _dbvInited = false;  // 只載入一次集合清單
+  var _dbvPage = 1;        // 目前頁碼
+  var _dbvSortCol = '';    // 排序欄位
+  var _dbvSortAsc = true;  // 升冪
+
+  // 初始化：載入集合清單
+  function dbvInit() {
+    if (_dbvInited) return;
+    _dbvInited = true;
+    fetch('/api/firestore/collections')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.error) { toast(d.error, 'error'); return; }
+        var sel = document.getElementById('dbv-collection');
+        d.collections.forEach(function(name) {
+          var opt = document.createElement('option');
+          opt.value = name;
+          opt.textContent = name;
+          sel.appendChild(opt);
+        });
+      })
+      .catch(function() { toast('載入集合清單失敗', 'error'); });
+  }
+
+  // 載入指定集合的資料
+  function dbvLoadCollection(page) {
+    var collection = document.getElementById('dbv-collection').value;
+    if (!collection) { toast('請先選擇集合', 'info'); return; }
+    _dbvPage = page || 1;
+    _dbvSortCol = '';  // 重新載入時清除排序
+    _dbvSortAsc = true;
+
+    var keyword = (document.getElementById('dbv-keyword').value || '').trim();
+    var perPage = document.getElementById('dbv-perpage').value || '50';
+
+    var url = '/api/firestore/browse?collection=' + encodeURIComponent(collection)
+      + '&page=' + _dbvPage
+      + '&per_page=' + perPage;
+    if (keyword) url += '&keyword=' + encodeURIComponent(keyword);
+
+    document.getElementById('dbv-info').textContent = '載入中…';
+    document.getElementById('dbv-thead').innerHTML = '';
+    document.getElementById('dbv-tbody').innerHTML = '';
+    document.getElementById('dbv-pager').innerHTML = '';
+
+    fetch(url)
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.error) { toast(d.error, 'error'); document.getElementById('dbv-info').textContent = ''; return; }
+        // 統計資訊
+        var startNum = (d.page - 1) * d.per_page + 1;
+        var endNum = Math.min(d.page * d.per_page, d.total);
+        document.getElementById('dbv-info').textContent =
+          '集合：' + d.collection + '　共 ' + d.total + ' 筆'
+          + (d.total > 0 ? '　顯示第 ' + startNum + '~' + endNum + ' 筆' : '');
+
+        // 存下資料供前端排序用
+        window._dbvData = d;
+
+        dbvRenderTable(d);
+        dbvRenderPager(d);
+      })
+      .catch(function() { toast('載入資料失敗', 'error'); document.getElementById('dbv-info').textContent = ''; });
+  }
+
+  // 渲染表格
+  function dbvRenderTable(d) {
+    var thead = document.getElementById('dbv-thead');
+    var tbody = document.getElementById('dbv-tbody');
+    thead.innerHTML = '';
+    tbody.innerHTML = '';
+
+    if (!d.columns || d.columns.length === 0 || d.rows.length === 0) {
+      tbody.innerHTML = '<tr><td class="px-4 py-8 text-center" style="color:var(--txs);">無資料</td></tr>';
+      return;
+    }
+
+    // 表頭
+    var headerRow = document.createElement('tr');
+    headerRow.style.cssText = 'background:var(--bg-h);border-bottom:2px solid var(--bd);';
+    d.columns.forEach(function(col) {
+      var th = document.createElement('th');
+      th.style.cssText = 'padding:8px 12px;text-align:left;font-size:12px;font-weight:600;color:var(--tx);white-space:nowrap;cursor:pointer;user-select:none;';
+      // 顯示欄位名稱（__doc_id__ 顯示為「文件 ID」）
+      var label = col === '__doc_id__' ? '文件 ID' : col;
+      // 排序箭頭
+      var arrow = '';
+      if (_dbvSortCol === col) arrow = _dbvSortAsc ? ' ▲' : ' ▼';
+      th.textContent = label + arrow;
+      th.onclick = (function(c) {
+        return function() { dbvSort(c); };
+      })(col);
+      headerRow.appendChild(th);
+    });
+    thead.appendChild(headerRow);
+
+    // 資料列
+    var rows = d.rows;
+    rows.forEach(function(row, idx) {
+      var tr = document.createElement('tr');
+      tr.style.cssText = 'border-bottom:1px solid var(--bd);transition:background 0.15s;';
+      // 交替背景色
+      if (idx % 2 === 1) tr.style.background = 'var(--bg-t)';
+      tr.onmouseenter = function() { this.style.background = 'var(--bg-h)'; };
+      tr.onmouseleave = function() { this.style.background = idx % 2 === 1 ? 'var(--bg-t)' : ''; };
+
+      d.columns.forEach(function(col) {
+        var td = document.createElement('td');
+        td.style.cssText = 'padding:6px 12px;font-size:13px;color:var(--tx);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+        td.textContent = row[col] || '';
+        td.title = row[col] || '';  // hover 顯示完整內容
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+  }
+
+  // 前端排序（點表頭）
+  function dbvSort(col) {
+    if (!window._dbvData) return;
+    // 同一欄位切換升降冪，不同欄位預設升冪
+    if (_dbvSortCol === col) {
+      _dbvSortAsc = !_dbvSortAsc;
+    } else {
+      _dbvSortCol = col;
+      _dbvSortAsc = true;
+    }
+    // 排序資料列
+    var rows = window._dbvData.rows.slice();  // 複製一份
+    rows.sort(function(a, b) {
+      var va = (a[col] || '').toString();
+      var vb = (b[col] || '').toString();
+      // 嘗試數字比較
+      var na = parseFloat(va), nb = parseFloat(vb);
+      if (!isNaN(na) && !isNaN(nb)) {
+        return _dbvSortAsc ? na - nb : nb - na;
+      }
+      // 字串比較
+      return _dbvSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+    });
+    var sorted = Object.assign({}, window._dbvData, { rows: rows });
+    dbvRenderTable(sorted);
+  }
+
+  // 渲染分頁按鈕
+  function dbvRenderPager(d) {
+    var pager = document.getElementById('dbv-pager');
+    pager.innerHTML = '';
+    if (d.pages <= 1) return;
+
+    var btnStyle = 'padding:6px 14px;border-radius:8px;font-size:13px;cursor:pointer;transition:all 0.15s;';
+
+    // 上一頁
+    if (d.page > 1) {
+      var prev = document.createElement('button');
+      prev.textContent = '← 上一頁';
+      prev.style.cssText = btnStyle + 'background:var(--bg-h);color:var(--tx);border:1px solid var(--bd);';
+      prev.onclick = function() { dbvLoadCollection(d.page - 1); };
+      pager.appendChild(prev);
+    }
+
+    // 頁碼資訊
+    var info = document.createElement('span');
+    info.style.cssText = 'font-size:13px;color:var(--txs);';
+    info.textContent = '第 ' + d.page + ' / ' + d.pages + ' 頁';
+    pager.appendChild(info);
+
+    // 下一頁
+    if (d.page < d.pages) {
+      var next = document.createElement('button');
+      next.textContent = '下一頁 →';
+      next.style.cssText = btnStyle + 'background:var(--bg-h);color:var(--tx);border:1px solid var(--bd);';
+      next.onclick = function() { dbvLoadCollection(d.page + 1); };
+      pager.appendChild(next);
     }
   }
 
