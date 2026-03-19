@@ -2655,29 +2655,48 @@ def api_word_review_upload_doc():
         dbp = _pn(match.get('售價(萬)'))
         dbe = match.get('委託到期日', '')
         dbg = str(match.get('經紀人', '') or '').strip()
+        # 面積對照（供前端顯示診斷）
+        db_land     = _pn(match.get('地坪'))
+        db_build    = _pn(match.get('建坪'))
+        db_interior = _pn(match.get('室內坪'))
+        csv_land    = _pn(row.get('地坪')) or _pn(row.get('面積坪'))
+        csv_build   = _pn(row.get('建坪'))
+        csv_interior = _pn(row.get('室內坪'))
         item = {
-            "doc_id":       match['_doc_id'],
-            "db_name":      dbn,
-            "db_seq":       dbs,
-            "db_price":     dbp,
-            "db_expiry":    dbe,
-            "db_agent":     dbg,
-            "csv_name":     name,
-            "csv_price":    price,
-            "csv_expiry":   expiry,
-            "csv_agent":    agent,
-            "csv_comm":     comm,
-            "match_by":     match_by,
-            "score":        score,
-            "name_changed": name_changed,
+            "doc_id":        match['_doc_id'],
+            "db_name":       dbn,
+            "db_seq":        dbs,
+            "db_price":      dbp,
+            "db_expiry":     dbe,
+            "db_agent":      dbg,
+            "db_land":       db_land,
+            "db_build":      db_build,
+            "db_interior":   db_interior,
+            "csv_name":      name,
+            "csv_price":     price,
+            "csv_expiry":    expiry,
+            "csv_agent":     agent,
+            "csv_comm":      comm,
+            "csv_land":      csv_land,
+            "csv_build":     csv_build,
+            "csv_interior":  csv_interior,
+            "match_by":      match_by,
+            "score":         score,
+            "has_hard":      best_has_hard,
+            "name_changed":  name_changed,
         }
         if match_by == "委託號碼" or score >= 3:
             high.append(item)
         elif score >= 0:
             medium.append(item)
-        else:
-            item["conflict_reason"] = f"同名但特徵衝突（分數 {score}，可能是不同物件或資料有誤）"
+        elif best_has_hard:
+            # 有硬資料（面積）且明顯衝突 → 確實是不同物件
+            item["conflict_reason"] = f"面積不符（分數 {score}）"
             conflict.append(item)
+        else:
+            # 無面積資料可驗證，僅軟資料不符 → 歸中信心，人工確認
+            item["match_by"] = "案名比對（無面積驗證）"
+            medium.append(item)
 
     return jsonify({
         "ok":       True,
@@ -5986,11 +6005,22 @@ OBJECTS_APP_HTML = """
     var issueList = document.getElementById('rv-issues-list');
     issueList.innerHTML = '';
     d.conflict.forEach(function(item) {
+      // 組成面積對照字串
+      function fmtArea(land, build, interior) {
+        var parts = [];
+        if (land     !== null && land     !== undefined) parts.push('地坪 ' + land + '坪');
+        if (build    !== null && build    !== undefined) parts.push('建坪 ' + build + '坪');
+        if (interior !== null && interior !== undefined) parts.push('室內 ' + interior + '坪');
+        return parts.length ? parts.join('｜') : '-';
+      }
+      var dbArea  = fmtArea(item.db_land,  item.db_build,  item.db_interior);
+      var csvArea = fmtArea(item.csv_land, item.csv_build, item.csv_interior);
       var div = document.createElement('div');
       div.style.cssText = 'background:var(--bg-t);border:1px solid var(--warn);border-radius:10px;padding:12px 14px;';
-      div.innerHTML = '<div style="font-size:12px;font-weight:600;color:var(--warn);margin-bottom:3px;">⚡ 同名但特徵衝突</div>'
-        + '<div style="font-size:13px;color:var(--tx);">' + item.db_name + '</div>'
-        + '<div style="font-size:11px;color:var(--txs);margin-top:3px;">Firestore 經紀人：' + (item.db_agent||'-') + '｜CSV 經紀人：' + (item.csv_agent||'-') + '｜' + (item.conflict_reason||'') + '</div>';
+      div.innerHTML = '<div style="font-size:12px;font-weight:600;color:var(--warn);margin-bottom:3px;">⚡ 同名但面積衝突（' + (item.conflict_reason||'') + '）</div>'
+        + '<div style="font-size:13px;color:var(--tx);margin-bottom:4px;">' + item.db_name + '</div>'
+        + '<div style="font-size:11px;color:var(--txs);">Firestore 面積：' + dbArea + '｜售價：' + (item.db_price!==null?item.db_price+'萬':'-') + '｜經紀人：' + (item.db_agent||'-') + '</div>'
+        + '<div style="font-size:11px;color:var(--txm);margin-top:2px;">Word 面積：' + csvArea + '｜售價：' + (item.csv_price!==null?item.csv_price+'萬':'-') + '｜經紀人：' + (item.csv_agent||'-') + '</div>';
       issueList.appendChild(div);
     });
     d.unmatched.forEach(function(item) {
