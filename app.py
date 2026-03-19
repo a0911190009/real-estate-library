@@ -2669,6 +2669,7 @@ def api_word_review_upload_doc():
         # 找不到對應 → 前綴模糊搜尋找近似候選，供人工比對
         if not match:
             near_miss, nm_score = None, -999
+            csv_addr_nm = str(row.get('物件地址', '') or '').strip()
             prefix = key[:min(len(key), 6)] if len(key) >= 4 else ''
             if prefix:
                 for db_key, db_cands in db_by_name.items():
@@ -2676,9 +2677,21 @@ def api_word_review_upload_doc():
                         for cand in db_cands:
                             s = _agent_score(str(cand.get('經紀人','') or '').strip(), agent)
                             if _sm(price, _pn(cand.get('售價(萬)')), 0.10) is True: s += 2
+                            # 地址：硬資料，不同地址就是不同物件
+                            cand_addr = str(cand.get('物件地址', '') or '').strip()
+                            if csv_addr_nm and cand_addr:
+                                if csv_addr_nm == cand_addr:
+                                    s += 6  # 地址完全相符 → 高信心
+                                elif csv_addr_nm[:8] in cand_addr or cand_addr[:8] in csv_addr_nm:
+                                    s += 2  # 地址部分相符
+                                else:
+                                    s -= 8  # 地址不同 → 幾乎確定是不同物件
                             if s > nm_score:
                                 nm_score = s
                                 near_miss = cand
+            # 地址不符時（分數太低）不顯示近似候選，避免誤導
+            if near_miss is not None and nm_score < 0:
+                near_miss = None
             um = {
                 "csv_name":     name,
                 "csv_price":    price,
