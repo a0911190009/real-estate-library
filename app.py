@@ -2367,8 +2367,14 @@ def api_word_review_analyze():
             "score":      score,
             "name_changed": name_changed,
         }
-        # 信心分組：委託號碼命中或高評分 → 高信心；0-2分 → 中信心；負分 → 衝突
-        if match_by == "委託號碼" or score >= 3:
+        # 信心分組：委託號碼/序號命中或高評分 → 高信心；但地址明顯不符則降中信心
+        addr_mismatch = False
+        if match_by in ("委託號碼", "資料序號", "物件地址"):
+            da = item.get("db_addr", ""); ca = item.get("csv_addr", "")
+            if da and ca and da != ca and ca not in da and da not in ca:
+                addr_mismatch = True
+                item["match_by"] = match_by + "（地址不符，請確認）"
+        if (match_by in ("委託號碼", "資料序號", "物件地址") and not addr_mismatch) or score >= 3:
             high.append(item)
         elif score >= 0:
             medium.append(item)
@@ -2811,7 +2817,14 @@ def api_word_review_upload_doc():
             "has_hard":      best_has_hard,
             "name_changed":  name_changed,
         }
-        if match_by == "委託號碼" or score >= 3:
+        # 委託號碼/序號命中或高評分 → 高信心；但地址明顯不符則降中信心
+        addr_mismatch = False
+        if match_by in ("委託號碼", "資料序號", "物件地址"):
+            da = item.get("db_addr", ""); ca = item.get("csv_addr", "")
+            if da and ca and da != ca and ca not in da and da not in ca:
+                addr_mismatch = True
+                item["match_by"] = match_by + "（地址不符，請確認）"
+        if (match_by in ("委託號碼", "資料序號", "物件地址") and not addr_mismatch) or score >= 3:
             high.append(item)
         elif score >= 0:
             medium.append(item)
@@ -6073,9 +6086,10 @@ OBJECTS_APP_HTML = """
     function fmtMatchReason(item, type) {
       var m = item.match_by || '', s = item.score;
       var icon = type === 'high' ? '✅' : (type === 'medium' ? '⚠️' : '⚡');
-      if (m === '委託號碼')        return icon + ' 委託號碼精確命中（最可靠）';
-      if (m === '資料序號')        return icon + ' 資料序號直接命中（最可靠）';
-      if (m === '物件地址')        return icon + ' 物件地址精確命中';
+      if (m === '委託號碼')                      return icon + ' 委託號碼精確命中（最可靠）';
+      if (m === '資料序號')                      return icon + ' 資料序號直接命中（最可靠）';
+      if (m === '物件地址')                      return icon + ' 物件地址精確命中';
+      if (m.indexOf('地址不符') >= 0)            return icon + ' ' + m.replace('（地址不符，請確認）','') + ' 命中，但地址不同，請確認是否同一物件（可能是門牌打錯或不同單位）';
       if (type === 'high') {
         if (m.indexOf('面積') >= 0) return icon + ' 面積硬資料吻合，評分 ' + s + ' 分';
         return icon + ' ' + m + '（評分 ' + s + ' 分）';
@@ -6092,21 +6106,25 @@ OBJECTS_APP_HTML = """
       // conflict
       return icon + ' 已確認面積硬資料，兩邊數字明顯不符，推斷非同一物件（' + (item.conflict_reason||'') + '）';
     }
-    // 兩欄硬資料欄位（左：Word；右：Firestore）
+    // 兩欄硬資料欄位（左：Word；右：Firestore）；差異欄位標橘色
     function fmtHardCols(item, isRight) {
       var addr = isRight ? item.db_addr   : item.csv_addr;
       var land = isRight ? item.db_land   : item.csv_land;
       var bld  = isRight ? item.db_build  : item.csv_build;
       var inn  = isRight ? item.db_interior : item.csv_interior;
-      // 面積欄位有差異時標紅
+      // 數值差異 >2% 標橘
       function cmpStyle(a, b) {
         if (a === null || a === undefined || b === null || b === undefined) return '';
         return (Math.abs(a - b) / Math.max(a, b) > 0.02) ? 'color:var(--warn);font-weight:700;' : '';
       }
+      // 地址不同時標橘（兩欄都標，讓使用者比較）
+      var da = item.db_addr || '', ca = item.csv_addr || '';
+      var addrMismatch = da && ca && da !== ca && ca.indexOf(da) < 0 && da.indexOf(ca) < 0;
+      var addrStyle = addrMismatch ? 'color:var(--warn);font-weight:700;' : '';
       var landStyle = isRight ? cmpStyle(item.db_land,  item.csv_land)  : '';
       var bldStyle  = isRight ? cmpStyle(item.db_build, item.csv_build) : '';
       var innStyle  = isRight ? cmpStyle(item.db_interior, item.csv_interior) : '';
-      return fmtR('地址', addr)
+      return (addr ? '<div style="font-size:11px;color:var(--txs);margin-top:2px;' + addrStyle + '"><span style="color:var(--txm);font-weight:600;">地址：</span>' + addr + (addrMismatch ? ' ⚠️' : '') + '</div>' : '')
         + (land!==null&&land!==undefined ? '<div style="font-size:11px;color:var(--txs);margin-top:2px;' + landStyle + '"><span style="color:var(--txm);font-weight:600;">地坪：</span>' + land + ' 坪</div>' : '')
         + (bld !==null&&bld !==undefined ? '<div style="font-size:11px;color:var(--txs);margin-top:2px;' + bldStyle  + '"><span style="color:var(--txm);font-weight:600;">建坪：</span>' + bld  + ' 坪</div>' : '')
         + (inn !==null&&inn !==undefined ? '<div style="font-size:11px;color:var(--txs);margin-top:2px;' + innStyle  + '"><span style="color:var(--txm);font-weight:600;">室內坪：</span>' + inn + ' 坪</div>' : '');
