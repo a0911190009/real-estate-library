@@ -7216,7 +7216,13 @@ OBJECTS_APP_HTML = """
       } else if (d.last_run) {
         var dt = new Date(d.last_run);
         var r = d.last_result || {};
-        el.textContent = dt.toLocaleString('zh-TW') + '\uff08\u5beb\u5165 ' + (r.written||0) + ' \u7b46\uff0c\u522a\u9664 ' + (r.deleted||0) + ' \u7b46\uff09';
+        if (r.ok === false) {
+          el.textContent = dt.toLocaleString('zh-TW') + ' ❌ 失敗：' + (r.error || '未知錯誤');
+          el.style.color = '#f87171';
+        } else {
+          el.textContent = dt.toLocaleString('zh-TW') + '\uff08\u5beb\u5165 ' + (r.written||0) + ' \u7b46\uff0c\u522a\u9664 ' + (r.deleted||0) + ' \u7b46\uff09';
+          el.style.color = '';
+        }
       } else {
         el.textContent = '\u5c1a\u672a\u540c\u6b65\u904e';
       }
@@ -7239,9 +7245,15 @@ OBJECTS_APP_HTML = """
             btn.disabled = false;
             btn.textContent = '\u7acb\u5373\u540c\u6b65 Sheets';
             cpLoadSyncStatus();
-            window._cpSearched = false;
-            cpSearch();
-            toast('\u540c\u6b65\u5b8c\u6210\uff01', 'success');
+            var r = s.last_result || {};
+            if (r.ok === false) {
+              // 同步失敗，顯示錯誤訊息
+              toast('同步失敗：' + (r.error || '未知錯誤'), 'error');
+            } else {
+              window._cpSearched = false;
+              cpSearch();
+              toast('同步完成！', 'success');
+            }
           }
         });
       }, 3000);
