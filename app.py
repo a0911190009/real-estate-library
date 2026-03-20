@@ -1629,7 +1629,7 @@ def api_company_properties_search():
         card_fields = {
             "id", "案名", "物件地址", "物件類別", "售價(萬)",
             "建坪", "地坪", "經紀人", "銷售中", "成交日期", "委託到期日",
-            "資料序號", "鄉/市/鎮", "已加星", "舊案名", "所有權人",
+            "資料序號", "鄉/市/鎮", "已加星", "舊案名", "原售價(萬)", "所有權人",
             "段別", "地號"  # FOUNDI 土地查詢用
         }
         slim = [{k: r[k] for k in card_fields if k in r} for r in page_data]
@@ -2442,9 +2442,13 @@ def api_word_review_apply():
         if it.get("expiry"):
             upd["委託到期日"] = it["expiry"]
         if it.get("price") is not None:
+            # 售價有異動時：保留原售價供物件卡片顯示備註
+            old_p = it.get("old_price")
+            if old_p is not None and old_p != it["price"]:
+                upd["原售價(萬)"] = old_p
             upd["售價(萬)"] = it["price"]
         if it.get("name_changed") and it.get("old_name") and it.get("new_name"):
-            upd["舊案名"] = it["old_name"]
+            upd["舊案名"] = it["old_name"]   # 保留原案名供物件卡片顯示備註
             upd["案名"]  = it["new_name"]
         try:
             col.document(did).update(upd)
@@ -6138,6 +6142,7 @@ OBJECTS_APP_HTML = """
       _rvConfirmed[item.doc_id] = {
         doc_id: item.doc_id,
         price:  item.csv_price,
+        old_price: item.db_price,   // 原售價（用於寫入 原售價(萬) 備註）
         expiry: item.csv_expiry,
         name_changed: item.name_changed,
         old_name: item.name_changed ? item.db_name  : '',
@@ -6200,7 +6205,8 @@ OBJECTS_APP_HTML = """
         + fmtR('經紀人', item.db_agent)
         + '</div>';
       var itemJson = JSON.stringify({
-        doc_id: item.doc_id, price: item.csv_price, expiry: item.csv_expiry,
+        doc_id: item.doc_id, price: item.csv_price, old_price: item.db_price,
+        expiry: item.csv_expiry,
         name_changed: item.name_changed, old_name: item.db_name, new_name: item.csv_name
       }).replace(/"/g, '&quot;');
       var div = document.createElement('div');
@@ -6367,7 +6373,7 @@ OBJECTS_APP_HTML = """
       if (cb.checked) {
         // 找回 data
         var item = _rvData.high.find(function(x){ return x.doc_id === did; });
-        if (item) _rvConfirmed[did] = {doc_id:did, price:item.csv_price, expiry:item.csv_expiry, name_changed:item.name_changed, old_name:item.db_name, new_name:item.csv_name};
+        if (item) _rvConfirmed[did] = {doc_id:did, price:item.csv_price, old_price:item.db_price, expiry:item.csv_expiry, name_changed:item.name_changed, old_name:item.db_name, new_name:item.csv_name};
       } else {
         delete _rvConfirmed[did];
       }
@@ -6380,7 +6386,7 @@ OBJECTS_APP_HTML = """
     var did = cb.dataset.docid;
     if (cb.checked) {
       var item = _rvData.high.find(function(x){ return x.doc_id === did; });
-      if (item) _rvConfirmed[did] = {doc_id:did, price:item.csv_price, expiry:item.csv_expiry, name_changed:item.name_changed, old_name:item.db_name, new_name:item.csv_name};
+      if (item) _rvConfirmed[did] = {doc_id:did, price:item.csv_price, old_price:item.db_price, expiry:item.csv_expiry, name_changed:item.name_changed, old_name:item.db_name, new_name:item.csv_name};
     } else {
       delete _rvConfirmed[did];
     }
@@ -6683,9 +6689,13 @@ OBJECTS_APP_HTML = """
           var agent = item['經紀人'] ? '<span style="font-size:0.75rem;color:var(--txm);">' + escapeHtml(item['經紀人']) + '</span>' : '';
           var safeId = String(item.id).replace(/'/g, '');
           var name = escapeHtml(item['案名'] || '（無案名）');
-          // 若有舊案名（案名曾改動），顯示「原：舊案名」灰色小字
+          // 若有舊案名（案名曾改動），顯示「原案名：X」灰色小字
           var oldNameBadge = item['舊案名']
-            ? '<span style="font-size:0.75rem;color:var(--txm);font-style:italic;">原：' + escapeHtml(item['舊案名']) + '</span>'
+            ? '<span style="font-size:0.75rem;color:var(--txm);font-style:italic;">原案名：' + escapeHtml(item['舊案名']) + '</span>'
+            : '';
+          // 若有原售價（售價曾改動），顯示「原售價：X 萬」
+          var oldPriceBadge = item['原售價(萬)']
+            ? '<span style="font-size:0.75rem;color:var(--txm);font-style:italic;">原售價：' + escapeHtml(String(item['原售價(萬)'])) + ' 萬</span>'
             : '';
           // 地址顯示：有地址用地址；土地類（農地/建地）改顯示 縣市＋段別＋地號
           var addr;
@@ -6731,7 +6741,8 @@ OBJECTS_APP_HTML = """
           html += '<div class="flex items-start justify-between gap-2">';
           html += '<div class="min-w-0 cursor-pointer flex-1 cp-detail-btn" data-id="' + safeId + '">';
           html += '<p class="font-semibold truncate" style="color:var(--tx);">' + name + '</p>';
-          if (oldNameBadge) html += '<p class="truncate mt-0">' + oldNameBadge + '</p>';
+          if (oldNameBadge)  html += '<p class="truncate mt-0">' + oldNameBadge + '</p>';
+          if (oldPriceBadge) html += '<p class="truncate mt-0">' + oldPriceBadge + '</p>';
           html += '<p class="truncate mt-0.5" style="font-size:0.75rem;color:var(--txs);">' + addr + '</p>';
           // 所有權人：只有管理員看得到
           if (isAdmin && item['所有權人']) {
