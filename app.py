@@ -1331,6 +1331,46 @@ def api_sync_properties():
     return jsonify({"ok": True, "message": "同步已在背景啟動，約需 1-2 分鐘完成"})
 
 
+# ── 除錯用：比對 Sheets vs Firestore 的指定物件（管理員限定） ──
+@app.route("/api/debug-sync/<seq_id>", methods=["GET"])
+def api_debug_sync(seq_id):
+    """讀取 Sheets 與 Firestore 中指定資料序號的物件，回傳比對結果。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email):
+        return jsonify({"error": "無權限"}), 403
+
+    result = {"seq_id": seq_id}
+
+    # 1. 從 Sheets 讀取
+    try:
+        headers, data_rows = _sheets_read_all()
+        sheets_doc = None
+        for row in data_rows:
+            d = _row_to_doc(headers, row)
+            if str(d.get("資料序號", "")).strip() == str(seq_id):
+                sheets_doc = d
+                break
+        result["sheets"] = sheets_doc or "找不到此資料序號"
+        result["sheets_headers"] = headers  # 看欄位順序是否正確
+    except Exception as e:
+        result["sheets_error"] = str(e)
+
+    # 2. 從 Firestore 讀取
+    try:
+        db = _get_db()
+        doc = db.collection("company_properties").document(str(seq_id)).get()
+        if doc.exists:
+            result["firestore"] = doc.to_dict()
+        else:
+            result["firestore"] = "文件不存在"
+    except Exception as e:
+        result["firestore_error"] = str(e)
+
+    return jsonify(result)
+
+
 @app.route("/api/sync-properties/status", methods=["GET"])
 def api_sync_properties_status():
     """查詢同步狀態（管理員用）。"""
