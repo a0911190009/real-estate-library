@@ -4512,13 +4512,13 @@ OBJECTS_APP_HTML = """
 
   <!-- 物件總表比對審查 Modal（僅管理員，日盛房屋專用） -->
   <div id="cp-review-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:600;align-items:flex-start;justify-content:center;padding-top:32px;"
-    onclick="if(event.target===this)this.style.display='none'">
+    onclick="if(event.target===this)cpCloseReview()">
     <div style="background:var(--bg-s);border:1px solid var(--bd);border-radius:16px;width:96%;max-width:800px;max-height:88vh;display:flex;flex-direction:column;box-shadow:var(--sh);position:relative;">
       <!-- Header -->
       <div style="padding:18px 24px 12px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:12px;">
         <span style="font-size:15px;font-weight:700;color:var(--tx);">🔍 物件總表比對審查</span>
         <span id="rv-subtitle" style="font-size:12px;color:var(--txs);"></span>
-        <button onclick="document.getElementById('cp-review-modal').style.display='none'"
+        <button onclick="cpCloseReview()"
           style="margin-left:auto;background:none;border:none;color:var(--txm);font-size:20px;cursor:pointer;line-height:1;">✕</button>
       </div>
       <!-- Loading -->
@@ -4573,7 +4573,7 @@ OBJECTS_APP_HTML = """
             style="margin-left:auto;padding:8px 20px;border-radius:8px;background:var(--ac);color:#fff;border:none;font-size:13px;font-weight:700;cursor:pointer;">
             ✅ 套用確認的配對
           </button>
-          <button onclick="document.getElementById('cp-review-modal').style.display='none'"
+          <button onclick="cpCloseReview()"
             style="padding:8px 16px;border-radius:8px;background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);font-size:12px;cursor:pointer;">
             取消
           </button>
@@ -6442,6 +6442,13 @@ OBJECTS_APP_HTML = """
   function _rvUpdateCount() {
     var n = Object.keys(_rvConfirmed).length;
     document.getElementById('rv-apply-count').textContent = '已選 ' + n + ' 筆';
+  }
+
+  // 確認退出審查 Modal（有已選配對時提示）
+  function cpCloseReview() {
+    var n = Object.keys(_rvConfirmed).length;
+    if (n > 0 && !confirm('已選取 ' + n + ' 筆配對尚未套用，確定要離開？')) return;
+    document.getElementById('cp-review-modal').style.display = 'none';
   }
 
   // 套用確認的配對，寫入 Firestore
