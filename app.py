@@ -2774,11 +2774,16 @@ def api_word_review_upload_doc():
             # 地址不符時（分數太低）不顯示近似候選，避免誤導
             if near_miss is not None and nm_score < 0:
                 near_miss = None
-            # 近似候選分數很高（地址+經紀人+售價全吻合）→ 直接升為中信心，不留在問題區
+            # 近似候選分數很高（地址+經紀人+售價全吻合）→ 升信心，不留在問題區
             if near_miss is not None and nm_score >= 8:
+                nm_name = str(near_miss.get('案名', '') or '')
+                nm_name_match = _nn(nm_name) == _nn(name)   # 案名規範化後相同
+                # 案名完全相同 → 升高信心（主迴圈漏配，近似搜尋補救）
+                # 案名不同但其他資料吻合 → 升中信心，讓使用者確認
+                match_reason = "近似搜尋補救（案名完全相符）" if nm_name_match else "近似候選升中信心"
                 item_nm = {
                     "doc_id":    near_miss['_doc_id'],
-                    "db_name":   str(near_miss.get('案名', '') or ''),
+                    "db_name":   nm_name,
                     "db_seq":    str(int(near_miss.get('資料序號', 0) or 0)),
                     "db_price":  _pn(near_miss.get('售價(萬)')),
                     "db_expiry": near_miss.get('委託到期日', ''),
@@ -2787,9 +2792,9 @@ def api_word_review_upload_doc():
                     "csv_name":  name, "csv_price": price, "csv_expiry": expiry,
                     "csv_agent": agent, "csv_comm": comm,
                     "csv_addr":  csv_addr_nm,
-                    "match_by":  "近似候選升中信心",
+                    "match_by":  match_reason,
                     "score":     nm_score,
-                    "name_changed": _nn(str(near_miss.get('案名','') or '')) != _nn(name),
+                    "name_changed": not nm_name_match,
                     "db_land":   _pn(near_miss.get('地坪')),
                     "db_build":  _pn(near_miss.get('建坪')),
                     "db_interior": _pn(near_miss.get('室內坪')),
@@ -2797,7 +2802,10 @@ def api_word_review_upload_doc():
                     "csv_build": _pn(row.get('建坪')),
                     "csv_interior": _pn(row.get('室內坪')),
                 }
-                medium.append(item_nm)
+                if nm_name_match:
+                    high.append(item_nm)
+                else:
+                    medium.append(item_nm)
                 continue
             um = {
                 "csv_name":     name,
