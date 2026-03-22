@@ -2813,6 +2813,11 @@ def api_word_review_upload_doc():
             row_addr = re.sub(r'\s+', '', _ca(str(row.get('物件地址', '') or '')))
             if row_addr and len(row_addr) >= 6:
                 cm = db_by_addr.get(row_addr)
+                if not cm:
+                    # 公寓1樓有時 Firestore 不寫「N樓」→ 去樓層後再試一次
+                    stripped_addr = re.sub(r'\d+樓(之\d+)?$', '', row_addr).strip()
+                    if stripped_addr != row_addr and len(stripped_addr) >= 6:
+                        cm = db_by_addr.get(stripped_addr)
                 if cm:
                     match = cm
                     match_by = "地址比對"
@@ -2873,10 +2878,17 @@ def api_word_review_upload_doc():
                                 if csv_addr_nm == cand_addr:
                                     s += 6  # 地址完全相符 → 高信心
                                 elif csv_addr_nm in cand_addr or cand_addr in csv_addr_nm:
-                                    # 子字串包含：如 Firestore 地址多了「台東縣」前綴
+                                    # 子字串包含：Firestore 地址多了「台東縣」前綴、或 Word 多了「1樓」
                                     s += 2  # 地址部分相符
                                 else:
-                                    s -= 8  # 地址不同（如 286號 vs 288號）→ 幾乎確定是不同物件
+                                    # 嘗試去樓層後再比對（如 Word 寫「1樓」Firestore 未寫）
+                                    ca_stripped = re.sub(r'\d+樓(之\d+)?$', '', csv_addr_nm).strip()
+                                    da_stripped = re.sub(r'\d+樓(之\d+)?$', '', cand_addr).strip()
+                                    if ca_stripped and da_stripped and (ca_stripped == da_stripped
+                                            or ca_stripped in da_stripped or da_stripped in ca_stripped):
+                                        s += 2  # 去樓層後地址相符（樓層只是補充說明）
+                                    else:
+                                        s -= 8  # 地址確實不同（286號 vs 288號）→ 幾乎確定是不同物件
                             if s > nm_score:
                                 nm_score = s
                                 near_miss = cand
@@ -2986,8 +2998,13 @@ def api_word_review_upload_doc():
         if score != 99 and match_by in ("委託號碼", "資料序號", "物件地址"):
             da = item.get("db_addr", ""); ca = item.get("csv_addr", "")
             if da and ca and da != ca and ca not in da and da not in ca:
-                addr_mismatch = True
-                item["match_by"] = match_by + "（地址不符，請確認）"
+                # 去樓層後再比對：若只差「1樓」這類樓層資訊，不算地址不符
+                da_s = re.sub(r'\d+樓(之\d+)?$', '', da).strip()
+                ca_s = re.sub(r'\d+樓(之\d+)?$', '', ca).strip()
+                floor_only_diff = (da_s and ca_s and (da_s == ca_s or da_s in ca_s or ca_s in da_s))
+                if not floor_only_diff:
+                    addr_mismatch = True
+                    item["match_by"] = match_by + "（地址不符，請確認）"
         if score == 99 or (match_by in ("委託號碼", "資料序號", "物件地址") and not addr_mismatch) or score >= 3:
             high.append(item)
         elif score >= 0:
