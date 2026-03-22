@@ -6603,7 +6603,7 @@ OBJECTS_APP_HTML = """
         + '<div class="rv-force-row" style="margin-top:6px;display:flex;align-items:center;gap:6px;">'
         + '<input class="rv-force-seq-input" placeholder="輸入 Firestore 序號（強行記憶）"'
         + ' style="flex:1;max-width:200px;padding:3px 7px;border:1px solid var(--bd);border-radius:5px;font-size:11px;" />'
-        + '<button onclick="rvForceMatch(this,\'' + medId + '\')"'
+        + '<button onclick="rvForceMatch(this)" data-cardid="' + medId + '"'
         + ' style="padding:4px 10px;border-radius:7px;background:#888;color:#fff;border:none;font-size:11px;cursor:pointer;">💾 強行記憶</button>'
         + '</div>';
       medList.appendChild(div);
@@ -6643,7 +6643,7 @@ OBJECTS_APP_HTML = """
         + '<div class="rv-force-row" style="margin-top:6px;display:flex;align-items:center;gap:6px;border-top:1px dashed var(--bd);padding-top:6px;">'
         + '<input class="rv-force-seq-input" placeholder="輸入 Firestore 序號（強行記憶配對）"'
         + ' style="flex:1;max-width:200px;padding:3px 7px;border:1px solid var(--bd);border-radius:5px;font-size:11px;" />'
-        + '<button onclick="rvForceMatch(this,\'' + conflId + '\')"'
+        + '<button onclick="rvForceMatch(this)" data-cardid="' + conflId + '"'
         + ' style="padding:4px 10px;border-radius:7px;background:#888;color:#fff;border:none;font-size:11px;cursor:pointer;">💾 強行記憶</button>'
         + '</div>';
       issueList.appendChild(div);
@@ -6741,7 +6741,7 @@ OBJECTS_APP_HTML = """
       var forceRow = '<div class="rv-force-row" style="margin-top:8px;display:flex;align-items:center;gap:6px;border-top:1px dashed var(--bd);padding-top:6px;">'
         + '<input class="rv-force-seq-input" placeholder="輸入 Firestore 序號（強行記憶配對）"'
         + ' style="flex:1;max-width:200px;padding:3px 7px;border:1px solid var(--bd);border-radius:5px;font-size:11px;" />'
-        + '<button onclick="rvForceMatch(this,\'' + cardId + '\')"'
+        + '<button onclick="rvForceMatch(this)" data-cardid="' + cardId + '"'
         + ' style="padding:4px 10px;border-radius:7px;background:#888;color:#fff;border:none;font-size:11px;cursor:pointer;">💾 強行記憶</button>'
         + '</div>';
       var div = document.createElement('div');
@@ -6791,7 +6791,7 @@ OBJECTS_APP_HTML = """
             + '<td style="padding:4px 6px;">' + escapeHtml(m.word_name || '—') + '</td>'
             + '<td style="padding:4px 6px;font-weight:700;color:var(--ac);">序號 ' + escapeHtml(String(m.db_seq || '')) + '</td>'
             + '<td style="padding:4px 6px;color:var(--txs);">' + escapeHtml(m.memo || '') + '</td>'
-            + '<td style="padding:4px 6px;"><button onclick="rvDeleteMemory(\'' + m._id + '\')"'
+            + '<td style="padding:4px 6px;"><button onclick="rvDeleteMemory(this)" data-memid="' + m._id + '"'
             + ' style="padding:2px 7px;border-radius:4px;background:var(--err,#e55);color:#fff;border:none;font-size:11px;cursor:pointer;">🗑 刪除</button></td>';
           tbody.appendChild(tr);
         });
@@ -6799,7 +6799,8 @@ OBJECTS_APP_HTML = """
   }
 
   // 刪除一筆強行配對記憶
-  function rvDeleteMemory(memId) {
+  function rvDeleteMemory(btn) {
+    var memId = btn.dataset.memid;
     if (!confirm('確定刪除這筆強行記憶？刪除後下次上傳將不再自動配對。')) return;
     fetch('/api/word-match-memory/' + memId, { method: 'DELETE' })
       .then(function(r){ return r.json(); })
@@ -6808,7 +6809,8 @@ OBJECTS_APP_HTML = """
   }
 
   // 強行記憶配對：儲存記憶到 Firestore，下次上傳自動套用
-  function rvForceMatch(btn, cardId) {
+  function rvForceMatch(btn) {
+    var cardId = btn.dataset.cardid;
     var card = document.getElementById(cardId);
     var inp  = card ? card.querySelector('.rv-force-seq-input') : null;
     var seq  = inp ? inp.value.trim() : '';
