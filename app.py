@@ -2502,6 +2502,70 @@ def api_word_review_apply():
                     "message": f"已更新 {updated} 筆物件（銷售中、售價、到期日）"})
 
 
+# ── 強行配對記憶 API ─────────────────────────────────────────────────────────
+
+@app.route("/api/word-match-memory", methods=["GET"])
+def api_word_match_memory_list():
+    """取得所有強行配對記憶。"""
+    email, err = _require_user()
+    if err: return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email): return jsonify({"error": "僅管理員可使用"}), 403
+    db = _get_db()
+    if db is None: return jsonify({"error": "Firestore 未連線"}), 503
+    docs = db.collection("word_match_memory").order_by("created_at").stream()
+    items = []
+    for d in docs:
+        rec = d.to_dict()
+        rec["_id"] = d.id
+        items.append(rec)
+    return jsonify({"ok": True, "items": items})
+
+
+@app.route("/api/word-match-memory", methods=["POST"])
+def api_word_match_memory_add():
+    """新增一筆強行配對記憶。
+    Body: {word_name, word_comm, db_seq, db_doc_id, memo}
+    """
+    email, err = _require_user()
+    if err: return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email): return jsonify({"error": "僅管理員可使用"}), 403
+    db = _get_db()
+    if db is None: return jsonify({"error": "Firestore 未連線"}), 503
+    data = request.json or {}
+    word_comm = str(data.get("word_comm", "") or "").strip()
+    word_name = str(data.get("word_name", "") or "").strip()
+    db_seq    = str(data.get("db_seq",   "") or "").strip()
+    db_doc_id = str(data.get("db_doc_id","") or "").strip()
+    if not (word_name and db_seq):
+        return jsonify({"error": "缺少 word_name 或 db_seq"}), 400
+    from datetime import datetime as _dt
+    rec = {
+        "word_name": word_name,
+        "word_comm": word_comm,
+        "db_seq":    db_seq,
+        "db_doc_id": db_doc_id,
+        "memo":      str(data.get("memo", "") or ""),
+        "created_by": email,
+        "created_at": _dt.utcnow().isoformat(),
+    }
+    doc_ref = db.collection("word_match_memory").document()
+    doc_ref.set(rec)
+    rec["_id"] = doc_ref.id
+    return jsonify({"ok": True, "item": rec})
+
+
+@app.route("/api/word-match-memory/<mem_id>", methods=["DELETE"])
+def api_word_match_memory_delete(mem_id):
+    """刪除一筆強行配對記憶。"""
+    email, err = _require_user()
+    if err: return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email): return jsonify({"error": "僅管理員可使用"}), 403
+    db = _get_db()
+    if db is None: return jsonify({"error": "Firestore 未連線"}), 503
+    db.collection("word_match_memory").document(mem_id).delete()
+    return jsonify({"ok": True})
+
+
 
 
 @app.route("/api/word-review/upload-doc", methods=["POST"])
@@ -2678,6 +2742,30 @@ def api_word_review_upload_doc():
         if dba and len(dba) >= 6:
             db_by_addr[dba] = dd
 
+    # Step 0：載入強行配對記憶，建立索引（委託號碼 → db_seq；案名 → db_seq）
+    mem_by_comm = {}   # word_comm → memory record
+    mem_by_name = {}   # _nn(word_name) → memory record
+    try:
+        mem_docs = db.collection("word_match_memory").stream()
+        for md in mem_docs:
+            mr = md.to_dict()
+            mr["_mem_id"] = md.id
+            wc = str(mr.get("word_comm", "") or "").strip()
+            if wc and wc != '000000':
+                mem_by_comm[wc] = mr
+            wn = _nn(str(mr.get("word_name", "") or ""))
+            if wn:
+                mem_by_name[wn] = mr
+    except Exception:
+        pass  # 記憶載入失敗不影響主流程
+
+    # db_by_seq：資料序號 → Firestore doc（供記憶配對使用）
+    db_by_seq = {}
+    for dd_val in list(db_by_comm.values()) + [v for lst in db_by_name.values() for v in lst]:
+        seq = str(int(float(str(dd_val.get("資料序號", 0) or 0)))).strip()
+        if seq and seq != '0':
+            db_by_seq[seq] = dd_val
+
     # 以 Word 條目為主，逐一在 Firestore 找對應物件
     # Word 是目前在架物件的唯一真相；Firestore 是歷史全量（從未清除）
     high, medium, conflict, unmatched = [], [], [], []
@@ -2697,6 +2785,18 @@ def api_word_review_upload_doc():
             continue
 
         match, match_by, score, name_changed, best_has_hard = None, "", 0, False, False
+
+        # 0. 強行配對記憶（優先級最高）
+        mem = mem_by_comm.get(comm) or mem_by_name.get(key)
+        if mem:
+            mem_seq = str(mem.get("db_seq", "") or "").strip()
+            mem_doc = db_by_seq.get(mem_seq)
+            if mem_doc:
+                match    = mem_doc
+                match_by = f"強行記憶配對（序號 {mem_seq}）"
+                score    = 99
+                if mem_doc.get('案名') and _nn(str(mem_doc['案名'])) != _nn(name):
+                    name_changed = True
 
         # 1. 先嘗試委託號碼精確比對
         if comm and comm != '000000':
@@ -2881,13 +2981,14 @@ def api_word_review_upload_doc():
             "name_changed":  name_changed,
         }
         # 委託號碼/序號命中或高評分 → 高信心；但地址明顯不符則降中信心
+        # 強行記憶配對（score=99）→ 永遠高信心，跳過地址檢查
         addr_mismatch = False
-        if match_by in ("委託號碼", "資料序號", "物件地址"):
+        if score != 99 and match_by in ("委託號碼", "資料序號", "物件地址"):
             da = item.get("db_addr", ""); ca = item.get("csv_addr", "")
             if da and ca and da != ca and ca not in da and da not in ca:
                 addr_mismatch = True
                 item["match_by"] = match_by + "（地址不符，請確認）"
-        if (match_by in ("委託號碼", "資料序號", "物件地址") and not addr_mismatch) or score >= 3:
+        if score == 99 or (match_by in ("委託號碼", "資料序號", "物件地址") and not addr_mismatch) or score >= 3:
             high.append(item)
         elif score >= 0:
             medium.append(item)
@@ -4757,6 +4858,28 @@ OBJECTS_APP_HTML = """
       </div>
       <!-- 結果區 -->
       <div id="rv-results" style="display:none;flex:1;overflow:hidden;flex-direction:column;">
+        <!-- 強行配對記憶抽屜 -->
+        <div id="rv-mem-drawer" style="border-bottom:1px solid var(--bd);background:var(--bg-t);">
+          <div onclick="rvToggleMemDrawer()" style="padding:8px 24px;cursor:pointer;display:flex;align-items:center;gap:8px;user-select:none;">
+            <span style="font-size:12px;font-weight:700;color:var(--txm);">🧠 強行配對記憶</span>
+            <span id="rv-mem-badge" style="background:var(--bg-h);color:var(--txs);border-radius:9px;padding:1px 7px;font-size:11px;">0</span>
+            <span id="rv-mem-arrow" style="margin-left:auto;color:var(--txs);font-size:11px;">▼ 展開</span>
+          </div>
+          <div id="rv-mem-body" style="display:none;padding:0 24px 10px;overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;font-size:11px;">
+              <thead>
+                <tr style="color:var(--txs);">
+                  <th style="text-align:left;padding:3px 6px;border-bottom:1px solid var(--bd);">委託號</th>
+                  <th style="text-align:left;padding:3px 6px;border-bottom:1px solid var(--bd);">Word 案名</th>
+                  <th style="text-align:left;padding:3px 6px;border-bottom:1px solid var(--bd);">→ Firestore 序號</th>
+                  <th style="text-align:left;padding:3px 6px;border-bottom:1px solid var(--bd);">備註</th>
+                  <th style="padding:3px 6px;border-bottom:1px solid var(--bd);"></th>
+                </tr>
+              </thead>
+              <tbody id="rv-mem-tbody"></tbody>
+            </table>
+          </div>
+        </div>
         <!-- Tabs -->
         <div style="display:flex;gap:0;border-bottom:1px solid var(--bd);padding:0 24px;">
           <button id="rv-tab-high-btn" onclick="rvTab('high')"
@@ -6420,7 +6543,8 @@ OBJECTS_APP_HTML = """
     // ── 中信心卡片 ──────────────────────────────────────────────
     var medList = document.getElementById('rv-medium-list');
     medList.innerHTML = '';
-    d.medium.forEach(function(item) {
+    d.medium.forEach(function(item, idx) {
+      var medId = 'med-' + idx;
       var nameLabel = item.name_changed
         ? '<span style="color:var(--warn);">📝 ' + item.db_name + ' → ' + item.csv_name + '</span>'
         : (item.db_name || item.csv_name);
@@ -6448,13 +6572,22 @@ OBJECTS_APP_HTML = """
         name_changed: item.name_changed, old_name: item.db_name, new_name: item.csv_name
       }).replace(/"/g, '&quot;');
       var div = document.createElement('div');
+      div.id = medId;
+      div.dataset.csvName = item.csv_name || '';
+      div.dataset.csvComm = item.csv_comm || '';
       div.style.cssText = 'border:1px solid var(--bd);border-radius:10px;padding:10px 14px;';
       div.innerHTML = '<div style="font-size:11px;color:var(--warn);margin-bottom:6px;">' + fmtMatchReason(item, 'medium') + '</div>'
         + '<div style="display:flex;gap:0;">' + leftCol + rightCol + '</div>'
-        + '<div style="margin-top:8px;display:flex;gap:8px;">'
+        + '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">'
         + '<button onclick="rvAcceptMedium(this)" data-docid="' + item.doc_id + '" data-item="' + itemJson + '"'
         + ' style="padding:4px 12px;border-radius:7px;background:var(--ok);color:#fff;border:none;font-size:12px;font-weight:700;cursor:pointer;">✅ 確認配對</button>'
         + '<button onclick="rvSkipMedium(this)" style="padding:4px 12px;border-radius:7px;background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);font-size:12px;cursor:pointer;">❌ 跳過</button>'
+        + '</div>'
+        + '<div class="rv-force-row" style="margin-top:6px;display:flex;align-items:center;gap:6px;">'
+        + '<input class="rv-force-seq-input" placeholder="輸入 Firestore 序號（強行記憶）"'
+        + ' style="flex:1;max-width:200px;padding:3px 7px;border:1px solid var(--bd);border-radius:5px;font-size:11px;" />'
+        + '<button onclick="rvForceMatch(this,\'' + medId + '\')"'
+        + ' style="padding:4px 10px;border-radius:7px;background:#888;color:#fff;border:none;font-size:11px;cursor:pointer;">💾 強行記憶</button>'
         + '</div>';
       medList.appendChild(div);
     });
@@ -6462,7 +6595,8 @@ OBJECTS_APP_HTML = """
     // ── 問題清單（衝突 + 未配對）──────────────────────────────
     var issueList = document.getElementById('rv-issues-list');
     issueList.innerHTML = '';
-    d.conflict.forEach(function(item) {
+    d.conflict.forEach(function(item, cidx) {
+      var conflId = 'conf-' + cidx;
       var leftCol = '<div style="flex:1;min-width:0;">'
         + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;text-transform:uppercase;">Word 物件總表</div>'
         + '<div style="font-size:13px;color:var(--tx);font-weight:600;">' + item.csv_name + '</div>'
@@ -6482,10 +6616,19 @@ OBJECTS_APP_HTML = """
         + fmtR('經紀人', item.db_agent)
         + '</div>';
       var div = document.createElement('div');
+      div.id = conflId;
+      div.dataset.csvName = item.csv_name || '';
+      div.dataset.csvComm = item.csv_comm || '';
       div.style.cssText = 'background:var(--bg-t);border:1px solid var(--warn);border-radius:10px;padding:10px 14px;';
       div.innerHTML = '<div style="font-size:11px;font-weight:600;color:var(--warn);margin-bottom:6px;">'
         + fmtMatchReason(item, 'conflict') + '</div>'
-        + '<div style="display:flex;gap:0;">' + leftCol + rightCol + '</div>';
+        + '<div style="display:flex;gap:0;">' + leftCol + rightCol + '</div>'
+        + '<div class="rv-force-row" style="margin-top:6px;display:flex;align-items:center;gap:6px;border-top:1px dashed var(--bd);padding-top:6px;">'
+        + '<input class="rv-force-seq-input" placeholder="輸入 Firestore 序號（強行記憶配對）"'
+        + ' style="flex:1;max-width:200px;padding:3px 7px;border:1px solid var(--bd);border-radius:5px;font-size:11px;" />'
+        + '<button onclick="rvForceMatch(this,\'' + conflId + '\')"'
+        + ' style="padding:4px 10px;border-radius:7px;background:#888;color:#fff;border:none;font-size:11px;cursor:pointer;">💾 強行記憶</button>'
+        + '</div>';
       issueList.appendChild(div);
     });
     d.unmatched.forEach(function(item, idx) {
@@ -6577,15 +6720,111 @@ OBJECTS_APP_HTML = """
           + '<div style="font-size:11px;color:var(--txs);margin-top:4px;">新物件，需先匯入 Sheets</div>'
           + '</div>';
       }
+      // 強行記憶列（底部輸入框，讓使用者手動填入已知的 Firestore 序號）
+      var forceRow = '<div class="rv-force-row" style="margin-top:8px;display:flex;align-items:center;gap:6px;border-top:1px dashed var(--bd);padding-top:6px;">'
+        + '<input class="rv-force-seq-input" placeholder="輸入 Firestore 序號（強行記憶配對）"'
+        + ' style="flex:1;max-width:200px;padding:3px 7px;border:1px solid var(--bd);border-radius:5px;font-size:11px;" />'
+        + '<button onclick="rvForceMatch(this,\'' + cardId + '\')"'
+        + ' style="padding:4px 10px;border-radius:7px;background:#888;color:#fff;border:none;font-size:11px;cursor:pointer;">💾 強行記憶</button>'
+        + '</div>';
       var div = document.createElement('div');
       div.id = cardId;
+      div.dataset.csvName = item.csv_name || '';
+      div.dataset.csvComm = item.csv_comm || '';
       div.style.cssText = 'border:1px solid var(--bd);border-radius:10px;padding:12px 14px;';
-      div.innerHTML = '<div style="display:flex;gap:0;">' + leftCol + rightCol + '</div>' + buttons;
+      div.innerHTML = '<div style="display:flex;gap:0;">' + leftCol + rightCol + '</div>' + buttons + forceRow;
       issueList.appendChild(div);
     });
 
+    rvLoadMemories();   // 載入強行配對記憶抽屜
     rvTab('high');
     _rvUpdateCount();
+  }
+
+  // ── 強行配對記憶 ─────────────────────────────────────────────────────────
+
+  // 展開/收起記憶抽屜
+  function rvToggleMemDrawer() {
+    var body = document.getElementById('rv-mem-body');
+    var arrow = document.getElementById('rv-mem-arrow');
+    if (!body) return;
+    var open = body.style.display !== 'none';
+    body.style.display = open ? 'none' : 'block';
+    if (arrow) arrow.textContent = open ? '▼ 展開' : '▲ 收起';
+  }
+
+  // 載入並渲染所有強行配對記憶
+  function rvLoadMemories() {
+    fetch('/api/word-match-memory')
+      .then(function(r){ return r.json(); })
+      .then(function(data) {
+        var mems = data.items || [];
+        var badge = document.getElementById('rv-mem-badge');
+        if (badge) badge.textContent = mems.length;
+        var tbody = document.getElementById('rv-mem-tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        if (!mems.length) {
+          tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--txs);padding:10px;">（尚無強行配對記憶）</td></tr>';
+          return;
+        }
+        mems.forEach(function(m) {
+          var tr = document.createElement('tr');
+          tr.innerHTML = '<td style="padding:4px 6px;">' + escapeHtml(m.word_comm || '—') + '</td>'
+            + '<td style="padding:4px 6px;">' + escapeHtml(m.word_name || '—') + '</td>'
+            + '<td style="padding:4px 6px;font-weight:700;color:var(--ac);">序號 ' + escapeHtml(String(m.db_seq || '')) + '</td>'
+            + '<td style="padding:4px 6px;color:var(--txs);">' + escapeHtml(m.memo || '') + '</td>'
+            + '<td style="padding:4px 6px;"><button onclick="rvDeleteMemory(\'' + m._id + '\')"'
+            + ' style="padding:2px 7px;border-radius:4px;background:var(--err,#e55);color:#fff;border:none;font-size:11px;cursor:pointer;">🗑 刪除</button></td>';
+          tbody.appendChild(tr);
+        });
+      }).catch(function(){});
+  }
+
+  // 刪除一筆強行配對記憶
+  function rvDeleteMemory(memId) {
+    if (!confirm('確定刪除這筆強行記憶？刪除後下次上傳將不再自動配對。')) return;
+    fetch('/api/word-match-memory/' + memId, { method: 'DELETE' })
+      .then(function(r){ return r.json(); })
+      .then(function(){ rvLoadMemories(); toast('已刪除強行記憶', 'success'); })
+      .catch(function(){ toast('刪除失敗', 'error'); });
+  }
+
+  // 強行記憶配對：儲存記憶到 Firestore，下次上傳自動套用
+  function rvForceMatch(btn, cardId) {
+    var card = document.getElementById(cardId);
+    var inp  = card ? card.querySelector('.rv-force-seq-input') : null;
+    var seq  = inp ? inp.value.trim() : '';
+    if (!seq) { toast('請輸入 Firestore 資料序號', 'warn'); return; }
+    var wordName = card ? (card.dataset.csvName || '') : '';
+    var wordComm = card ? (card.dataset.csvComm || '') : '';
+    if (!wordName) { toast('找不到 Word 案名，無法記憶', 'warn'); return; }
+    btn.disabled = true;
+    btn.textContent = '儲存中…';
+    fetch('/api/word-match-memory', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ word_name: wordName, word_comm: wordComm, db_seq: seq, memo: '' })
+    }).then(function(r){ return r.json(); })
+      .then(function(data) {
+        btn.disabled = false;
+        btn.textContent = '💾 強行記憶';
+        if (data.error) { toast('❌ ' + data.error, 'error'); return; }
+        toast('✅ 已記憶（序號 ' + seq + '），下次上傳自動配對', 'success');
+        rvLoadMemories();
+        // 更新卡片的強行記憶列，顯示已儲存提示
+        if (card) {
+          var forceRow = card.querySelector('.rv-force-row');
+          if (forceRow) {
+            forceRow.innerHTML = '<span style="font-size:11px;color:var(--ok,green);font-weight:600;">'
+              + '✅ 已記憶：序號 ' + escapeHtml(seq) + '，下次上傳自動配對</span>';
+          }
+        }
+      }).catch(function(){
+        btn.disabled = false;
+        btn.textContent = '💾 強行記憶';
+        toast('❌ 儲存失敗', 'error');
+      });
   }
 
   // 切換 Tab
