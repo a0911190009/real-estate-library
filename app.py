@@ -6322,28 +6322,37 @@ OBJECTS_APP_HTML = """
       // conflict
       return icon + ' 已確認面積硬資料，兩邊數字明顯不符，推斷非同一物件（' + (item.conflict_reason||'') + '）';
     }
-    // 兩欄硬資料欄位（左：Word；右：Firestore）；差異欄位標橘色
+    // 兩欄硬資料欄位（左：Word；右：Firestore）
+    // 規則：只要任一方有某欄位，兩欄都顯示（沒值的那方顯示 -），確保左右對齊可比對
     function fmtHardCols(item, isRight) {
-      var addr = isRight ? item.db_addr   : item.csv_addr;
-      var land = isRight ? item.db_land   : item.csv_land;
-      var bld  = isRight ? item.db_build  : item.csv_build;
+      var addr = isRight ? item.db_addr     : item.csv_addr;
+      var land = isRight ? item.db_land     : item.csv_land;
+      var bld  = isRight ? item.db_build    : item.csv_build;
       var inn  = isRight ? item.db_interior : item.csv_interior;
-      // 數值差異 >2% 標橘
-      function cmpStyle(a, b) {
-        if (a === null || a === undefined || b === null || b === undefined) return '';
-        return (Math.abs(a - b) / Math.max(a, b) > 0.02) ? 'color:var(--warn);font-weight:700;' : '';
+      // 數值差異 >2% 標橘（右欄才比較）
+      function cmpNum(a, b) {
+        if (a == null || b == null) return '';
+        return (Math.abs(a - b) / Math.max(Math.abs(a), Math.abs(b)) > 0.02) ? 'color:var(--warn);font-weight:700;' : '';
       }
-      // 地址不同時標橘（兩欄都標，讓使用者比較）
+      // 地址不同時兩欄都標橘
       var da = item.db_addr || '', ca = item.csv_addr || '';
       var addrMismatch = da && ca && da !== ca && ca.indexOf(da) < 0 && da.indexOf(ca) < 0;
       var addrStyle = addrMismatch ? 'color:var(--warn);font-weight:700;' : '';
-      var landStyle = isRight ? cmpStyle(item.db_land,  item.csv_land)  : '';
-      var bldStyle  = isRight ? cmpStyle(item.db_build, item.csv_build) : '';
-      var innStyle  = isRight ? cmpStyle(item.db_interior, item.csv_interior) : '';
-      return (addr ? '<div style="font-size:11px;color:var(--txs);margin-top:2px;' + addrStyle + '"><span style="color:var(--txm);font-weight:600;">地址：</span>' + addr + (addrMismatch ? ' ⚠️' : '') + '</div>' : '')
-        + (land!==null&&land!==undefined ? '<div style="font-size:11px;color:var(--txs);margin-top:2px;' + landStyle + '"><span style="color:var(--txm);font-weight:600;">地坪：</span>' + land + ' 坪</div>' : '')
-        + (bld !==null&&bld !==undefined ? '<div style="font-size:11px;color:var(--txs);margin-top:2px;' + bldStyle  + '"><span style="color:var(--txm);font-weight:600;">建坪：</span>' + bld  + ' 坪</div>' : '')
-        + (inn !==null&&inn !==undefined ? '<div style="font-size:11px;color:var(--txs);margin-top:2px;' + innStyle  + '"><span style="color:var(--txm);font-weight:600;">室內坪：</span>' + inn + ' 坪</div>' : '');
+      var landStyle = isRight ? cmpNum(item.db_land,     item.csv_land)     : '';
+      var bldStyle  = isRight ? cmpNum(item.db_build,    item.csv_build)    : '';
+      var innStyle  = isRight ? cmpNum(item.db_interior, item.csv_interior) : '';
+      // 任一方有值才顯示該列（沒值的那方顯示半透明 -）
+      var showAddr = !!(item.db_addr || item.csv_addr);
+      var showLand = item.db_land     != null || item.csv_land     != null;
+      var showBld  = item.db_build    != null || item.csv_build    != null;
+      var showInn  = item.db_interior != null || item.csv_interior != null;
+      var dash = '<span style="opacity:0.4;">-</span>';
+      function aVal(v) { return (v != null) ? v + ' 坪' : dash; }
+      function aAddr(v) { return (v && v.trim()) ? v : dash; }
+      return (showAddr ? '<div style="font-size:11px;color:var(--txs);margin-top:2px;' + addrStyle + '"><span style="color:var(--txm);font-weight:600;">地址：</span>' + aAddr(addr) + (addrMismatch && addr ? ' ⚠️' : '') + '</div>' : '')
+        + (showLand ? '<div style="font-size:11px;color:var(--txs);margin-top:2px;' + landStyle + '"><span style="color:var(--txm);font-weight:600;">地坪：</span>' + aVal(land) + '</div>' : '')
+        + (showBld  ? '<div style="font-size:11px;color:var(--txs);margin-top:2px;' + bldStyle  + '"><span style="color:var(--txm);font-weight:600;">建坪：</span>' + aVal(bld)  + '</div>' : '')
+        + (showInn  ? '<div style="font-size:11px;color:var(--txs);margin-top:2px;' + innStyle  + '"><span style="color:var(--txm);font-weight:600;">室內坪：</span>' + aVal(inn) + '</div>' : '');
     }
 
     // ── 高信心卡片 ──────────────────────────────────────────────
