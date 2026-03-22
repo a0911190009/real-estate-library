@@ -2660,6 +2660,12 @@ def api_word_review_upload_doc():
         dd = doc.to_dict()
         dd['_doc_id'] = doc.id
         dbc = str(dd.get("委託編號", "") or "").strip()
+        # Sheets 同步可能存為浮點數（如 91803.0）→ 轉整數字串
+        try:
+            if '.' in dbc:
+                dbc = str(int(float(dbc)))
+        except Exception:
+            pass
         dbc = dbc.zfill(6) if dbc.strip('0') else ''
         if dbc and dbc != '000000':
             db_by_comm[dbc] = dd
@@ -2720,6 +2726,9 @@ def api_word_review_upload_doc():
             best, best_score, best_has_hard = None, -999, False
             for cand in candidates:
                 cc = str(cand.get('委託編號', '') or '').strip()
+                try:
+                    if '.' in cc: cc = str(int(float(cc)))
+                except Exception: pass
                 cc = cc.zfill(6) if cc.strip('0') else ''
                 cg = str(cand.get('經紀人', '') or '').strip()
                 # 兩邊都有委託號且不吻合 → 不同物件，跳過
