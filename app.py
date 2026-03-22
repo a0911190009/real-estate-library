@@ -3823,6 +3823,46 @@ def api_objects_for_service_selling():
         return jsonify({"items": [], "error": str(e)})
 
 
+@app.route("/api/company-properties/expiring", methods=["GET"])
+def api_company_properties_expiring():
+    """晨報專用：以 X-Service-Key 取得 N 天內即將到期的委託物件。
+    Query: email=xxx, days=7（預設 7 天）"""
+    if not _verify_service_key():
+        return jsonify({"error": "需要有效的 X-Service-Key"}), 401
+    days = int(request.args.get("days", 7))
+    db = _get_db()
+    if not db:
+        return jsonify({"items": []})
+    try:
+        from datetime import datetime, timedelta
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        future_str = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+        docs = db.collection("company_properties").stream()
+        items = []
+        for doc in docs:
+            r = doc.to_dict()
+            # 只看銷售中的物件
+            if not _is_selling(r):
+                continue
+            exp_date = _parse_expiry_key(r)
+            # 到期日在今天～N天後之間
+            if today_str <= exp_date <= future_str:
+                items.append({
+                    "案名": r.get("案名", ""),
+                    "經紀人": r.get("經紀人", ""),
+                    "委託到期日": r.get("委託到期日", ""),
+                    "委託編號": r.get("委託編號", ""),
+                    "物件地址": r.get("物件地址", ""),
+                })
+        # 按到期日排序（近→遠）
+        items.sort(key=lambda x: _parse_expiry_key(x))
+        return jsonify({"items": items})
+    except Exception as e:
+        import logging
+        logging.warning("Library: expiring 查詢失敗: %s", e)
+        return jsonify({"items": [], "error": str(e)})
+
+
 # ══ 資料庫檢視 API（管理員限定）══
 @app.route("/api/firestore/collections")
 def api_firestore_collections():
