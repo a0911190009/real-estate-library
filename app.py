@@ -3933,6 +3933,9 @@ def api_objects_for_service_selling():
             r = doc.to_dict()
             if not _is_selling(r):
                 continue
+            # 案名為空的記錄略過（避免廣告工具出現「未命名」）
+            if not str(r.get("案名", "") or "").strip():
+                continue
             # 建坪：公寓優先用「室內坪」，房屋用「建坪」
             building = r.get("建坪") or r.get("室內坪") or ""
             items.append({
