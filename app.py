@@ -2662,18 +2662,21 @@ def api_word_review_upload_doc():
             return None
 
     def _pn_sum(s):
-        """解析可能含加法的地坪字串，如「4820.86+2081.46」→ 6902.32
-        單純數字也支援（如「4820.86」→ 4820.86）
+        """解析可能含多地號的地坪字串，加總後回傳
+        支援格式：
+          單純數字：「1513.9」→ 1513.9
+          加號分隔：「4820.86+2081.46」→ 6902.32
+          空白分隔：「757.08 756.65」→ 1513.73（Firestore 多地號用空白隔開）
         """
         try:
             raw = str(s or '').replace(',', '').strip()
-            # 先試直接轉數字（最常見）
+            # 先試直接轉數字（最常見，效率最高）
             return float(raw)
         except Exception:
             pass
         try:
-            # 嘗試拆 + 號加總（如多筆地號相加）
-            parts = [float(x.strip()) for x in str(s or '').replace(',', '').split('+') if x.strip()]
+            # 把加號和空白都當分隔符，拆開後加總
+            parts = [float(x) for x in re.split(r'[\s+]+', str(s or '').replace(',', '').strip()) if x.strip()]
             if parts:
                 return sum(parts)
         except Exception:
@@ -2743,7 +2746,7 @@ def api_word_review_upload_doc():
             if df in checked_db:
                 continue
             wv = _pn(w_row.get(wf))
-            dv = _pn(d_row.get(df))
+            dv = _pn_sum(d_row.get(df))  # Firestore 地坪可能是「757.08 756.65」多地號空白分隔
             if not wv or not dv:
                 continue
             checked_db.add(df)
