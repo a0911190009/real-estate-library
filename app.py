@@ -2661,6 +2661,27 @@ def api_word_review_upload_doc():
         except Exception:
             return None
 
+    def _effective_price(cand):
+        """解析候選售價（萬）
+        一般格式：直接解析數字
+        單價格式「X/分」：地坪（坪）÷ 293.4 × X → 換算為實際售價（萬）
+        （農地常見：Firestore 存單價，需搭配地坪才能還原總價）
+        """
+        raw = str(cand.get('售價(萬)', '') or '').strip()
+        # 一般數字格式（最常見）
+        num = _pn(raw)
+        if num is not None:
+            return num
+        # 單價格式：如「150/分」
+        m = re.match(r'^(\d+(?:\.\d+)?)\s*/\s*分$', raw)
+        if m:
+            per_min = float(m.group(1))   # 每台分售價（萬）
+            地坪 = _pn(cand.get('地坪'))   # Firestore 存的地坪（坪）
+            if 地坪 and 地坪 > 0:
+                # 坪 ÷ 293.4 = 台分；台分 × per_min = 總售價（萬）
+                return round(地坪 / 293.4 * per_min, 1)
+        return None
+
     def _sm(a, b, tol=0.10):
         if a is None or b is None:
             return None
@@ -2879,7 +2900,8 @@ def api_word_review_upload_doc():
                             s = area_sc
                             s += _agent_score(str(cand.get('經紀人','') or '').strip(), agent)
                             # 售價：相近加分，差距太大扣分（農地 3530萬 vs 建地 220萬 → 必須懲罰）
-                            cand_p = _pn(cand.get('售價(萬)'))
+                            # 注意：農地 Firestore 可能存「150/分」單價格式，需換算後才能比對
+                            cand_p = _effective_price(cand)
                             if _sm(price, cand_p, 0.10) is True:
                                 s += 2
                             elif price and cand_p and price > 0 and cand_p > 0:
@@ -2921,7 +2943,7 @@ def api_word_review_upload_doc():
                     area_sc2, _ = _hard_area_score(row, cand)
                     s2 = area_sc2
                     s2 += _agent_score(str(cand.get('經紀人', '') or '').strip(), agent)
-                    cand_p2 = _pn(cand.get('售價(萬)'))
+                    cand_p2 = _effective_price(cand)   # 支援「X/分」農地單價格式
                     if _sm(price, cand_p2, 0.10) is True:
                         s2 += 2
                     elif price and cand_p2 and price > 0 and cand_p2 > 0:
