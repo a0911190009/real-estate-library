@@ -4103,6 +4103,19 @@ def api_company_properties_expiring():
 
 
 # ══ 資料庫檢視 API（管理員限定）══
+
+# company_properties 集合的欄位順序（與 Google Sheets 一致）
+_COMPANY_PROP_COL_ORDER = [
+    "資料序號", "委託編號", "委託日", "案名", "所有權人", "身份証字號",
+    "室內電話1", "行動電話1", "通訊住址", "連絡人姓名", "連絡人與所有權人關係",
+    "連絡人室內電話2", "連絡人行動電話2", "物件類別", "物件地址", "鄉/市/鎮",
+    "段別", "地號", "建號", "座向", "竣工日期", "格局", "現況", "地坪", "建坪",
+    "樓別", "管理費(元)", "車位", "委託價(萬)", "售價(萬)", "現有貸款(萬)",
+    "債權人", "售屋原因", "委託到期日", "經紀人", "契變", "備註", "成交日期",
+    "成交金額(萬)", "買方姓名", "買方電話", "買方住址", "備註1", "買方生日",
+    "賣方生日", "欄位1", "銷售中", "備用",
+]
+
 @app.route("/api/firestore/collections")
 def api_firestore_collections():
     """列出 Firestore 所有頂層集合名稱"""
@@ -4155,9 +4168,17 @@ def api_firestore_browse():
     all_keys = set()
     for d in docs:
         all_keys.update(d.keys())
-    # __doc_id__ 放最前面，其他排序
     all_keys.discard("__doc_id__")
-    columns = ["__doc_id__"] + sorted(all_keys)
+
+    if collection == "company_properties":
+        # company_properties：按照 Sheets 欄位順序，資料序號排第一
+        # 先放已定義的欄位（依順序），再放其餘未知欄位（字母排序），最後放文件 ID
+        ordered = [c for c in _COMPANY_PROP_COL_ORDER if c in all_keys]
+        remaining = sorted(all_keys - set(_COMPANY_PROP_COL_ORDER))
+        columns = ordered + remaining + ["__doc_id__"]
+    else:
+        # 其他集合：__doc_id__ 放最前面，其他字母排序
+        columns = ["__doc_id__"] + sorted(all_keys)
 
     # 分頁
     start = (page - 1) * per_page
