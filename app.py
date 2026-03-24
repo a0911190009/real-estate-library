@@ -2878,7 +2878,24 @@ def api_word_review_upload_doc():
                             area_sc, _ = _hard_area_score(row, cand)  # 面積也納入近似候選評分
                             s = area_sc
                             s += _agent_score(str(cand.get('經紀人','') or '').strip(), agent)
-                            if _sm(price, _pn(cand.get('售價(萬)')), 0.10) is True: s += 2
+                            # 售價：相近加分，差距太大扣分（農地 3530萬 vs 建地 220萬 → 必須懲罰）
+                            cand_p = _pn(cand.get('售價(萬)'))
+                            if _sm(price, cand_p, 0.10) is True:
+                                s += 2
+                            elif price and cand_p and price > 0 and cand_p > 0:
+                                pdiff = abs(price - cand_p) / max(price, cand_p)
+                                if pdiff > 1.50: s -= 5   # 差超過 150%（如 3530 vs 220）
+                                elif pdiff > 0.50: s -= 3  # 差超過 50%
+                            # 物件類別不符懲罰（農地≠建地≠公寓/房屋）
+                            cand_cat = str(cand.get('物件類別', '') or '').strip()
+                            if csv_type and cand_cat and csv_type not in cand_cat and cand_cat not in csv_type:
+                                _land = ('農地', '建地')
+                                csv_is_land = csv_type in _land
+                                cand_is_land = any(t in cand_cat for t in _land)
+                                if csv_is_land != cand_is_land:
+                                    s -= 4  # 土地類 vs 建物類（農地 vs 公寓）
+                                else:
+                                    s -= 2  # 同大類但細類不同（農地 vs 建地）
                             # 地址：硬資料，不同地址就是不同物件
                             cand_addr = str(cand.get('物件地址', '') or '').strip()
                             if csv_addr_nm and cand_addr:
@@ -2906,7 +2923,23 @@ def api_word_review_upload_doc():
                     area_sc2, _ = _hard_area_score(row, cand)
                     s2 = area_sc2
                     s2 += _agent_score(str(cand.get('經紀人', '') or '').strip(), agent)
-                    if _sm(price, _pn(cand.get('售價(萬)')), 0.10) is True: s2 += 2
+                    cand_p2 = _pn(cand.get('售價(萬)'))
+                    if _sm(price, cand_p2, 0.10) is True:
+                        s2 += 2
+                    elif price and cand_p2 and price > 0 and cand_p2 > 0:
+                        pdiff2 = abs(price - cand_p2) / max(price, cand_p2)
+                        if pdiff2 > 1.50: s2 -= 5
+                        elif pdiff2 > 0.50: s2 -= 3
+                    # 物件類別不符懲罰
+                    cand_cat2 = str(cand.get('物件類別', '') or '').strip()
+                    if csv_type and cand_cat2 and csv_type not in cand_cat2 and cand_cat2 not in csv_type:
+                        _land2 = ('農地', '建地')
+                        csv_is_land2 = csv_type in _land2
+                        cand_is_land2 = any(t in cand_cat2 for t in _land2)
+                        if csv_is_land2 != cand_is_land2:
+                            s2 -= 4
+                        else:
+                            s2 -= 2
                     cand_addr2 = str(cand.get('物件地址', '') or '').strip()
                     if csv_addr_nm and cand_addr2:
                         if csv_addr_nm == cand_addr2:
