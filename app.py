@@ -2661,11 +2661,30 @@ def api_word_review_upload_doc():
         except Exception:
             return None
 
+    def _pn_sum(s):
+        """解析可能含加法的地坪字串，如「4820.86+2081.46」→ 6902.32
+        單純數字也支援（如「4820.86」→ 4820.86）
+        """
+        try:
+            raw = str(s or '').replace(',', '').strip()
+            # 先試直接轉數字（最常見）
+            return float(raw)
+        except Exception:
+            pass
+        try:
+            # 嘗試拆 + 號加總（如多筆地號相加）
+            parts = [float(x.strip()) for x in str(s or '').replace(',', '').split('+') if x.strip()]
+            if parts:
+                return sum(parts)
+        except Exception:
+            pass
+        return None
+
     def _effective_price(cand):
         """解析候選售價（萬）
         一般格式：直接解析數字
         單價格式「X/分」：地坪（坪）÷ 293.4 × X → 換算為實際售價（萬）
-        （農地常見：Firestore 存單價，需搭配地坪才能還原總價）
+        （農地常見：Firestore 存單價如「150/分」，地坪可能是「4820.86+2081.46」多地號相加）
         """
         raw = str(cand.get('售價(萬)', '') or '').strip()
         # 一般數字格式（最常見）
@@ -2676,10 +2695,11 @@ def api_word_review_upload_doc():
         m = re.match(r'^(\d+(?:\.\d+)?)\s*/\s*分$', raw)
         if m:
             per_min = float(m.group(1))   # 每台分售價（萬）
-            地坪 = _pn(cand.get('地坪'))   # Firestore 存的地坪（坪）
-            if 地坪 and 地坪 > 0:
+            # 地坪可能是加法字串如「4820.86+2081.46」→ 先加總再換算
+            地坪_total = _pn_sum(cand.get('地坪'))
+            if 地坪_total and 地坪_total > 0:
                 # 坪 ÷ 293.4 = 台分；台分 × per_min = 總售價（萬）
-                return round(地坪 / 293.4 * per_min, 1)
+                return round(地坪_total / 293.4 * per_min, 1)
         return None
 
     def _sm(a, b, tol=0.10):
