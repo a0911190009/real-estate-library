@@ -2886,16 +2886,14 @@ def api_word_review_upload_doc():
                                 pdiff = abs(price - cand_p) / max(price, cand_p)
                                 if pdiff > 1.50: s -= 5   # 差超過 150%（如 3530 vs 220）
                                 elif pdiff > 0.50: s -= 3  # 差超過 50%
-                            # 物件類別不符懲罰（農地≠建地≠公寓/房屋）
+                            # 物件類別不符懲罰（土地類農地/建地 vs 建物類公寓/房屋）
                             cand_cat = str(cand.get('物件類別', '') or '').strip()
-                            if csv_type and cand_cat and csv_type not in cand_cat and cand_cat not in csv_type:
-                                _land = ('農地', '建地')
-                                csv_is_land = csv_type in _land
-                                cand_is_land = any(t in cand_cat for t in _land)
-                                if csv_is_land != cand_is_land:
-                                    s -= 4  # 土地類 vs 建物類（農地 vs 公寓）
-                                else:
-                                    s -= 2  # 同大類但細類不同（農地 vs 建地）
+                            if cand_cat:
+                                # 有「面積坪」欄位 = 農地或建地（土地類）；其他 = 公寓/房屋（建物類）
+                                row_is_land = row.get('面積坪') is not None
+                                cand_is_land = any(t in cand_cat for t in ('農地', '建地'))
+                                if row_is_land != cand_is_land:
+                                    s -= 4  # 土地類 vs 建物類，一定是不同物件
                             # 地址：硬資料，不同地址就是不同物件
                             cand_addr = str(cand.get('物件地址', '') or '').strip()
                             if csv_addr_nm and cand_addr:
@@ -2932,14 +2930,11 @@ def api_word_review_upload_doc():
                         elif pdiff2 > 0.50: s2 -= 3
                     # 物件類別不符懲罰
                     cand_cat2 = str(cand.get('物件類別', '') or '').strip()
-                    if csv_type and cand_cat2 and csv_type not in cand_cat2 and cand_cat2 not in csv_type:
-                        _land2 = ('農地', '建地')
-                        csv_is_land2 = csv_type in _land2
-                        cand_is_land2 = any(t in cand_cat2 for t in _land2)
-                        if csv_is_land2 != cand_is_land2:
+                    if cand_cat2:
+                        row_is_land2 = row.get('面積坪') is not None
+                        cand_is_land2 = any(t in cand_cat2 for t in ('農地', '建地'))
+                        if row_is_land2 != cand_is_land2:
                             s2 -= 4
-                        else:
-                            s2 -= 2
                     cand_addr2 = str(cand.get('物件地址', '') or '').strip()
                     if csv_addr_nm and cand_addr2:
                         if csv_addr_nm == cand_addr2:
