@@ -2864,9 +2864,11 @@ def api_word_review_upload_doc():
             near_miss, nm_score = None, -999
             csv_addr_nm = _ca(str(row.get('物件地址', '') or '')).strip()
             prefix = key[:min(len(key), 6)] if len(key) >= 4 else ''
+            short_prefix = key[:3] if len(key) >= 3 else ''  # 3字備援前綴（如「四川路」）
             if prefix:
                 for db_key, db_cands in db_by_name.items():
-                    if db_key.startswith(prefix) or prefix in db_key:
+                    if (db_key.startswith(prefix) or prefix in db_key
+                            or (short_prefix and db_key.startswith(short_prefix))):
                         for cand in db_cands:
                             area_sc, _ = _hard_area_score(row, cand)  # 面積也納入近似候選評分
                             s = area_sc
