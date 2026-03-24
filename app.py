@@ -2720,6 +2720,7 @@ def api_word_review_upload_doc():
     db_by_comm = {}   # 委託編號 → Firestore doc dict
     db_by_name = {}   # 正規案名 → list of Firestore doc dict
     db_by_addr = {}   # 正規化地址 → Firestore doc dict（地址精確命中用）
+    db_by_agent = {}  # 經紀人 → list of Firestore doc dict（案名前綴找不到時兜底用）
     for doc in db_docs:
         dd = doc.to_dict()
         dd['_doc_id'] = doc.id
@@ -2741,6 +2742,10 @@ def api_word_review_upload_doc():
         dba = re.sub(r'\s+', '', str(dd.get('物件地址', '') or ''))
         if dba and len(dba) >= 6:
             db_by_addr[dba] = dd
+        # 經紀人索引（案名差異大時的兜底）
+        dag = str(dd.get("經紀人", "") or "").strip()
+        if dag:
+            db_by_agent.setdefault(dag, []).append(dd)
 
     # Step 0：載入強行配對記憶，建立索引（委託號碼 → db_seq；案名 → db_seq）
     mem_by_comm = {}   # word_comm → memory record
@@ -2894,6 +2899,30 @@ def api_word_review_upload_doc():
                             if s > nm_score:
                                 nm_score = s
                                 near_miss = cand
+            # 案名前綴找不到候選 → 同經紀人兜底掃描（農地/建地案名差異大時）
+            if near_miss is None and agent:
+                fallback_cands = db_by_agent.get(agent, [])
+                for cand in fallback_cands:
+                    area_sc2, _ = _hard_area_score(row, cand)
+                    s2 = area_sc2
+                    s2 += _agent_score(str(cand.get('經紀人', '') or '').strip(), agent)
+                    if _sm(price, _pn(cand.get('售價(萬)')), 0.10) is True: s2 += 2
+                    cand_addr2 = str(cand.get('物件地址', '') or '').strip()
+                    if csv_addr_nm and cand_addr2:
+                        if csv_addr_nm == cand_addr2:
+                            s2 += 6
+                        elif csv_addr_nm in cand_addr2 or cand_addr2 in csv_addr_nm:
+                            s2 += 2
+                        else:
+                            ca_s2 = re.sub(r'\d+樓(之\d+)?$', '', csv_addr_nm).strip()
+                            da_s2 = re.sub(r'\d+樓(之\d+)?$', '', cand_addr2).strip()
+                            if ca_s2 and da_s2 and (ca_s2 == da_s2 or ca_s2 in da_s2 or da_s2 in ca_s2):
+                                s2 += 2
+                            else:
+                                s2 -= 4  # 兜底掃描中地址不符扣分輕一些（農地地號格式差異大）
+                    if s2 > nm_score:
+                        nm_score = s2
+                        near_miss = cand
             # 地址不符時（分數太低）不顯示近似候選，避免誤導
             if near_miss is not None and nm_score < 0:
                 near_miss = None
