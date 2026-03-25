@@ -2879,15 +2879,21 @@ def api_word_review_upload_doc():
             candidates = db_by_name.get(key, [])
             best, best_score, best_has_hard = None, -999, False
             for cand in candidates:
-                cc = str(cand.get('委託編號', '') or '').strip()
+                cc_raw = str(cand.get('委託編號', '') or '').strip()
                 try:
-                    if '.' in cc: cc = str(int(float(cc)))
+                    if '.' in cc_raw: cc_raw = str(int(float(cc_raw)))
                 except Exception: pass
-                cc = cc.zfill(6) if cc.strip('0') else ''
+                # Firestore 委託編號可能含多個（空白分隔，如「051857 051719」），拆開後各自 zfill
+                cc_parts = [x.zfill(6) if x.strip('0') else '' for x in cc_raw.split() if x.strip()]
+                if not cc_parts:
+                    cc_parts = ['']
+                cc = cc_parts[0]  # 主要委託號（相容舊邏輯使用 cc 變數的地方）
                 cg = str(cand.get('經紀人', '') or '').strip()
-                # 兩邊都有委託號且不吻合 → 不同物件，跳過
-                if comm and comm != '000000' and cc and cc != '000000' and comm != cc:
-                    continue
+                # 兩邊都有委託號且清單中沒有任一吻合 → 不同物件，跳過
+                if comm and comm != '000000':
+                    valid_cc = [p for p in cc_parts if p and p != '000000']
+                    if valid_cc and comm not in valid_cc:
+                        continue
                 # 硬資料：面積精確比對（地坪/建坪/室內坪/面積坪，2% 容差）
                 area_sc, has_hard = _hard_area_score(row, cand)
                 s = area_sc
