@@ -8755,19 +8755,41 @@ OBJECTS_APP_HTML = """
       el.innerHTML = '<p class="text-xs" style="color:var(--txm);">尚無圖檔</p>';
       return;
     }
-    var html = '';
+    // 用 DOM 操作取代字串拼接，完全避免引號跳脫問題
+    el.innerHTML = '';
     files.forEach(function(f) {
       var isPdf = (f.name || '').toLowerCase().endsWith('.pdf');
-      var thumb = isPdf
-        ? '<div style="width:64px;height:64px;background:var(--bg-h);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:22px;">📄</div>'
-        : '<img src="' + _esc(f.url) + '" data-url="' + _esc(f.url) + '" style="width:64px;height:64px;object-fit:cover;border-radius:8px;cursor:pointer;" onclick="window.open(this.dataset.url,\'_blank\')" alt="">';
-      html += '<div style="position:relative;display:inline-block;">' +
-        thumb +
-        '<button data-fid="' + _esc(f.file_id) + '" onclick="slFileDelete(this.dataset.fid)" style="position:absolute;top:-4px;right:-4px;width:18px;height:18px;border-radius:50%;background:rgba(0,0,0,.7);color:#fff;font-size:10px;line-height:18px;text-align:center;cursor:pointer;border:none;">✕</button>' +
-        '<p class="text-xs truncate mt-1" style="max-width:64px;color:var(--txm);">' + _esc(f.name) + '</p>' +
-      '</div>';
+      var wrap = document.createElement('div');
+      wrap.style.cssText = 'position:relative;display:inline-block;';
+
+      if (isPdf) {
+        var pdfDiv = document.createElement('div');
+        pdfDiv.style.cssText = 'width:64px;height:64px;background:var(--bg-h);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:22px;';
+        pdfDiv.textContent = '📄';
+        wrap.appendChild(pdfDiv);
+      } else {
+        var img = document.createElement('img');
+        img.src = f.url;
+        img.alt = '';
+        img.style.cssText = 'width:64px;height:64px;object-fit:cover;border-radius:8px;cursor:pointer;';
+        img.addEventListener('click', (function(url){ return function(){ window.open(url, '_blank'); }; })(f.url));
+        wrap.appendChild(img);
+      }
+
+      var btn = document.createElement('button');
+      btn.textContent = '✕';
+      btn.style.cssText = 'position:absolute;top:-4px;right:-4px;width:18px;height:18px;border-radius:50%;background:rgba(0,0,0,.7);color:#fff;font-size:10px;line-height:18px;text-align:center;cursor:pointer;border:none;';
+      btn.addEventListener('click', (function(fid){ return function(){ slFileDelete(fid); }; })(f.file_id));
+      wrap.appendChild(btn);
+
+      var cap = document.createElement('p');
+      cap.className = 'text-xs truncate mt-1';
+      cap.style.cssText = 'max-width:64px;color:var(--txm);';
+      cap.textContent = f.name;
+      wrap.appendChild(cap);
+
+      el.appendChild(wrap);
     });
-    el.innerHTML = html;
   }
 
   // 上傳相關圖檔（可多張）
