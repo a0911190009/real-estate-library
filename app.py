@@ -4247,6 +4247,281 @@ def api_general_feedback():
     return jsonify({"ok": True, "total": len(entries)})
 
 
+# ══════════════════════════════════════════════════════════════════
+# 準賣方管理 API
+# Firestore 集合：seller_prospects（主資料）、seller_contacts（互動記事）
+# 每筆資料以 created_by = email 區分個人資料
+# ══════════════════════════════════════════════════════════════════
+
+def _recalc_seller_last_contact(db, seller_id):
+    """重新計算準賣方的最後追蹤時間（from seller_contacts）。"""
+    try:
+        contacts = list(db.collection("seller_contacts").where("seller_id", "==", seller_id).stream())
+        if not contacts:
+            db.collection("seller_prospects").document(seller_id).update({"last_contact_at": None})
+            return None
+        items = [c.to_dict() for c in contacts]
+        last = max(items, key=lambda x: x.get("contact_at", ""))
+        last_contact_at = last.get("contact_at")
+        db.collection("seller_prospects").document(seller_id).update({"last_contact_at": last_contact_at})
+        return last_contact_at
+    except Exception:
+        return None
+
+
+@app.route("/api/sellers", methods=["GET"])
+def api_sellers_list():
+    """取得目前登入者的所有準賣方（依最後追蹤時間排序）。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    try:
+        docs = db.collection("seller_prospects").where("created_by", "==", email).stream()
+        items = []
+        for doc in docs:
+            d = doc.to_dict()
+            d["id"] = doc.id
+            items.append(d)
+        # 依最後追蹤時間降冪排序，未追蹤的排最後
+        items.sort(key=lambda x: x.get("last_contact_at") or "", reverse=True)
+        return jsonify({"items": items})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/sellers", methods=["POST"])
+def api_sellers_create():
+    """新增準賣方。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("name", "")).strip()
+    if not name:
+        return jsonify({"error": "請填寫屋主姓名"}), 400
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        doc = {
+            "name":          name,
+            "phone":         str(data.get("phone", "")).strip(),
+            "address":       str(data.get("address", "")).strip(),
+            "land_number":   str(data.get("land_number", "")).strip(),
+            "category":      str(data.get("category", "")).strip(),
+            "owner_price":   data.get("owner_price"),      # 屋主期望售價（萬）
+            "suggest_price": data.get("suggest_price"),    # 房仲建議售價（萬）
+            "source":        str(data.get("source", "")).strip(),
+            "status":        data.get("status", "培養中"),
+            "note":          str(data.get("note", "")).strip(),
+            "last_contact_at": None,
+            "created_by":    email,
+            "created_at":    now,
+            "updated_at":    now,
+        }
+        ref = db.collection("seller_prospects").document()
+        ref.set(doc)
+        return jsonify({"ok": True, "id": ref.id, **doc})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/sellers/<seller_id>", methods=["GET"])
+def api_seller_get(seller_id):
+    """取得單筆準賣方資料。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    try:
+        doc = db.collection("seller_prospects").document(seller_id).get()
+        if not doc.exists:
+            return jsonify({"error": "找不到此準賣方"}), 404
+        d = doc.to_dict()
+        if d.get("created_by") != email and not _is_admin(email):
+            return jsonify({"error": "無權限"}), 403
+        d["id"] = doc.id
+        return jsonify(d)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/sellers/<seller_id>", methods=["PUT"])
+def api_seller_update(seller_id):
+    """更新準賣方資料。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    data = request.get_json(silent=True) or {}
+    try:
+        ref = db.collection("seller_prospects").document(seller_id)
+        doc = ref.get()
+        if not doc.exists:
+            return jsonify({"error": "找不到此準賣方"}), 404
+        item = doc.to_dict()
+        if item.get("created_by") != email and not _is_admin(email):
+            return jsonify({"error": "無權限"}), 403
+        update = {
+            "name":          str(data.get("name", item.get("name", ""))).strip(),
+            "phone":         str(data.get("phone", item.get("phone", ""))).strip(),
+            "address":       str(data.get("address", item.get("address", ""))).strip(),
+            "land_number":   str(data.get("land_number", item.get("land_number", ""))).strip(),
+            "category":      str(data.get("category", item.get("category", ""))).strip(),
+            "owner_price":   data.get("owner_price", item.get("owner_price")),
+            "suggest_price": data.get("suggest_price", item.get("suggest_price")),
+            "source":        str(data.get("source", item.get("source", ""))).strip(),
+            "status":        data.get("status", item.get("status", "培養中")),
+            "note":          str(data.get("note", item.get("note", ""))).strip(),
+            "updated_at":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        ref.update(update)
+        return jsonify({"ok": True, "id": seller_id, **update})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/sellers/<seller_id>", methods=["DELETE"])
+def api_seller_delete(seller_id):
+    """刪除準賣方（同時刪除其互動記事）。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    try:
+        ref = db.collection("seller_prospects").document(seller_id)
+        doc = ref.get()
+        if not doc.exists:
+            return jsonify({"error": "找不到此準賣方"}), 404
+        if doc.to_dict().get("created_by") != email and not _is_admin(email):
+            return jsonify({"error": "無權限"}), 403
+        # 刪除互動記事
+        contacts = db.collection("seller_contacts").where("seller_id", "==", seller_id).stream()
+        for c in contacts:
+            c.reference.delete()
+        ref.delete()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── 準賣方互動記事 ──
+
+@app.route("/api/sellers/<seller_id>/contacts", methods=["GET"])
+def api_seller_contacts_list(seller_id):
+    """取得準賣方的所有互動記事（依時間降冪）。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    try:
+        docs = db.collection("seller_contacts").where("seller_id", "==", seller_id).stream()
+        items = []
+        for doc in docs:
+            d = doc.to_dict()
+            d["id"] = doc.id
+            items.append(d)
+        items.sort(key=lambda x: x.get("contact_at", ""), reverse=True)
+        return jsonify({"items": items})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/sellers/<seller_id>/contacts", methods=["POST"])
+def api_seller_contact_create(seller_id):
+    """新增互動記事。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    data = request.get_json(silent=True) or {}
+    content = str(data.get("content", "")).strip()
+    if not content:
+        return jsonify({"error": "請填寫互動內容"}), 400
+    try:
+        contact_at = (data.get("contact_at") or "").strip()
+        if not contact_at:
+            contact_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        doc = {
+            "seller_id":  seller_id,
+            "content":    content,
+            "contact_at": contact_at,
+            "created_by": email,
+        }
+        ref = db.collection("seller_contacts").document()
+        ref.set(doc)
+        _recalc_seller_last_contact(db, seller_id)
+        return jsonify({"ok": True, "id": ref.id, **doc})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/sellers/<seller_id>/contacts/<contact_id>", methods=["PUT"])
+def api_seller_contact_update(seller_id, contact_id):
+    """修改互動記事。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    data = request.get_json(silent=True) or {}
+    try:
+        ref = db.collection("seller_contacts").document(contact_id)
+        doc = ref.get()
+        if not doc.exists:
+            return jsonify({"error": "找不到此記事"}), 404
+        item = doc.to_dict()
+        if item.get("created_by") != email and not _is_admin(email):
+            return jsonify({"error": "無權限"}), 403
+        update = {
+            "content":    str(data.get("content", item.get("content", ""))).strip(),
+            "contact_at": (data.get("contact_at") or item.get("contact_at", "")).strip(),
+        }
+        ref.update(update)
+        _recalc_seller_last_contact(db, seller_id)
+        return jsonify({"ok": True, "id": contact_id, **update})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/sellers/<seller_id>/contacts/<contact_id>", methods=["DELETE"])
+def api_seller_contact_delete(seller_id, contact_id):
+    """刪除互動記事。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    try:
+        ref = db.collection("seller_contacts").document(contact_id)
+        doc = ref.get()
+        if not doc.exists:
+            return jsonify({"error": "找不到此記事"}), 404
+        if doc.to_dict().get("created_by") != email and not _is_admin(email):
+            return jsonify({"error": "無權限"}), 403
+        ref.delete()
+        _recalc_seller_last_contact(db, seller_id)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/")
 def index():
     email = session.get("user_email")
@@ -4538,6 +4813,11 @@ OBJECTS_APP_HTML = """
     body [class*="hover\\:bg-slate-7"]:hover,body [class*="hover\\:bg-slate-6"]:hover{background:var(--bg-h)!important;}
     /* accent（藍色）→ 主題 accent 色 */
     body .tab-btn[class*="text-blue"]{color:var(--ac)!important;}
+    /* 準賣方 Modal */
+    .modal-bg{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;padding:1rem;}
+    .modal-box{background:var(--bg-s);border:1px solid var(--bd);border-radius:1.25rem;width:100%;max-width:520px;max-height:92vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.3);}
+    .modal-box::-webkit-scrollbar{width:6px;}
+    .modal-box::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px;}
     body [class*="border-blue-4"],body [class*="border-blue-5"]{border-color:var(--ac)!important;}
     body [class*="bg-blue-6"],body [class*="bg-blue-5"]{background:var(--ach)!important;}
     body [class*="hover\\:bg-blue-5"]:hover,body [class*="hover\\:bg-blue-6"]:hover{background:var(--ac)!important;}
@@ -4734,6 +5014,11 @@ OBJECTS_APP_HTML = """
     <button id="tab-org" onclick="switchTab('org')"
       class="tab-btn hidden flex-1 py-2 text-sm font-medium border-b-2 border-transparent transition" style="color:var(--txs);">
       🏢 組織
+    </button>
+    <!-- 準賣方管理 tab：所有登入者皆可使用 -->
+    <button id="tab-sellers" onclick="switchTab('sellers')"
+      class="tab-btn flex-1 py-2 text-sm font-medium border-b-2 border-transparent transition" style="color:var(--txs);">
+      🏠 準賣方
     </button>
   </div>
 </header>
@@ -5112,6 +5397,157 @@ OBJECTS_APP_HTML = """
 </div>
 
 <!-- ══ 設定分頁（僅管理員）══ -->
+<!-- ══ 準賣方管理分頁 ══ -->
+<div id="pane-sellers" style="display:none" class="max-w-3xl mx-auto px-4 py-6">
+
+  <!-- 頂部工具列：搜尋 + 篩選 + 新增 -->
+  <div class="rounded-2xl p-4 mb-4" style="background:var(--bg-t);border:1px solid var(--bd);">
+    <div class="flex flex-wrap gap-2 items-center">
+      <input id="sl-keyword" type="text" placeholder="🔍 姓名 / 地址 / 地號"
+        class="flex-1 min-w-0 rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);"
+        oninput="slFilterRender()">
+      <select id="sl-status-filter" onchange="slFilterRender()"
+        class="rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
+        <option value="">全部狀態</option>
+        <option value="培養中">培養中</option>
+        <option value="已報價">已報價</option>
+        <option value="已簽委託">已簽委託</option>
+        <option value="放棄">放棄</option>
+      </select>
+      <button onclick="slOpenCreate()" class="px-4 py-2 rounded-lg text-sm font-semibold text-white transition"
+        style="background:var(--ac);">＋ 新增準賣方</button>
+    </div>
+  </div>
+
+  <!-- 準賣方列表 -->
+  <div id="sl-list">
+    <p class="text-center py-8 text-sm" style="color:var(--txs);">載入中…</p>
+  </div>
+</div>
+
+<!-- ══ 準賣方 新增/編輯 Modal ══ -->
+<div id="sl-modal" class="modal-bg" style="display:none;" onclick="if(event.target===this)slModalClose()">
+  <div class="modal-box" style="max-width:540px;">
+    <div class="flex items-center justify-between px-5 pt-5 pb-3" style="border-bottom:1px solid var(--bd);">
+      <h3 id="sl-modal-title" class="font-bold text-base" style="color:var(--tx);">新增準賣方</h3>
+      <button onclick="slModalClose()" class="text-xl leading-none" style="color:var(--txs);">✕</button>
+    </div>
+    <div class="px-5 py-4">
+      <!-- 基本資料 -->
+      <div class="grid grid-cols-2 gap-3 mb-3">
+        <div>
+          <label class="text-xs block mb-1 font-medium" style="color:var(--txs);">屋主姓名 <span style="color:var(--err);">*</span></label>
+          <input id="sl-f-name" type="text" placeholder="如：王大明"
+            class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
+        </div>
+        <div>
+          <label class="text-xs block mb-1 font-medium" style="color:var(--txs);">聯絡電話</label>
+          <input id="sl-f-phone" type="tel" placeholder="09xx-xxxxxx"
+            class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3 mb-3">
+        <div>
+          <label class="text-xs block mb-1 font-medium" style="color:var(--txs);">物件地址</label>
+          <input id="sl-f-address" type="text" placeholder="如：台東市中山路1號"
+            class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
+        </div>
+        <div>
+          <label class="text-xs block mb-1 font-medium" style="color:var(--txs);">地號</label>
+          <input id="sl-f-land" type="text" placeholder="如：知本段123地號"
+            class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3 mb-3">
+        <div>
+          <label class="text-xs block mb-1 font-medium" style="color:var(--txs);">物件類別</label>
+          <select id="sl-f-category"
+            class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
+            <option value="">— 選擇類別 —</option>
+            <option value="農地">農地</option>
+            <option value="建地">建地</option>
+            <option value="公寓">公寓</option>
+            <option value="房屋">房屋</option>
+            <option value="別墅">別墅</option>
+            <option value="店住">店住</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-xs block mb-1 font-medium" style="color:var(--txs);">案源來源</label>
+          <select id="sl-f-source"
+            class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
+            <option value="">— 選擇來源 —</option>
+            <option value="自行開發">自行開發</option>
+            <option value="介紹">介紹</option>
+            <option value="廣告">廣告</option>
+            <option value="其他">其他</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3 mb-3">
+        <div>
+          <label class="text-xs block mb-1 font-medium" style="color:var(--txs);">屋主期望售價（萬）</label>
+          <input id="sl-f-owner-price" type="number" placeholder="如：800"
+            class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
+        </div>
+        <div>
+          <label class="text-xs block mb-1 font-medium" style="color:var(--txs);">房仲建議售價（萬）</label>
+          <input id="sl-f-suggest-price" type="number" placeholder="如：750"
+            class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
+        </div>
+      </div>
+      <div class="mb-3">
+        <label class="text-xs block mb-1 font-medium" style="color:var(--txs);">狀態</label>
+        <select id="sl-f-status"
+          class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
+          <option value="培養中">培養中</option>
+          <option value="已報價">已報價</option>
+          <option value="已簽委託">已簽委託</option>
+          <option value="放棄">放棄</option>
+        </select>
+      </div>
+      <div class="mb-4">
+        <label class="text-xs block mb-1 font-medium" style="color:var(--txs);">備註</label>
+        <textarea id="sl-f-note" rows="3" placeholder="其他補充說明…"
+          class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none resize-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);"></textarea>
+      </div>
+
+      <!-- 互動記事區（編輯模式才顯示） -->
+      <div id="sl-contacts-section" style="display:none;">
+        <div style="border-top:1px solid var(--bd);margin-bottom:12px;padding-top:16px;">
+          <div class="flex items-center justify-between mb-3">
+            <span class="text-sm font-semibold" style="color:var(--tx);">📞 互動記事</span>
+          </div>
+          <!-- 新增記事輸入框 -->
+          <div class="rounded-xl p-3 mb-3" style="background:var(--bg-h);border:1px solid var(--bd);">
+            <textarea id="sl-contact-input" rows="2" placeholder="記錄本次聯繫內容…"
+              class="w-full rounded-lg px-2 py-1.5 text-sm focus:outline-none resize-none mb-2" style="background:var(--bg-t);border:1px solid var(--bd);color:var(--tx);"></textarea>
+            <div class="flex items-center gap-2">
+              <input id="sl-contact-date" type="datetime-local"
+                class="rounded-lg px-2 py-1 text-xs focus:outline-none" style="background:var(--bg-t);border:1px solid var(--bd);color:var(--tx);">
+              <button onclick="slContactAdd()" class="px-3 py-1 rounded-lg text-xs font-semibold text-white" style="background:var(--ac);">新增記事</button>
+            </div>
+          </div>
+          <!-- 記事列表 -->
+          <div id="sl-contact-list">
+            <p class="text-xs text-center py-2" style="color:var(--txm);">載入中…</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 操作按鈕 -->
+      <div class="flex gap-2 justify-end">
+        <button id="sl-btn-delete" onclick="slDelete()" class="hidden px-4 py-2 rounded-lg text-sm font-semibold transition"
+          style="background:var(--err,#ef4444);color:#fff;">刪除</button>
+        <button onclick="slModalClose()" class="px-4 py-2 rounded-lg text-sm font-semibold transition"
+          style="background:var(--bg-h);color:var(--tx);border:1px solid var(--bd);">取消</button>
+        <button id="sl-btn-save" onclick="slSave()" class="px-4 py-2 rounded-lg text-sm font-semibold text-white transition"
+          style="background:var(--ac);">儲存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="pane-settings" style="display:none" class="max-w-2xl mx-auto px-4 py-6">
   <h2 class="font-bold text-lg mb-4" style="color:var(--tx);">⚙️ 系統設定</h2>
 
@@ -5677,12 +6113,14 @@ OBJECTS_APP_HTML = """
     var paneSettingsEl = document.getElementById('pane-settings');
     var paneOrgEl      = document.getElementById('pane-org');
     var paneDbviewEl   = document.getElementById('pane-dbview');
+    var paneSellersEl  = document.getElementById('pane-sellers');
 
     // 全部隱藏（加 null check 防止任一元素不存在時崩潰）
     if (paneCompanyEl)  paneCompanyEl.style.display  = 'none';
     if (paneSettingsEl) paneSettingsEl.style.display = 'none';
     if (paneOrgEl)      paneOrgEl.style.display      = 'none';
     if (paneDbviewEl)   paneDbviewEl.style.display   = 'none';
+    if (paneSellersEl)  paneSellersEl.style.display  = 'none';
 
     if (tab === 'company') {
       if (paneCompanyEl) paneCompanyEl.style.display = 'block';
@@ -5699,6 +6137,9 @@ OBJECTS_APP_HTML = """
     } else if (tab === 'dbview') {
       if (paneDbviewEl) paneDbviewEl.style.display = 'block';
       dbvInit();  // 進入資料庫檢視頁自動載入集合列表
+    } else if (tab === 'sellers') {
+      if (paneSellersEl) paneSellersEl.style.display = 'block';
+      slLoad();  // 進入準賣方管理頁自動載入列表
     }
 
     // 分頁按鈕樣式
@@ -7835,6 +8276,261 @@ OBJECTS_APP_HTML = """
       window.location.href = d.redirect || '__PORTAL_LINK__';
     }).catch(function(){ window.location.reload(); });
   }
+
+  // ══════════════════════════════════════════════════
+  // 準賣方管理 JS
+  // ══════════════════════════════════════════════════
+  var _slData    = [];      // 全部準賣方資料
+  var _slCurrent = null;    // 目前編輯中的準賣方 id
+
+  // 載入準賣方列表
+  function slLoad() {
+    if (!window._slLoaded) {
+      window._slLoaded = true;
+    }
+    fetch('/api/sellers')
+      .then(function(r){ return r.json(); })
+      .then(function(d) {
+        if (d.error) { toast('❌ ' + d.error, 'error'); return; }
+        _slData = d.items || [];
+        slFilterRender();
+      })
+      .catch(function(){ toast('❌ 載入準賣方失敗', 'error'); });
+  }
+
+  // 依關鍵字 + 狀態篩選後重新渲染卡片列表
+  function slFilterRender() {
+    var kw     = (document.getElementById('sl-keyword') || {}).value || '';
+    var status = (document.getElementById('sl-status-filter') || {}).value || '';
+    kw = kw.toLowerCase();
+    var filtered = _slData.filter(function(s) {
+      var matchKw = !kw ||
+        (s.name    || '').toLowerCase().includes(kw) ||
+        (s.address || '').toLowerCase().includes(kw) ||
+        (s.land_number || '').toLowerCase().includes(kw) ||
+        (s.phone   || '').includes(kw);
+      var matchStatus = !status || s.status === status;
+      return matchKw && matchStatus;
+    });
+    slRenderList(filtered);
+  }
+
+  // 狀態對應顏色
+  function _slStatusColor(status) {
+    var map = { '培養中': 'var(--ac)', '已報價': 'var(--warn,#f59e0b)', '已簽委託': 'var(--ok,#22c55e)', '放棄': 'var(--txm)' };
+    return map[status] || 'var(--txs)';
+  }
+
+  // 渲染卡片列表
+  function slRenderList(items) {
+    var el = document.getElementById('sl-list');
+    if (!el) return;
+    if (!items.length) {
+      el.innerHTML = '<p class="text-center py-12 text-sm" style="color:var(--txs);">目前沒有符合的準賣方</p>';
+      return;
+    }
+    var html = '';
+    items.forEach(function(s) {
+      var lastContact = s.last_contact_at ? s.last_contact_at.substring(0, 10) : '未追蹤';
+      var priceInfo = '';
+      if (s.owner_price) priceInfo += '屋主：' + s.owner_price + '萬';
+      if (s.suggest_price) priceInfo += (priceInfo ? '　' : '') + '建議：' + s.suggest_price + '萬';
+      var location = [s.address, s.land_number].filter(Boolean).join(' / ');
+      html += '<div class="rounded-2xl p-4 mb-3 cursor-pointer transition" style="background:var(--bg-t);border:1px solid var(--bd);" onclick="slOpenEdit(\'' + s.id + '\')">' +
+        '<div class="flex items-start justify-between gap-2">' +
+          '<div class="flex-1 min-w-0">' +
+            '<div class="flex items-center gap-2 mb-1">' +
+              '<span class="font-semibold text-base" style="color:var(--tx);">' + _esc(s.name) + '</span>' +
+              (s.category ? '<span class="text-xs px-2 py-0.5 rounded-full" style="background:var(--bg-h);color:var(--txs);">' + _esc(s.category) + '</span>' : '') +
+              (s.source ? '<span class="text-xs px-2 py-0.5 rounded-full" style="background:var(--bg-h);color:var(--txm);">' + _esc(s.source) + '</span>' : '') +
+            '</div>' +
+            (location ? '<p class="text-xs mb-1 truncate" style="color:var(--txm);">📍 ' + _esc(location) + '</p>' : '') +
+            (s.phone ? '<p class="text-xs mb-1" style="color:var(--txm);">📞 ' + _esc(s.phone) + '</p>' : '') +
+            (priceInfo ? '<p class="text-xs mb-1" style="color:var(--txm);">💰 ' + _esc(priceInfo) + '</p>' : '') +
+            (s.note ? '<p class="text-xs truncate" style="color:var(--txs);">' + _esc(s.note) + '</p>' : '') +
+          '</div>' +
+          '<div class="flex flex-col items-end gap-1 shrink-0">' +
+            '<span class="text-xs font-semibold px-2 py-0.5 rounded-full" style="background:var(--bg-h);color:' + _slStatusColor(s.status) + ';">' + _esc(s.status || '') + '</span>' +
+            '<span class="text-xs" style="color:var(--txm);">📅 ' + lastContact + '</span>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    });
+    el.innerHTML = html;
+  }
+
+  // HTML 跳脫（防止 XSS）
+  function _esc(s) {
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // 開啟新增 Modal
+  function slOpenCreate() {
+    _slCurrent = null;
+    document.getElementById('sl-modal-title').textContent = '新增準賣方';
+    document.getElementById('sl-f-name').value         = '';
+    document.getElementById('sl-f-phone').value        = '';
+    document.getElementById('sl-f-address').value      = '';
+    document.getElementById('sl-f-land').value         = '';
+    document.getElementById('sl-f-category').value     = '';
+    document.getElementById('sl-f-source').value       = '';
+    document.getElementById('sl-f-owner-price').value  = '';
+    document.getElementById('sl-f-suggest-price').value = '';
+    document.getElementById('sl-f-status').value       = '培養中';
+    document.getElementById('sl-f-note').value         = '';
+    document.getElementById('sl-contacts-section').style.display = 'none';
+    document.getElementById('sl-btn-delete').classList.add('hidden');
+    document.getElementById('sl-modal').style.display = 'flex';
+    document.getElementById('sl-f-name').focus();
+  }
+
+  // 開啟編輯 Modal
+  function slOpenEdit(id) {
+    var s = _slData.find(function(x){ return x.id === id; });
+    if (!s) return;
+    _slCurrent = id;
+    document.getElementById('sl-modal-title').textContent = '編輯準賣方';
+    document.getElementById('sl-f-name').value          = s.name || '';
+    document.getElementById('sl-f-phone').value         = s.phone || '';
+    document.getElementById('sl-f-address').value       = s.address || '';
+    document.getElementById('sl-f-land').value          = s.land_number || '';
+    document.getElementById('sl-f-category').value      = s.category || '';
+    document.getElementById('sl-f-source').value        = s.source || '';
+    document.getElementById('sl-f-owner-price').value   = s.owner_price != null ? s.owner_price : '';
+    document.getElementById('sl-f-suggest-price').value = s.suggest_price != null ? s.suggest_price : '';
+    document.getElementById('sl-f-status').value        = s.status || '培養中';
+    document.getElementById('sl-f-note').value          = s.note || '';
+    document.getElementById('sl-contacts-section').style.display = 'block';
+    document.getElementById('sl-btn-delete').classList.remove('hidden');
+    document.getElementById('sl-modal').style.display = 'flex';
+    slContactsLoad(id);
+  }
+
+  // 關閉 Modal
+  function slModalClose() {
+    document.getElementById('sl-modal').style.display = 'none';
+    _slCurrent = null;
+  }
+
+  // 儲存（新增或更新）
+  function slSave() {
+    var name = document.getElementById('sl-f-name').value.trim();
+    if (!name) { toast('請填寫屋主姓名', 'warn'); return; }
+    var ownerP   = document.getElementById('sl-f-owner-price').value;
+    var suggestP = document.getElementById('sl-f-suggest-price').value;
+    var payload = {
+      name:          name,
+      phone:         document.getElementById('sl-f-phone').value.trim(),
+      address:       document.getElementById('sl-f-address').value.trim(),
+      land_number:   document.getElementById('sl-f-land').value.trim(),
+      category:      document.getElementById('sl-f-category').value,
+      source:        document.getElementById('sl-f-source').value,
+      owner_price:   ownerP   !== '' ? parseFloat(ownerP)   : null,
+      suggest_price: suggestP !== '' ? parseFloat(suggestP) : null,
+      status:        document.getElementById('sl-f-status').value,
+      note:          document.getElementById('sl-f-note').value.trim(),
+    };
+    var url    = _slCurrent ? '/api/sellers/' + _slCurrent : '/api/sellers';
+    var method = _slCurrent ? 'PUT' : 'POST';
+    var btn = document.getElementById('sl-btn-save');
+    btn.disabled = true; btn.textContent = '儲存中…';
+    fetch(url, { method: method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) })
+      .then(function(r){ return r.json(); })
+      .then(function(d) {
+        btn.disabled = false; btn.textContent = '儲存';
+        if (d.error) { toast('❌ ' + d.error, 'error'); return; }
+        toast(method === 'POST' ? '✅ 已新增準賣方' : '✅ 已更新', 'success');
+        slModalClose();
+        slLoad();
+      })
+      .catch(function(){ btn.disabled = false; btn.textContent = '儲存'; toast('❌ 儲存失敗', 'error'); });
+  }
+
+  // 刪除準賣方
+  function slDelete() {
+    if (!_slCurrent) return;
+    if (!confirm('確定要刪除此準賣方及所有互動記事？')) return;
+    fetch('/api/sellers/' + _slCurrent, { method: 'DELETE' })
+      .then(function(r){ return r.json(); })
+      .then(function(d) {
+        if (d.error) { toast('❌ ' + d.error, 'error'); return; }
+        toast('✅ 已刪除', 'success');
+        slModalClose();
+        slLoad();
+      })
+      .catch(function(){ toast('❌ 刪除失敗', 'error'); });
+  }
+
+  // 載入互動記事列表
+  function slContactsLoad(id) {
+    var el = document.getElementById('sl-contact-list');
+    if (!el) return;
+    el.innerHTML = '<p class="text-xs text-center py-2" style="color:var(--txm);">載入中…</p>';
+    fetch('/api/sellers/' + id + '/contacts')
+      .then(function(r){ return r.json(); })
+      .then(function(d) {
+        if (d.error) { el.innerHTML = '<p class="text-xs" style="color:var(--err);">' + _esc(d.error) + '</p>'; return; }
+        var items = d.items || [];
+        if (!items.length) {
+          el.innerHTML = '<p class="text-xs text-center py-2" style="color:var(--txm);">尚無互動記事</p>';
+          return;
+        }
+        var html = '';
+        items.forEach(function(c) {
+          html += '<div class="rounded-lg p-3 mb-2" style="background:var(--bg-t);border:1px solid var(--bd);">' +
+            '<div class="flex items-start justify-between gap-2">' +
+              '<div class="flex-1">' +
+                '<p class="text-xs mb-1" style="color:var(--txm);">🕐 ' + _esc((c.contact_at||'').substring(0,16).replace('T',' ')) + '</p>' +
+                '<p class="text-sm" style="color:var(--tx);">' + _esc(c.content) + '</p>' +
+              '</div>' +
+              '<button onclick="slContactDelete(\'' + _slCurrent + '\',\'' + c.id + '\')" class="text-xs shrink-0" style="color:var(--txm);">✕</button>' +
+            '</div>' +
+          '</div>';
+        });
+        el.innerHTML = html;
+      })
+      .catch(function(){ el.innerHTML = '<p class="text-xs" style="color:var(--err);">載入失敗</p>'; });
+  }
+
+  // 新增互動記事
+  function slContactAdd() {
+    if (!_slCurrent) return;
+    var content = (document.getElementById('sl-contact-input') || {}).value.trim();
+    if (!content) { toast('請填寫互動內容', 'warn'); return; }
+    var dateVal = (document.getElementById('sl-contact-date') || {}).value || '';
+    var contact_at = dateVal ? dateVal.replace('T', ' ') + ':00' : '';
+    fetch('/api/sellers/' + _slCurrent + '/contacts', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ content: content, contact_at: contact_at }),
+    })
+      .then(function(r){ return r.json(); })
+      .then(function(d) {
+        if (d.error) { toast('❌ ' + d.error, 'error'); return; }
+        document.getElementById('sl-contact-input').value = '';
+        document.getElementById('sl-contact-date').value  = '';
+        toast('✅ 記事已新增', 'success');
+        slContactsLoad(_slCurrent);
+        // 更新本地 last_contact_at 顯示
+        var s = _slData.find(function(x){ return x.id === _slCurrent; });
+        if (s) { s.last_contact_at = d.contact_at || new Date().toISOString(); }
+      })
+      .catch(function(){ toast('❌ 新增失敗', 'error'); });
+  }
+
+  // 刪除互動記事
+  function slContactDelete(sellerId, contactId) {
+    if (!confirm('確定刪除此記事？')) return;
+    fetch('/api/sellers/' + sellerId + '/contacts/' + contactId, { method: 'DELETE' })
+      .then(function(r){ return r.json(); })
+      .then(function(d) {
+        if (d.error) { toast('❌ ' + d.error, 'error'); return; }
+        toast('✅ 已刪除', 'success');
+        slContactsLoad(sellerId);
+      })
+      .catch(function(){ toast('❌ 刪除失敗', 'error'); });
+  }
+  // ══ 準賣方管理 JS 結束 ══
 
   // 頁面載入後直接顯示「公司物件庫」分頁
   switchTab('company');
