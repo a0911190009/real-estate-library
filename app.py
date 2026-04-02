@@ -4522,6 +4522,141 @@ def api_seller_contact_delete(seller_id, contact_id):
         return jsonify({"error": str(e)}), 500
 
 
+# ── 準賣方頭像上傳 ──
+
+@app.route("/api/sellers/<seller_id>/avatar", methods=["POST"])
+def api_seller_avatar_upload(seller_id):
+    """上傳準賣方頭像（存入 GCS，URL 寫回 Firestore）。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    if "file" not in request.files:
+        return jsonify({"error": "請選擇圖片"}), 400
+    f = request.files["file"]
+    ext = os.path.splitext(f.filename.lower())[1]
+    if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+        return jsonify({"error": "僅支援 jpg/png/webp/gif"}), 400
+    try:
+        # 確認有權限
+        doc = db.collection("seller_prospects").document(seller_id).get()
+        if not doc.exists:
+            return jsonify({"error": "找不到此準賣方"}), 404
+        if doc.to_dict().get("created_by") != email and not _is_admin(email):
+            return jsonify({"error": "無權限"}), 403
+
+        raw = f.read()
+        b = _get_gcs_bucket()
+        if b is None:
+            return jsonify({"error": "GCS 未設定"}), 503
+        # 固定路徑：sellers/{seller_id}/avatar{ext}（覆蓋舊頭像）
+        gcs_path = f"sellers/{seller_id}/avatar{ext}"
+        blob = b.blob(gcs_path)
+        mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+                "webp": "image/webp", "gif": "image/gif"}.get(ext.lstrip("."), "image/jpeg")
+        blob.upload_from_string(raw, content_type=mime)
+        blob.make_public()
+        url = blob.public_url
+        # 寫回 Firestore
+        db.collection("seller_prospects").document(seller_id).update({
+            "avatar_url": url,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+        return jsonify({"ok": True, "url": url})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── 準賣方相關圖檔 ──
+
+@app.route("/api/sellers/<seller_id>/files", methods=["POST"])
+def api_seller_file_upload(seller_id):
+    """上傳相關圖檔（存入 GCS，清單寫回 Firestore）。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    if "file" not in request.files:
+        return jsonify({"error": "請選擇檔案"}), 400
+    f = request.files["file"]
+    ext = os.path.splitext(f.filename.lower())[1]
+    if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif", ".pdf"):
+        return jsonify({"error": "僅支援 jpg/png/webp/gif/pdf"}), 400
+    try:
+        doc_ref = db.collection("seller_prospects").document(seller_id)
+        doc = doc_ref.get()
+        if not doc.exists:
+            return jsonify({"error": "找不到此準賣方"}), 404
+        if doc.to_dict().get("created_by") != email and not _is_admin(email):
+            return jsonify({"error": "無權限"}), 403
+
+        raw = f.read()
+        b = _get_gcs_bucket()
+        if b is None:
+            return jsonify({"error": "GCS 未設定"}), 503
+        # 用 uuid 避免重名
+        file_id = str(uuid.uuid4())[:8]
+        safe_name = re.sub(r"[^\w.\-]", "_", f.filename)
+        gcs_path = f"sellers/{seller_id}/files/{file_id}_{safe_name}"
+        blob = b.blob(gcs_path)
+        mime_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+                    "webp": "image/webp", "gif": "image/gif", "pdf": "application/pdf"}
+        mime = mime_map.get(ext.lstrip("."), "application/octet-stream")
+        blob.upload_from_string(raw, content_type=mime)
+        blob.make_public()
+        url = blob.public_url
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 把新檔案加到 Firestore files 陣列
+        item = {"file_id": file_id, "name": safe_name, "url": url,
+                "gcs_path": gcs_path, "uploaded_at": now}
+        existing = doc.to_dict().get("files", []) or []
+        existing.append(item)
+        doc_ref.update({"files": existing, "updated_at": now})
+        return jsonify({"ok": True, **item})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/sellers/<seller_id>/files/<file_id>", methods=["DELETE"])
+def api_seller_file_delete(seller_id, file_id):
+    """刪除相關圖檔（從 GCS 和 Firestore 同時移除）。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    try:
+        doc_ref = db.collection("seller_prospects").document(seller_id)
+        doc = doc_ref.get()
+        if not doc.exists:
+            return jsonify({"error": "找不到此準賣方"}), 404
+        d = doc.to_dict()
+        if d.get("created_by") != email and not _is_admin(email):
+            return jsonify({"error": "無權限"}), 403
+        files = d.get("files", []) or []
+        target = next((x for x in files if x.get("file_id") == file_id), None)
+        if not target:
+            return jsonify({"error": "找不到此檔案"}), 404
+        # 從 GCS 刪除
+        b = _get_gcs_bucket()
+        if b:
+            try:
+                b.blob(target["gcs_path"]).delete()
+            except Exception:
+                pass
+        # 從 Firestore 移除
+        new_files = [x for x in files if x.get("file_id") != file_id]
+        doc_ref.update({"files": new_files, "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/")
 def index():
     email = session.get("user_email")
@@ -5433,6 +5568,24 @@ OBJECTS_APP_HTML = """
       <button onclick="slModalClose()" class="text-xl leading-none" style="color:var(--txs);">✕</button>
     </div>
     <div class="px-5 py-4">
+      <!-- 頭像上傳（編輯模式才顯示） -->
+      <div id="sl-avatar-section" style="display:none;" class="flex items-center gap-4 mb-4">
+        <div style="position:relative;width:64px;height:64px;flex-shrink:0;">
+          <img id="sl-avatar-img" src="" alt=""
+            style="width:64px;height:64px;border-radius:50%;object-fit:cover;background:var(--bg-h);border:2px solid var(--bd);display:none;">
+          <div id="sl-avatar-placeholder" style="width:64px;height:64px;border-radius:50%;background:var(--ac);display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;color:#fff;"></div>
+          <!-- 點擊觸發上傳 -->
+          <label style="position:absolute;inset:0;border-radius:50%;cursor:pointer;display:flex;align-items:flex-end;justify-content:center;padding-bottom:4px;background:transparent;" title="點擊更換頭像">
+            <span style="font-size:10px;background:rgba(0,0,0,.5);color:#fff;border-radius:4px;padding:1px 4px;">換圖</span>
+            <input type="file" accept="image/*" style="display:none;" onchange="slAvatarUpload(this)">
+          </label>
+        </div>
+        <div>
+          <p class="text-xs" style="color:var(--txs);">點擊頭像可更換照片</p>
+          <p class="text-xs" style="color:var(--txm);">支援 jpg / png / webp</p>
+        </div>
+      </div>
+
       <!-- 基本資料 -->
       <div class="grid grid-cols-2 gap-3 mb-3">
         <div>
@@ -5513,6 +5666,22 @@ OBJECTS_APP_HTML = """
       </div>
 
       <!-- 互動記事區（編輯模式才顯示） -->
+      <!-- 相關圖檔（編輯模式才顯示） -->
+      <div id="sl-files-section" style="display:none;">
+        <div style="border-top:1px solid var(--bd);margin-bottom:12px;padding-top:16px;">
+          <div class="flex items-center justify-between mb-3">
+            <span class="text-sm font-semibold" style="color:var(--tx);">🖼️ 相關圖檔</span>
+            <label class="px-3 py-1 rounded-lg text-xs font-semibold cursor-pointer text-white" style="background:var(--ac);">
+              ＋ 上傳
+              <input type="file" accept="image/*,.pdf" multiple style="display:none;" onchange="slFilesUpload(this)">
+            </label>
+          </div>
+          <div id="sl-files-list" class="flex flex-wrap gap-2">
+            <p class="text-xs" style="color:var(--txm);">尚無圖檔</p>
+          </div>
+        </div>
+      </div>
+
       <div id="sl-contacts-section" style="display:none;">
         <div style="border-top:1px solid var(--bd);margin-bottom:12px;padding-top:16px;">
           <div class="flex items-center justify-between mb-3">
@@ -8336,8 +8505,13 @@ OBJECTS_APP_HTML = """
       if (s.owner_price) priceInfo += '屋主：' + s.owner_price + '萬';
       if (s.suggest_price) priceInfo += (priceInfo ? '　' : '') + '建議：' + s.suggest_price + '萬';
       var location = [s.address, s.land_number].filter(Boolean).join(' / ');
+      // 頭像：有圖用圖，否則顯示名字首字
+      var avatarHtml = s.avatar_url
+        ? '<img src="' + _esc(s.avatar_url) + '" style="width:48px;height:48px;border-radius:50%;object-fit:cover;flex-shrink:0;border:2px solid var(--bd);" alt="">'
+        : '<div style="width:48px;height:48px;border-radius:50%;background:var(--ac);display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;color:#fff;flex-shrink:0;">' + _esc((s.name||'?')[0]) + '</div>';
       html += '<div class="rounded-2xl p-4 mb-3 cursor-pointer transition" style="background:var(--bg-t);border:1px solid var(--bd);" onclick="slOpenEdit(\'' + s.id + '\')">' +
-        '<div class="flex items-start justify-between gap-2">' +
+        '<div class="flex items-start gap-3">' +
+          avatarHtml +
           '<div class="flex-1 min-w-0">' +
             '<div class="flex items-center gap-2 mb-1">' +
               '<span class="font-semibold text-base" style="color:var(--tx);">' + _esc(s.name) + '</span>' +
@@ -8368,16 +8542,18 @@ OBJECTS_APP_HTML = """
   function slOpenCreate() {
     _slCurrent = null;
     document.getElementById('sl-modal-title').textContent = '新增準賣方';
-    document.getElementById('sl-f-name').value         = '';
-    document.getElementById('sl-f-phone').value        = '';
-    document.getElementById('sl-f-address').value      = '';
-    document.getElementById('sl-f-land').value         = '';
-    document.getElementById('sl-f-category').value     = '';
-    document.getElementById('sl-f-source').value       = '';
-    document.getElementById('sl-f-owner-price').value  = '';
+    document.getElementById('sl-f-name').value          = '';
+    document.getElementById('sl-f-phone').value         = '';
+    document.getElementById('sl-f-address').value       = '';
+    document.getElementById('sl-f-land').value          = '';
+    document.getElementById('sl-f-category').value      = '';
+    document.getElementById('sl-f-source').value        = '';
+    document.getElementById('sl-f-owner-price').value   = '';
     document.getElementById('sl-f-suggest-price').value = '';
-    document.getElementById('sl-f-status').value       = '培養中';
-    document.getElementById('sl-f-note').value         = '';
+    document.getElementById('sl-f-status').value        = '培養中';
+    document.getElementById('sl-f-note').value          = '';
+    document.getElementById('sl-avatar-section').style.display  = 'none';
+    document.getElementById('sl-files-section').style.display   = 'none';
     document.getElementById('sl-contacts-section').style.display = 'none';
     document.getElementById('sl-btn-delete').classList.add('hidden');
     document.getElementById('sl-modal').style.display = 'flex';
@@ -8400,9 +8576,23 @@ OBJECTS_APP_HTML = """
     document.getElementById('sl-f-suggest-price').value = s.suggest_price != null ? s.suggest_price : '';
     document.getElementById('sl-f-status').value        = s.status || '培養中';
     document.getElementById('sl-f-note').value          = s.note || '';
+    // 頭像區
+    document.getElementById('sl-avatar-section').style.display = 'block';
+    var imgEl = document.getElementById('sl-avatar-img');
+    var phEl  = document.getElementById('sl-avatar-placeholder');
+    if (s.avatar_url) {
+      imgEl.src = s.avatar_url; imgEl.style.display = 'block';
+      phEl.style.display = 'none';
+    } else {
+      imgEl.style.display = 'none';
+      phEl.style.display  = 'flex';
+      phEl.textContent    = (s.name || '?')[0];
+    }
+    document.getElementById('sl-files-section').style.display    = 'block';
     document.getElementById('sl-contacts-section').style.display = 'block';
     document.getElementById('sl-btn-delete').classList.remove('hidden');
     document.getElementById('sl-modal').style.display = 'flex';
+    slFilesLoad(s);
     slContactsLoad(id);
   }
 
@@ -8527,6 +8717,100 @@ OBJECTS_APP_HTML = """
         if (d.error) { toast('❌ ' + d.error, 'error'); return; }
         toast('✅ 已刪除', 'success');
         slContactsLoad(sellerId);
+      })
+      .catch(function(){ toast('❌ 刪除失敗', 'error'); });
+  }
+  // 上傳頭像
+  function slAvatarUpload(input) {
+    if (!_slCurrent || !input.files || !input.files[0]) return;
+    var fd = new FormData();
+    fd.append('file', input.files[0]);
+    input.value = '';
+    toast('⏳ 上傳頭像中…', 'info');
+    fetch('/api/sellers/' + _slCurrent + '/avatar', { method: 'POST', body: fd })
+      .then(function(r){ return r.json(); })
+      .then(function(d) {
+        if (d.error) { toast('❌ ' + d.error, 'error'); return; }
+        // 更新 Modal 頭像顯示
+        var imgEl = document.getElementById('sl-avatar-img');
+        var phEl  = document.getElementById('sl-avatar-placeholder');
+        imgEl.src = d.url + '?t=' + Date.now();
+        imgEl.style.display = 'block';
+        phEl.style.display  = 'none';
+        // 更新本地資料
+        var s = _slData.find(function(x){ return x.id === _slCurrent; });
+        if (s) s.avatar_url = d.url;
+        toast('✅ 頭像已更新', 'success');
+        slFilterRender();  // 重新渲染列表卡片
+      })
+      .catch(function(){ toast('❌ 上傳失敗', 'error'); });
+  }
+
+  // 載入相關圖檔（從已有的準賣方資料）
+  function slFilesLoad(s) {
+    var el = document.getElementById('sl-files-list');
+    if (!el) return;
+    var files = s.files || [];
+    if (!files.length) {
+      el.innerHTML = '<p class="text-xs" style="color:var(--txm);">尚無圖檔</p>';
+      return;
+    }
+    var html = '';
+    files.forEach(function(f) {
+      var isPdf = (f.name || '').toLowerCase().endsWith('.pdf');
+      var thumb = isPdf
+        ? '<div style="width:64px;height:64px;background:var(--bg-h);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:22px;">📄</div>'
+        : '<img src="' + _esc(f.url) + '" style="width:64px;height:64px;object-fit:cover;border-radius:8px;cursor:pointer;" onclick="window.open(\'' + _esc(f.url) + '\',\'_blank\')" alt="">';
+      html += '<div style="position:relative;display:inline-block;">' +
+        thumb +
+        '<button onclick="slFileDelete(\'' + _esc(f.file_id) + '\')" style="position:absolute;top:-4px;right:-4px;width:18px;height:18px;border-radius:50%;background:rgba(0,0,0,.7);color:#fff;font-size:10px;line-height:18px;text-align:center;cursor:pointer;border:none;">✕</button>' +
+        '<p class="text-xs truncate mt-1" style="max-width:64px;color:var(--txm);">' + _esc(f.name) + '</p>' +
+      '</div>';
+    });
+    el.innerHTML = html;
+  }
+
+  // 上傳相關圖檔（可多張）
+  function slFilesUpload(input) {
+    if (!_slCurrent || !input.files || !input.files.length) return;
+    var files = Array.from(input.files);
+    input.value = '';
+    var done = 0;
+    files.forEach(function(file) {
+      var fd = new FormData();
+      fd.append('file', file);
+      fetch('/api/sellers/' + _slCurrent + '/files', { method: 'POST', body: fd })
+        .then(function(r){ return r.json(); })
+        .then(function(d) {
+          done++;
+          if (d.error) { toast('❌ ' + d.error, 'error'); return; }
+          // 更新本地資料並重新渲染圖檔列表
+          var s = _slData.find(function(x){ return x.id === _slCurrent; });
+          if (s) {
+            s.files = s.files || [];
+            s.files.push({ file_id: d.file_id, name: d.name, url: d.url, gcs_path: d.gcs_path });
+            slFilesLoad(s);
+          }
+          if (done === files.length) toast('✅ 圖檔上傳完成', 'success');
+        })
+        .catch(function(){ done++; toast('❌ 上傳失敗：' + file.name, 'error'); });
+    });
+  }
+
+  // 刪除相關圖檔
+  function slFileDelete(fileId) {
+    if (!_slCurrent) return;
+    if (!confirm('確定刪除此圖檔？')) return;
+    fetch('/api/sellers/' + _slCurrent + '/files/' + fileId, { method: 'DELETE' })
+      .then(function(r){ return r.json(); })
+      .then(function(d) {
+        if (d.error) { toast('❌ ' + d.error, 'error'); return; }
+        var s = _slData.find(function(x){ return x.id === _slCurrent; });
+        if (s) {
+          s.files = (s.files || []).filter(function(f){ return f.file_id !== fileId; });
+          slFilesLoad(s);
+        }
+        toast('✅ 已刪除', 'success');
       })
       .catch(function(){ toast('❌ 刪除失敗', 'error'); });
   }
