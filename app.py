@@ -8509,7 +8509,7 @@ OBJECTS_APP_HTML = """
       var avatarHtml = s.avatar_url
         ? '<img src="' + _esc(s.avatar_url) + '" style="width:48px;height:48px;border-radius:50%;object-fit:cover;flex-shrink:0;border:2px solid var(--bd);" alt="">'
         : '<div style="width:48px;height:48px;border-radius:50%;background:var(--ac);display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;color:#fff;flex-shrink:0;">' + _esc((s.name||'?')[0]) + '</div>';
-      html += '<div class="rounded-2xl p-4 mb-3 cursor-pointer transition" style="background:var(--bg-t);border:1px solid var(--bd);" onclick="slOpenEdit(\'' + s.id + '\')">' +
+      html += '<div class="rounded-2xl p-4 mb-3 cursor-pointer transition" style="background:var(--bg-t);border:1px solid var(--bd);" data-sl-id="' + s.id + '" onclick="slOpenEdit(this.dataset.slId)">' +
         '<div class="flex items-start gap-3">' +
           avatarHtml +
           '<div class="flex-1 min-w-0">' +
@@ -8673,7 +8673,7 @@ OBJECTS_APP_HTML = """
                 '<p class="text-xs mb-1" style="color:var(--txm);">🕐 ' + _esc((c.contact_at||'').substring(0,16).replace('T',' ')) + '</p>' +
                 '<p class="text-sm" style="color:var(--tx);">' + _esc(c.content) + '</p>' +
               '</div>' +
-              '<button onclick="slContactDelete(\'' + _slCurrent + '\',\'' + c.id + '\')" class="text-xs shrink-0" style="color:var(--txm);">✕</button>' +
+              '<button data-sid="' + _slCurrent + '" data-cid="' + c.id + '" onclick="slContactDelete(this.dataset.sid,this.dataset.cid)" class="text-xs shrink-0" style="color:var(--txm);">✕</button>' +
             '</div>' +
           '</div>';
         });
@@ -8760,10 +8760,10 @@ OBJECTS_APP_HTML = """
       var isPdf = (f.name || '').toLowerCase().endsWith('.pdf');
       var thumb = isPdf
         ? '<div style="width:64px;height:64px;background:var(--bg-h);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:22px;">📄</div>'
-        : '<img src="' + _esc(f.url) + '" style="width:64px;height:64px;object-fit:cover;border-radius:8px;cursor:pointer;" onclick="window.open(\'' + _esc(f.url) + '\',\'_blank\')" alt="">';
+        : '<img src="' + _esc(f.url) + '" data-url="' + _esc(f.url) + '" style="width:64px;height:64px;object-fit:cover;border-radius:8px;cursor:pointer;" onclick="window.open(this.dataset.url,\'_blank\')" alt="">';
       html += '<div style="position:relative;display:inline-block;">' +
         thumb +
-        '<button onclick="slFileDelete(\'' + _esc(f.file_id) + '\')" style="position:absolute;top:-4px;right:-4px;width:18px;height:18px;border-radius:50%;background:rgba(0,0,0,.7);color:#fff;font-size:10px;line-height:18px;text-align:center;cursor:pointer;border:none;">✕</button>' +
+        '<button data-fid="' + _esc(f.file_id) + '" onclick="slFileDelete(this.dataset.fid)" style="position:absolute;top:-4px;right:-4px;width:18px;height:18px;border-radius:50%;background:rgba(0,0,0,.7);color:#fff;font-size:10px;line-height:18px;text-align:center;cursor:pointer;border:none;">✕</button>' +
         '<p class="text-xs truncate mt-1" style="max-width:64px;color:var(--txm);">' + _esc(f.name) + '</p>' +
       '</div>';
     });
