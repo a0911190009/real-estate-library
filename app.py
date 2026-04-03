@@ -1507,6 +1507,47 @@ def _is_selling(r):
     return True  # 無此欄位或其他值，視為銷售中
 
 
+# ── 地圖：取得有座標的銷售中物件 ──
+
+@app.route("/api/map/properties", methods=["GET"])
+def api_map_properties():
+    """回傳所有銷售中且有「座標」欄位的物件，供地圖頁顯示。"""
+    if not session.get("user"):
+        return jsonify({"error": "請先登入"}), 401
+    db = _get_db()
+    results = []
+    # 全量讀取後在 Python 端篩選（Firestore 不支援中文欄位名查詢）
+    for doc in db.collection("company_properties").stream():
+        r = doc.to_dict()
+        r["id"] = doc.id
+        # 只要銷售中 + 有座標
+        if not _is_selling(r):
+            continue
+        coord = r.get("座標", "").strip()
+        if not coord:
+            continue
+        # 座標格式：「lat,lng」例如 "22.759705,121.141959"
+        parts = coord.split(",")
+        if len(parts) != 2:
+            continue
+        try:
+            lat = float(parts[0].strip())
+            lng = float(parts[1].strip())
+        except ValueError:
+            continue
+        results.append({
+            "id":       r["id"],
+            "案名":     r.get("案名", ""),
+            "物件地址": r.get("物件地址", ""),
+            "物件類別": r.get("物件類別", ""),
+            "售價":     r.get("售價(萬)", ""),
+            "經紀人":   r.get("經紀人", ""),
+            "lat":      lat,
+            "lng":      lng,
+        })
+    return jsonify({"items": results})
+
+
 # ── 公司物件庫搜尋 API（Firestore company_properties 集合） ──
 
 @app.route("/api/company-properties/search", methods=["GET"])
@@ -4967,6 +5008,25 @@ OBJECTS_APP_HTML = """
     #cp-cat-panel,#cp-area-panel,#cp-agent-panel{scrollbar-color:var(--bdl) transparent!important;}
     #cp-cat-panel::-webkit-scrollbar-thumb,#cp-area-panel::-webkit-scrollbar-thumb,#cp-agent-panel::-webkit-scrollbar-thumb{background:var(--bdl)!important;}
   </style>
+  <!-- Leaflet.js（地圖功能使用） -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    /* 地圖標記 label 樣式 */
+    .map-pin-label {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #fff;
+      white-space: nowrap;
+      cursor: pointer;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+    }
+  </style>
 </head>
 <body data-theme="navy-dark" class="min-h-screen font-sans antialiased">
 
@@ -5154,6 +5214,11 @@ OBJECTS_APP_HTML = """
     <button id="tab-sellers" onclick="switchTab('sellers')"
       class="tab-btn flex-1 py-2 text-sm font-medium border-b-2 border-transparent transition" style="color:var(--txs);">
       🏠 準賣方
+    </button>
+    <!-- 地圖 tab：所有登入者皆可使用 -->
+    <button id="tab-map" onclick="switchTab('map')"
+      class="tab-btn flex-1 py-2 text-sm font-medium border-b-2 border-transparent transition" style="color:var(--txs);">
+      🗺️ 地圖
     </button>
   </div>
 </header>
@@ -5715,6 +5780,16 @@ OBJECTS_APP_HTML = """
       </div>
     </div>
   </div>
+</div>
+
+<!-- ── 地圖分頁 ── -->
+<div id="pane-map" style="display:none;height:calc(100vh - 90px);">
+  <!-- 頂部統計列 -->
+  <div id="map-stat-bar" style="padding:6px 12px;font-size:0.8rem;color:var(--txs);background:var(--bg-s);border-bottom:1px solid var(--bd);">
+    載入中...
+  </div>
+  <!-- Leaflet 地圖容器 -->
+  <div id="map-container" style="width:100%;height:calc(100% - 32px);"></div>
 </div>
 
 <div id="pane-settings" style="display:none" class="max-w-2xl mx-auto px-4 py-6">
@@ -6283,6 +6358,7 @@ OBJECTS_APP_HTML = """
     var paneOrgEl      = document.getElementById('pane-org');
     var paneDbviewEl   = document.getElementById('pane-dbview');
     var paneSellersEl  = document.getElementById('pane-sellers');
+    var paneMapEl      = document.getElementById('pane-map');
 
     // 全部隱藏（加 null check 防止任一元素不存在時崩潰）
     if (paneCompanyEl)  paneCompanyEl.style.display  = 'none';
@@ -6290,6 +6366,7 @@ OBJECTS_APP_HTML = """
     if (paneOrgEl)      paneOrgEl.style.display      = 'none';
     if (paneDbviewEl)   paneDbviewEl.style.display   = 'none';
     if (paneSellersEl)  paneSellersEl.style.display  = 'none';
+    if (paneMapEl)      paneMapEl.style.display      = 'none';
 
     if (tab === 'company') {
       if (paneCompanyEl) paneCompanyEl.style.display = 'block';
@@ -6309,6 +6386,9 @@ OBJECTS_APP_HTML = """
     } else if (tab === 'sellers') {
       if (paneSellersEl) paneSellersEl.style.display = 'block';
       slLoad();  // 進入準賣方管理頁自動載入列表
+    } else if (tab === 'map') {
+      if (paneMapEl) paneMapEl.style.display = 'block';
+      mapInit();  // 初始化地圖（第一次進入才建立，之後只重整資料）
     }
 
     // 分頁按鈕樣式
@@ -8837,6 +8917,99 @@ OBJECTS_APP_HTML = """
       .catch(function(){ toast('❌ 刪除失敗', 'error'); });
   }
   // ══ 準賣方管理 JS 結束 ══
+
+  // ══ 地圖分頁 JS ══
+  (function() {
+    var _mapObj     = null;   // Leaflet Map 實例
+    var _mapInited  = false;  // 是否已初始化過
+
+    // 物件類別 → 地圖標記顏色
+    var CAT_COLOR = {
+      '農地': '#16a34a',   // 綠
+      '建地': '#ea580c',   // 橘
+      '公寓': '#2563eb',   // 藍
+      '房屋': '#7c3aed',   // 紫
+      '別墅': '#d97706',   // 金
+      '店住': '#dc2626',   // 紅
+    };
+    var DEFAULT_COLOR = '#6b7280';  // 灰（未知類別）
+
+    function _catColor(cat) {
+      // 類別字串可能含「台東市公寓」→ 取最後兩字匹配
+      for (var k in CAT_COLOR) {
+        if (cat && cat.indexOf(k) !== -1) return CAT_COLOR[k];
+      }
+      return DEFAULT_COLOR;
+    }
+
+    window.mapInit = function() {
+      // 第一次才建立地圖實例
+      if (!_mapInited) {
+        _mapInited = true;
+        _mapObj = L.map('map-container').setView([22.750699, 121.177817], 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '© OpenStreetMap contributors',
+          maxZoom: 19
+        }).addTo(_mapObj);
+      }
+      mapLoad();
+    };
+
+    function mapLoad() {
+      // 清除現有標記
+      _mapObj.eachLayer(function(layer) {
+        if (layer instanceof L.Marker) _mapObj.removeLayer(layer);
+      });
+      document.getElementById('map-stat-bar').textContent = '載入中...';
+
+      fetch('/api/map/properties')
+        .then(function(r){ return r.json(); })
+        .then(function(d) {
+          if (d.error) { document.getElementById('map-stat-bar').textContent = '❌ ' + d.error; return; }
+          var items = d.items || [];
+          document.getElementById('map-stat-bar').textContent =
+            '🗺️ 銷售中物件（有座標）：' + items.length + ' 筆';
+
+          items.forEach(function(p) {
+            var color = _catColor(p['物件類別']);
+            var label = p['案名'] || p['物件地址'] || '未命名';
+            // 自訂圖示：色塊 + 文字
+            var icon = L.divIcon({
+              className: '',
+              html: '<div class="map-pin-label" style="background:' + color + '">' + label + '</div>',
+              iconAnchor: [0, 10]
+            });
+            var marker = L.marker([p.lat, p.lng], { icon: icon });
+
+            // 點擊顯示 popup
+            var price  = p['售價'] ? p['售價'] + ' 萬' : '—';
+            var agent  = p['經紀人'] || '—';
+            var cat    = p['物件類別'] || '—';
+            var addr   = p['物件地址'] || '';
+            var popup  = '<div style="font-size:13px;line-height:1.8;">'
+              + '<b>' + label + '</b><br>'
+              + '類別：' + cat + '<br>'
+              + '售價：' + price + '<br>'
+              + '經紀人：' + agent + '<br>'
+              + (addr ? '地址：' + addr + '<br>' : '')
+              + '</div>';
+            marker.bindPopup(popup);
+            marker.addTo(_mapObj);
+          });
+
+          // 若有物件，自動調整視野含蓋所有標記
+          if (items.length > 0) {
+            var bounds = L.latLngBounds(items.map(function(p){ return [p.lat, p.lng]; }));
+            _mapObj.fitBounds(bounds, { padding: [40, 40] });
+          }
+        })
+        .catch(function(e) {
+          document.getElementById('map-stat-bar').textContent = '❌ 無法載入地圖資料';
+          console.error('mapLoad error', e);
+        });
+    }
+  })();
+  // ══ 地圖分頁 JS 結束 ══
 
   // 頁面載入後直接顯示「公司物件庫」分頁
   switchTab('company');
