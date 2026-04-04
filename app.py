@@ -596,16 +596,18 @@ def auth_portal_login():
     email = payload.get("email", "")
     if not email:
         return redirect(PORTAL_URL or "/")
+    tab = request.args.get("tab") or request.form.get("tab", "")
     session["user_email"] = email
     session["user_name"] = payload.get("name", "")
     session["user_picture"] = payload.get("picture", "")
     session.permanent = True   # 讓 cookie 存活 30 天，不隨分頁關閉消失
     session.modified = True
-    # 直接 render 首頁（不做任何 redirect），Set-Cookie 與 HTML 在同一個 response
-    # 避免 Chrome SameSite 問題：跨站 redirect 後瀏覽器帶不到剛設的 cookie
+    # 有指定分頁時，redirect 到 /?tab=xxx（同域 redirect，SameSite 不影響）
+    # 無指定分頁時，直接 render 首頁（Set-Cookie 與 HTML 同一 response，最穩定）
+    if tab:
+        return redirect(f"/?tab={tab}")
     from flask import make_response
     resp = _render_app()
-    # 如果 _render_app 已回傳 Response 物件，直接補 headers；否則包裝成 Response
     if not hasattr(resp, 'headers'):
         resp = make_response(resp)
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
@@ -9011,8 +9013,14 @@ OBJECTS_APP_HTML = """
   })();
   // ══ 地圖分頁 JS 結束 ══
 
-  // 頁面載入後直接顯示「公司物件庫」分頁
-  switchTab('company');
+  // 頁面載入後：若 URL 有 ?tab= 就切到指定分頁，否則預設公司物件庫
+  (function() {
+    var _initTab = new URLSearchParams(window.location.search).get('tab') || 'company';
+    var _allowed = ['company','sellers','map','dbview','settings','org'];
+    switchTab(_allowed.indexOf(_initTab) >= 0 ? _initTab : 'company');
+    // 清除 URL 裡的 tab 參數，避免重整後仍帶著
+    if (window.location.search) history.replaceState(null, '', window.location.pathname);
+  })();
 
   // ══ 主題系統 ══
   (function() {
