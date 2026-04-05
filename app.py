@@ -2875,13 +2875,15 @@ def api_word_review_upload_doc():
         key    = _nn(name)
         if not key:
             continue
-        # 農地鄉鎮前綴補充：CSV「區域」欄含鄉鎮名（如「成功（鎮）」），若案名以該鄉鎮起頭，
-        # 建立去前綴版本（如「成功坪頂段海景農地」→「坪頂段海景農地」）供補充搜尋用
+        # 農地鄉鎮前綴補充：偵測案名起頭是否為台東鄉鎮名，建立去前綴版本
+        # 優先用 CSV「區域」欄（如「成功（鎮）」），次用 hardcoded 鄉鎮清單（upload doc 路徑無 區域 欄）
+        _TAITUNG_TOWNS = ["台東", "成功", "關山", "池上", "鹿野", "延平", "東河", "長濱",
+                          "太麻里", "大武", "卑南", "海端", "金峰", "達仁", "綠島", "蘭嶼"]
         region_nn = _nn(str(row.get('區域', '') or ''))  # 括號內容由 _nn 自動去除
-        key_no_town = (key[len(region_nn):]
-                       if region_nn and len(region_nn) >= 2
-                       and key.startswith(region_nn) and len(key) > len(region_nn)
-                       else '')
+        if not (region_nn and len(region_nn) >= 2 and key.startswith(region_nn) and len(key) > len(region_nn)):
+            # 區域欄為空時，從案名本身偵測鄉鎮前綴
+            region_nn = next((t for t in _TAITUNG_TOWNS if key.startswith(t) and len(key) > len(t)), '')
+        key_no_town = key[len(region_nn):] if region_nn else ''
 
         match, match_by, score, name_changed, best_has_hard = None, "", 0, False, False
 
