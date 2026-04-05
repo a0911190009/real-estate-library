@@ -5395,6 +5395,12 @@ OBJECTS_APP_HTML = """
       title="查看按鈕說明與操作流程">
       ❓ 說明
     </button>
+    <!-- 設定按鈕（管理員限定，開啟設定 Modal） -->
+    <button onclick="openSettingsModal()"
+      class="px-3 py-1.5 rounded-lg text-xs font-semibold transition" style="background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);"
+      title="系統設定">
+      ⚙️ 設定
+    </button>
     <span id="cp-word-status" style="font-size:0.75rem;color:var(--txs);"></span>
     <!-- 物件總表日期標籤 -->
     <span id="cp-doc-date" style="font-size:0.75rem;color:var(--txm);margin-left:0.25rem;" title="物件總表更新日期"></span>
@@ -5503,6 +5509,84 @@ OBJECTS_APP_HTML = """
               <p style="color:var(--txs);font-size:12px;margin:0;">本機版比對審查工具，功能已整合進此頁的「🔍 比對審查」按鈕。<br>若需要使用舊版（含記憶庫功能），路徑：<code style="background:var(--bg-p);padding:1px 5px;border-radius:4px;color:var(--ac);font-size:11px;">/Users/chenweiliang/Projects/review_v2.py</code></p>
             </div>
           </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- 設定 Modal（管理員限定，由 cp-sync-bar 的 ⚙️ 設定 按鈕開啟） -->
+  <div id="settings-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:700;align-items:center;justify-content:center;"
+    onclick="if(event.target===this)document.getElementById('settings-modal').style.display='none'">
+    <div style="background:var(--bg-s);border:1px solid var(--bd);border-radius:16px;padding:0;width:92%;max-width:560px;max-height:88vh;display:flex;flex-direction:column;box-shadow:var(--sh);position:relative;overflow:hidden;">
+      <!-- Header -->
+      <div style="padding:16px 24px 12px;border-bottom:1px solid var(--bd);display:flex;align-items:center;justify-content:space-between;">
+        <span style="font-size:15px;font-weight:700;color:var(--tx);">⚙️ 系統設定</span>
+        <button onclick="document.getElementById('settings-modal').style.display='none'"
+          style="background:none;border:none;color:var(--txm);font-size:20px;cursor:pointer;line-height:1;">✕</button>
+      </div>
+      <!-- 內容（可捲動） -->
+      <div style="overflow-y:auto;flex:1;padding:20px 24px;display:flex;flex-direction:column;gap:20px;">
+
+        <!-- 經紀人 Email 管理 -->
+        <div class="rounded-2xl p-5" style="background:var(--bg-t);border:1px solid var(--bd);">
+          <div class="flex items-center justify-between mb-4">
+            <div>
+              <h3 class="font-semibold" style="color:var(--tx);">📧 經紀人 Email 管理</h3>
+              <p class="text-xs mt-0.5" style="color:var(--txs);">設定各經紀人的通知 Email，委託到期日通知時使用</p>
+            </div>
+            <button onclick="agentEmailOpenAdd()"
+              class="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition">
+              ＋ 新增
+            </button>
+          </div>
+          <!-- 新增/編輯表單（預設隱藏） -->
+          <div id="agent-email-form" class="hidden rounded-xl p-4 mb-4" style="background:var(--bg-h);border:1px solid var(--bd);">
+            <div class="grid grid-cols-2 gap-3 mb-3">
+              <div>
+                <label class="text-xs block mb-1" style="color:var(--txs);">經紀人姓名</label>
+                <input id="agent-email-name" type="text" placeholder="如：陳威良"
+                  class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-t);border:1px solid var(--bd);color:var(--tx);">
+              </div>
+              <div>
+                <label class="text-xs block mb-1" style="color:var(--txs);">Email</label>
+                <input id="agent-email-addr" type="email" placeholder="如：abc@gmail.com"
+                  class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-t);border:1px solid var(--bd);color:var(--tx);">
+              </div>
+            </div>
+            <div class="flex gap-2">
+              <button onclick="agentEmailSave()"
+                class="px-4 py-1.5 rounded-lg bg-green-600 hover:bg-green-500 text-white text-xs font-semibold transition">儲存</button>
+              <button onclick="agentEmailCloseForm()"
+                class="px-4 py-1.5 rounded-lg text-xs transition" style="background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);">取消</button>
+            </div>
+          </div>
+          <!-- 列表 -->
+          <div id="agent-email-list" class="space-y-2">
+            <p class="text-sm text-center py-4" style="color:var(--txm);">載入中…</p>
+          </div>
+        </div>
+
+        <!-- 物件搜尋索引 -->
+        <div class="rounded-2xl p-5" style="background:var(--bg-t);border:1px solid var(--bd);">
+          <h3 class="font-semibold mb-1" style="color:var(--tx);">🔍 物件搜尋索引</h3>
+          <p class="text-xs mb-3" style="color:var(--txs);">買方管理輸入物件名稱時的自動完成資料來源。每次「立即同步 Sheets」後自動更新，也可手動重建。</p>
+          <button onclick="rebuildPropIndex()"
+            class="px-4 py-2 rounded-lg text-sm font-semibold transition" style="background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);">
+            重建物件索引
+          </button>
+          <p id="prop-index-result" class="text-xs mt-2" style="color:var(--txs);"></p>
+        </div>
+
+        <!-- 到期通知測試 -->
+        <div class="rounded-2xl p-5" style="background:var(--bg-t);border:1px solid var(--bd);">
+          <h3 class="font-semibold mb-1" style="color:var(--tx);">🔔 到期通知測試</h3>
+          <p class="text-xs mb-3" style="color:var(--txs);">手動觸發一次到期日通知，確認 Email 是否正常發送（每天早上 8 點自動執行）</p>
+          <button onclick="triggerNotify()"
+            class="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-sm font-semibold transition">
+            立即執行通知
+          </button>
+          <p id="notify-result" class="text-xs mt-2" style="color:var(--txs);"></p>
         </div>
 
       </div>
@@ -5823,73 +5907,6 @@ OBJECTS_APP_HTML = """
   </div>
   <!-- Leaflet 地圖容器 -->
   <div id="map-container" style="width:100%;height:calc(100% - 32px);"></div>
-</div>
-
-<div id="pane-settings" style="display:none" class="max-w-2xl mx-auto px-4 py-6">
-  <h2 class="font-bold text-lg mb-4" style="color:var(--tx);">⚙️ 系統設定</h2>
-
-  <!-- 經紀人 Email 管理 -->
-  <div class="rounded-2xl p-5 mb-6" style="background:var(--bg-t);border:1px solid var(--bd);">
-    <div class="flex items-center justify-between mb-4">
-      <div>
-        <h3 class="font-semibold" style="color:var(--tx);">📧 經紀人 Email 管理</h3>
-        <p class="text-xs mt-0.5" style="color:var(--txs);">設定各經紀人的通知 Email，委託到期日通知時使用</p>
-      </div>
-      <button onclick="agentEmailOpenAdd()"
-        class="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition">
-        ＋ 新增
-      </button>
-    </div>
-
-    <!-- 新增/編輯表單（預設隱藏） -->
-    <div id="agent-email-form" class="hidden rounded-xl p-4 mb-4" style="background:var(--bg-h);border:1px solid var(--bd);">
-      <div class="grid grid-cols-2 gap-3 mb-3">
-        <div>
-          <label class="text-xs block mb-1" style="color:var(--txs);">經紀人姓名</label>
-          <input id="agent-email-name" type="text" placeholder="如：陳威良"
-            class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-t);border:1px solid var(--bd);color:var(--tx);">
-        </div>
-        <div>
-          <label class="text-xs block mb-1" style="color:var(--txs);">Email</label>
-          <input id="agent-email-addr" type="email" placeholder="如：abc@gmail.com"
-            class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-t);border:1px solid var(--bd);color:var(--tx);">
-        </div>
-      </div>
-      <div class="flex gap-2">
-        <button onclick="agentEmailSave()"
-          class="px-4 py-1.5 rounded-lg bg-green-600 hover:bg-green-500 text-white text-xs font-semibold transition">儲存</button>
-        <button onclick="agentEmailCloseForm()"
-          class="px-4 py-1.5 rounded-lg text-xs transition" style="background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);">取消</button>
-      </div>
-    </div>
-
-    <!-- 列表 -->
-    <div id="agent-email-list" class="space-y-2">
-      <p class="text-sm text-center py-4" style="color:var(--txm);">載入中…</p>
-    </div>
-  </div>
-
-  <!-- 物件搜尋索引 -->
-  <div class="rounded-2xl p-5 mb-6" style="background:var(--bg-t);border:1px solid var(--bd);">
-    <h3 class="font-semibold mb-1" style="color:var(--tx);">🔍 物件搜尋索引</h3>
-    <p class="text-xs mb-3" style="color:var(--txs);">買方管理輸入物件名稱時的自動完成資料來源。每次「立即同步 Sheets」後自動更新，也可手動重建。</p>
-    <button onclick="rebuildPropIndex()"
-      class="px-4 py-2 rounded-lg text-white text-sm font-semibold transition" style="background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);">
-      重建物件索引
-    </button>
-    <p id="prop-index-result" class="text-xs mt-2" style="color:var(--txs);"></p>
-  </div>
-
-  <!-- 手動觸發通知測試 -->
-  <div class="rounded-2xl p-5" style="background:var(--bg-t);border:1px solid var(--bd);">
-    <h3 class="font-semibold mb-1" style="color:var(--tx);">🔔 到期通知測試</h3>
-    <p class="text-xs mb-3" style="color:var(--txs);">手動觸發一次到期日通知，確認 Email 是否正常發送（每天早上 8 點自動執行）</p>
-    <button onclick="triggerNotify()"
-      class="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-sm font-semibold transition">
-      立即執行通知
-    </button>
-    <p id="notify-result" class="text-xs mt-2" style="color:var(--txs);"></p>
-  </div>
 </div>
 
 <!-- ══ 資料庫檢視分頁（管理員限定）══ -->
@@ -6384,10 +6401,15 @@ OBJECTS_APP_HTML = """
     }, 150);
   })();
 
+  // 開啟設定 Modal（管理員限定）
+  function openSettingsModal() {
+    document.getElementById('settings-modal').style.display = 'flex';
+    agentEmailLoad();  // 開啟時自動載入 Email 列表
+  }
+
   // ══ 分頁切換 ══
   function switchTab(tab) {
     var paneCompanyEl  = document.getElementById('pane-company');
-    var paneSettingsEl = document.getElementById('pane-settings');
     var paneOrgEl      = document.getElementById('pane-org');
     var paneDbviewEl   = document.getElementById('pane-dbview');
     var paneSellersEl  = document.getElementById('pane-sellers');
@@ -6395,7 +6417,6 @@ OBJECTS_APP_HTML = """
 
     // 全部隱藏（加 null check 防止任一元素不存在時崩潰）
     if (paneCompanyEl)  paneCompanyEl.style.display  = 'none';
-    if (paneSettingsEl) paneSettingsEl.style.display = 'none';
     if (paneOrgEl)      paneOrgEl.style.display      = 'none';
     if (paneDbviewEl)   paneDbviewEl.style.display   = 'none';
     if (paneSellersEl)  paneSellersEl.style.display  = 'none';
@@ -6408,8 +6429,10 @@ OBJECTS_APP_HTML = """
     } else if (tab === 'war') {
       if (paneWarEl) paneWarEl.style.display = 'block';
     } else if (tab === 'settings') {
-      if (paneSettingsEl) paneSettingsEl.style.display = 'block';
-      agentEmailLoad();  // 進入設定頁自動載入列表
+      // 設定已改為 Modal，直接開啟並停留在 company pane
+      if (paneCompanyEl) paneCompanyEl.style.display = 'block';
+      openSettingsModal();
+      return;  // 不繼續更新 tab 按鈕樣式
     } else if (tab === 'org') {
       if (paneOrgEl) paneOrgEl.style.display = 'block';
       orgLoadMembers();  // 進入組織設定頁自動載入成員列表
