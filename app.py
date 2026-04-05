@@ -5228,6 +5228,16 @@ OBJECTS_APP_HTML = """
       class="tab-btn flex-1 py-2 text-sm font-medium border-b-2 transition" style="color:var(--ac);border-color:var(--ac);">
       🏢 公司物件庫
     </button>
+    <!-- 地圖 tab：所有登入者皆可使用 -->
+    <button id="tab-map" onclick="switchTab('map')"
+      class="tab-btn flex-1 py-2 text-sm font-medium border-b-2 border-transparent transition" style="color:var(--txs);">
+      🗺️ 地圖
+    </button>
+    <!-- 準賣方管理 tab：所有登入者皆可使用 -->
+    <button id="tab-sellers" onclick="switchTab('sellers')"
+      class="tab-btn flex-1 py-2 text-sm font-medium border-b-2 border-transparent transition" style="color:var(--txs);">
+      🏠 準賣方
+    </button>
     <!-- 資料庫檢視 tab：僅管理員看得到（由 JS 控制顯示） -->
     <button id="tab-dbview" onclick="switchTab('dbview')"
       class="tab-btn hidden flex-1 py-2 text-sm font-medium border-b-2 border-transparent transition" style="color:var(--txs);">
@@ -5242,16 +5252,6 @@ OBJECTS_APP_HTML = """
     <button id="tab-org" onclick="switchTab('org')"
       class="tab-btn hidden flex-1 py-2 text-sm font-medium border-b-2 border-transparent transition" style="color:var(--txs);">
       🏢 組織
-    </button>
-    <!-- 準賣方管理 tab：所有登入者皆可使用 -->
-    <button id="tab-sellers" onclick="switchTab('sellers')"
-      class="tab-btn flex-1 py-2 text-sm font-medium border-b-2 border-transparent transition" style="color:var(--txs);">
-      🏠 準賣方
-    </button>
-    <!-- 地圖 tab：所有登入者皆可使用 -->
-    <button id="tab-map" onclick="switchTab('map')"
-      class="tab-btn flex-1 py-2 text-sm font-medium border-b-2 border-transparent transition" style="color:var(--txs);">
-      🗺️ 地圖
     </button>
   </div>
 </header>
