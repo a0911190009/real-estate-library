@@ -2974,15 +2974,18 @@ def api_word_review_upload_doc():
             csv_addr_nm = _ca(str(row.get('物件地址', '') or '')).strip()
             prefix = key[:min(len(key), 6)] if len(key) >= 4 else ''
             short_prefix = key[:3] if len(key) >= 3 else ''  # 3字備援前綴（如「四川路」）
+            geo_prefix   = key[:2] if len(key) >= 2 else ''  # 2字地名前綴（如「都歷」）
             # 去鄉鎮前綴的補充搜尋前綴（如「坪頂段海景農地」的前6字）
             extra_prefix = key_no_town[:min(len(key_no_town), 6)] if key_no_town and len(key_no_town) >= 4 else ''
             extra_short  = key_no_town[:3] if key_no_town and len(key_no_town) >= 3 else ''
-            if prefix or extra_prefix:
+            if prefix or extra_prefix or geo_prefix:
                 for db_key, db_cands in db_by_name.items():
                     if (db_key.startswith(prefix) or prefix in db_key
                             or (short_prefix and db_key.startswith(short_prefix))
                             or (extra_prefix and (db_key.startswith(extra_prefix) or extra_prefix in db_key))
-                            or (extra_short and db_key.startswith(extra_short))):
+                            or (extra_short and db_key.startswith(extra_short))
+                            # 2字地名相同：處理小地名插入（如「都歷看海農地」vs「都歷豐田看海農地」）
+                            or (geo_prefix and len(db_key) >= 4 and db_key[:2] == geo_prefix)):
                         for cand in db_cands:
                             area_sc, _ = _hard_area_score(row, cand)  # 面積也納入近似候選評分
                             s = area_sc
