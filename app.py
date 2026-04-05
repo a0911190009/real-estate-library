@@ -6038,10 +6038,8 @@ OBJECTS_APP_HTML = """
   const isAdmin   = __IS_ADMIN_JSON__;
   const BUYER_URL = __BUYER_URL__;
 
-  // 管理員才顯示「設定」和「資料庫檢視」tab
+  // 管理員才顯示「資料庫檢視」tab（設定已改為 Modal，不顯示於分頁列）
   if (isAdmin) {
-    var settingsTab = document.getElementById('tab-settings');
-    if (settingsTab) settingsTab.classList.remove('hidden');
     var dbviewTab = document.getElementById('tab-dbview');
     if (dbviewTab) dbviewTab.classList.remove('hidden');
   }
