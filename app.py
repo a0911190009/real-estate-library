@@ -2875,6 +2875,13 @@ def api_word_review_upload_doc():
         key    = _nn(name)
         if not key:
             continue
+        # 農地鄉鎮前綴補充：CSV「區域」欄含鄉鎮名（如「成功（鎮）」），若案名以該鄉鎮起頭，
+        # 建立去前綴版本（如「成功坪頂段海景農地」→「坪頂段海景農地」）供補充搜尋用
+        region_nn = _nn(str(row.get('區域', '') or ''))  # 括號內容由 _nn 自動去除
+        key_no_town = (key[len(region_nn):]
+                       if region_nn and len(region_nn) >= 2
+                       and key.startswith(region_nn) and len(key) > len(region_nn)
+                       else '')
 
         match, match_by, score, name_changed, best_has_hard = None, "", 0, False, False
 
@@ -2920,6 +2927,10 @@ def api_word_review_upload_doc():
         # 2. 再嘗試案名 + 特徵評分比對（含硬資料面積比對）
         if not match:
             candidates = db_by_name.get(key, [])
+            if key_no_town:
+                # 補充去鄉鎮前綴的候選（如 Word「成功坪頂段海景農地」vs Firestore「坪頂段海景農地」）
+                no_town_cands = [c for c in db_by_name.get(key_no_town, []) if c not in candidates]
+                candidates = candidates + no_town_cands
             best, best_score, best_has_hard = None, -999, False
             for cand in candidates:
                 cc_raw = str(cand.get('委託編號', '') or '').strip()
@@ -2963,10 +2974,15 @@ def api_word_review_upload_doc():
             csv_addr_nm = _ca(str(row.get('物件地址', '') or '')).strip()
             prefix = key[:min(len(key), 6)] if len(key) >= 4 else ''
             short_prefix = key[:3] if len(key) >= 3 else ''  # 3字備援前綴（如「四川路」）
-            if prefix:
+            # 去鄉鎮前綴的補充搜尋前綴（如「坪頂段海景農地」的前6字）
+            extra_prefix = key_no_town[:min(len(key_no_town), 6)] if key_no_town and len(key_no_town) >= 4 else ''
+            extra_short  = key_no_town[:3] if key_no_town and len(key_no_town) >= 3 else ''
+            if prefix or extra_prefix:
                 for db_key, db_cands in db_by_name.items():
                     if (db_key.startswith(prefix) or prefix in db_key
-                            or (short_prefix and db_key.startswith(short_prefix))):
+                            or (short_prefix and db_key.startswith(short_prefix))
+                            or (extra_prefix and (db_key.startswith(extra_prefix) or extra_prefix in db_key))
+                            or (extra_short and db_key.startswith(extra_short))):
                         for cand in db_cands:
                             area_sc, _ = _hard_area_score(row, cand)  # 面積也納入近似候選評分
                             s = area_sc
