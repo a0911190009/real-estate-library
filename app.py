@@ -5023,6 +5023,21 @@ OBJECTS_APP_HTML = """
     body [class*="hover\\:bg-slate-7"]:hover,body [class*="hover\\:bg-slate-6"]:hover{background:var(--bg-h)!important;}
     /* accent（藍色）→ 主題 accent 色 */
     body .tab-btn[class*="text-blue"]{color:var(--ac)!important;}
+    /* ── 準賣方卡片 grid（比照買方列表風格）── */
+    .btn-primary{background:var(--ac);color:var(--act);border-radius:.5rem;padding:.4rem 1rem;font-size:.85rem;font-weight:600;transition:background .15s;border:none;cursor:pointer;}
+    .btn-primary:hover{background:var(--ach);}
+    .card{background:var(--bg-s);border:1px solid var(--bd);border-radius:1rem;padding:1rem;transition:background 0.3s,border-color 0.3s;}
+    .badge{display:inline-block;padding:2px 8px;border-radius:9999px;font-size:.7rem;font-weight:600;}
+    .badge-blue{background:#1d4ed8;color:#bfdbfe;}
+    .badge-green{background:#166534;color:#bbf7d0;}
+    .badge-gray{background:#374151;color:#9ca3af;}
+    .badge-amber{background:#92400e;color:#fde68a;}
+    .badge-purple{background:#6b21a8;color:#e9d5ff;}
+    .sl-col-btn{width:28px;height:28px;border-radius:6px;border:1px solid var(--bd);background:transparent;color:var(--txs);font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;}
+    .sl-col-btn:hover{border-color:var(--ac);color:var(--ac);}
+    .sl-col-btn.active{background:var(--ac);color:var(--act);border-color:var(--ac);}
+    .sl-avatar{width:44px;height:44px;border-radius:50%;object-fit:cover;flex-shrink:0;border:2px solid var(--bd);}
+    .sl-avatar-ph{width:44px;height:44px;border-radius:50%;background:var(--ac);color:#fff;font-size:17px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
     /* 準賣方 Modal */
     .modal-bg{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;padding:1rem;}
     .modal-box{background:var(--bg-s);border:1px solid var(--bd);border-radius:1.25rem;width:100%;max-width:520px;max-height:92vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.3);}
@@ -5736,30 +5751,38 @@ OBJECTS_APP_HTML = """
 
 <!-- ══ 設定分頁（僅管理員）══ -->
 <!-- ══ 準賣方管理分頁 ══ -->
-<div id="pane-sellers" style="display:none" class="max-w-3xl mx-auto px-4 py-6">
+<div id="pane-sellers" class="mx-auto px-4 py-6" style="max-width:896px;transition:max-width 0.3s;">
 
-  <!-- 頂部工具列：搜尋 + 篩選 + 新增 -->
-  <div class="rounded-2xl p-4 mb-4" style="background:var(--bg-t);border:1px solid var(--bd);">
-    <div class="flex flex-wrap gap-2 items-center">
-      <input id="sl-keyword" type="text" placeholder="🔍 姓名 / 地址 / 地號"
-        class="flex-1 min-w-0 rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);"
-        oninput="slFilterRender()">
-      <select id="sl-status-filter" onchange="slFilterRender()"
-        class="rounded-lg px-3 py-2 text-sm focus:outline-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
-        <option value="">全部狀態</option>
-        <option value="培養中">培養中</option>
-        <option value="已報價">已報價</option>
-        <option value="已簽委託">已簽委託</option>
-        <option value="放棄">放棄</option>
-      </select>
-      <button onclick="slOpenCreate()" class="px-4 py-2 rounded-lg text-sm font-semibold text-white transition"
-        style="background:var(--ac);">＋ 新增準賣方</button>
+  <div class="flex items-center justify-between mb-4">
+    <h2 class="font-bold text-lg" style="color:var(--tx);">🏠 準賣方列表</h2>
+    <button onclick="slOpenCreate()" class="btn-primary">＋ 新增準賣方</button>
+  </div>
+
+  <!-- 搜尋 + 篩選 -->
+  <div class="flex gap-2 mb-2 flex-wrap">
+    <input id="sl-keyword" type="text" placeholder="搜尋姓名、地址、地號…" oninput="slFilterRender()" class="flex-1 min-w-40">
+    <select id="sl-status-filter" onchange="slFilterRender()" style="width:auto">
+      <option value="">全部狀態</option>
+      <option value="培養中">培養中</option>
+      <option value="已報價">已報價</option>
+      <option value="已簽委託">已簽委託</option>
+      <option value="放棄">放棄</option>
+    </select>
+  </div>
+
+  <!-- 欄數切換 -->
+  <div class="flex items-center gap-2 mb-2 flex-wrap">
+    <span class="text-xs" style="color:var(--txs);">欄數：</span>
+    <div class="flex gap-1">
+      <button class="sl-col-btn" data-col="1" onclick="slSetColumns(1)">1</button>
+      <button class="sl-col-btn active" data-col="2" onclick="slSetColumns(2)">2</button>
+      <button class="sl-col-btn" data-col="3" onclick="slSetColumns(3)">3</button>
     </div>
   </div>
 
-  <!-- 準賣方列表 -->
-  <div id="sl-list">
-    <p class="text-center py-8 text-sm" style="color:var(--txs);">載入中…</p>
+  <!-- 準賣方列表 grid -->
+  <div id="sl-list" style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;">
+    <p class="text-center py-12" style="color:var(--txs);grid-column:1/-1;">載入中…</p>
   </div>
 </div>
 
@@ -8658,54 +8681,82 @@ OBJECTS_APP_HTML = """
     slRenderList(filtered);
   }
 
-  // 狀態對應顏色
-  function _slStatusColor(status) {
-    var map = { '培養中': 'var(--ac)', '已報價': 'var(--warn,#f59e0b)', '已簽委託': 'var(--ok,#22c55e)', '放棄': 'var(--txm)' };
-    return map[status] || 'var(--txs)';
+  // 狀態 badge HTML（比照買方風格）
+  function _slStatusBadge(status) {
+    var map = { '培養中': 'badge-blue', '已報價': 'badge-amber', '已簽委託': 'badge-green', '放棄': 'badge-gray' };
+    return '<span class="badge ' + (map[status] || 'badge-gray') + '">' + _esc(status || '') + '</span>';
   }
 
-  // 渲染卡片列表
+  // 渲染卡片列表（grid + .card 風格，比照買方列表）
   function slRenderList(items) {
     var el = document.getElementById('sl-list');
     if (!el) return;
     if (!items.length) {
-      el.innerHTML = '<p class="text-center py-12 text-sm" style="color:var(--txs);">目前沒有符合的準賣方</p>';
+      el.innerHTML = '<p class="text-center py-12 text-sm" style="color:var(--txs);grid-column:1/-1;">目前沒有符合的準賣方</p>';
       return;
     }
-    var html = '';
-    items.forEach(function(s) {
-      var lastContact = s.last_contact_at ? s.last_contact_at.substring(0, 10) : '未追蹤';
+    el.innerHTML = items.map(function(s) {
+      var lastContact = s.last_contact_at ? s.last_contact_at.substring(0, 10) : '';
       var priceInfo = '';
-      if (s.owner_price) priceInfo += '屋主：' + s.owner_price + '萬';
+      if (s.owner_price)   priceInfo += '屋主：' + s.owner_price + '萬';
       if (s.suggest_price) priceInfo += (priceInfo ? '　' : '') + '建議：' + s.suggest_price + '萬';
       var location = [s.address, s.land_number].filter(Boolean).join(' / ');
       // 頭像：有圖用圖，否則顯示名字首字
       var avatarHtml = s.avatar_url
-        ? '<img src="' + _esc(s.avatar_url) + '" style="width:48px;height:48px;border-radius:50%;object-fit:cover;flex-shrink:0;border:2px solid var(--bd);" alt="">'
-        : '<div style="width:48px;height:48px;border-radius:50%;background:var(--ac);display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;color:#fff;flex-shrink:0;">' + _esc((s.name||'?')[0]) + '</div>';
-      html += '<div class="rounded-2xl p-4 mb-3 cursor-pointer transition" style="background:var(--bg-t);border:1px solid var(--bd);" data-sl-id="' + s.id + '" onclick="slOpenEdit(this.dataset.slId)">' +
-        '<div class="flex items-start gap-3">' +
-          avatarHtml +
-          '<div class="flex-1 min-w-0">' +
-            '<div class="flex items-center gap-2 mb-1">' +
-              '<span class="font-semibold text-base" style="color:var(--tx);">' + _esc(s.name) + '</span>' +
-              (s.category ? '<span class="text-xs px-2 py-0.5 rounded-full" style="background:var(--bg-h);color:var(--txs);">' + _esc(s.category) + '</span>' : '') +
-              (s.source ? '<span class="text-xs px-2 py-0.5 rounded-full" style="background:var(--bg-h);color:var(--txm);">' + _esc(s.source) + '</span>' : '') +
-            '</div>' +
-            (location ? '<p class="text-xs mb-1 truncate" style="color:var(--txm);">📍 ' + _esc(location) + '</p>' : '') +
-            (s.phone ? '<p class="text-xs mb-1" style="color:var(--txm);">📞 ' + _esc(s.phone) + '</p>' : '') +
-            (priceInfo ? '<p class="text-xs mb-1" style="color:var(--txm);">💰 ' + _esc(priceInfo) + '</p>' : '') +
-            (s.note ? '<p class="text-xs truncate" style="color:var(--txs);">' + _esc(s.note) + '</p>' : '') +
-          '</div>' +
-          '<div class="flex flex-col items-end gap-1 shrink-0">' +
-            '<span class="text-xs font-semibold px-2 py-0.5 rounded-full" style="background:var(--bg-h);color:' + _slStatusColor(s.status) + ';">' + _esc(s.status || '') + '</span>' +
-            '<span class="text-xs" style="color:var(--txm);">📅 ' + lastContact + '</span>' +
-          '</div>' +
-        '</div>' +
-      '</div>';
-    });
-    el.innerHTML = html;
+        ? '<img class="sl-avatar mr-3" src="' + _esc(s.avatar_url) + '" alt="">'
+        : '<div class="sl-avatar-ph mr-3">' + _esc((s.name || '?')[0]) + '</div>';
+      // 底部資訊列
+      var parts = [];
+      if (lastContact) parts.push('📅 追蹤 ' + lastContact);
+      var bottomRow = parts.length ? '<p class="text-xs mt-1" style="color:var(--txm);">' + parts.join('　') + '</p>' : '';
+      return '<div class="card hover:border-slate-500 transition cursor-pointer" data-sl-id="' + s.id + '" onclick="slOpenEdit(this.dataset.slId)">'
+        + '<div class="flex items-start justify-between">'
+          + avatarHtml
+          + '<div class="flex-1 min-w-0">'
+            + '<div class="flex items-center gap-2 flex-wrap mb-1">'
+              + '<span class="font-semibold text-base" style="color:var(--tx);">' + _esc(s.name) + '</span>'
+              + _slStatusBadge(s.status)
+              + (s.phone ? '<span class="text-xs" style="color:var(--txs);">' + _esc(s.phone) + '</span>' : '')
+            + '</div>'
+            + '<div class="text-sm mb-1" style="color:var(--txs);">'
+              + (s.category ? '🏷 ' + _esc(s.category) : '')
+              + (s.source   ? (s.category ? '　' : '') + '📌 ' + _esc(s.source) : '')
+            + '</div>'
+            + (location  ? '<p class="text-xs mb-1 truncate" style="color:var(--txm);">📍 ' + _esc(location) + '</p>' : '')
+            + (priceInfo ? '<p class="text-xs mb-1" style="color:var(--txm);">💰 ' + _esc(priceInfo) + '</p>' : '')
+            + (s.note    ? '<p class="text-xs line-clamp-2" style="color:var(--txs);">' + _esc(s.note) + '</p>' : '')
+            + bottomRow
+          + '</div>'
+          + '<div class="flex flex-col gap-1 ml-2 flex-shrink-0">'
+            + '<button title="編輯" style="width:30px;height:30px;border-radius:8px;border:1px solid var(--bd);background:transparent;display:flex;align-items:center;justify-content:center;cursor:pointer;" onclick="event.stopPropagation();slOpenEdit(\'' + s.id + '\')">'
+            + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--txs);"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>'
+            + '</button>'
+            + '<button title="刪除" style="width:30px;height:30px;border-radius:8px;border:1px solid var(--bd);background:transparent;display:flex;align-items:center;justify-content:center;cursor:pointer;" onclick="event.stopPropagation();slDelete(\'' + s.id + '\',\'' + _esc(s.name) + '\')">'
+            + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--dg);"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>'
+            + '</button>'
+          + '</div>'
+        + '</div>'
+      + '</div>';
+    }).join('');
   }
+
+  // 欄數切換（記住偏好）
+  function slSetColumns(n) {
+    var list = document.getElementById('sl-list');
+    list.style.gridTemplateColumns = 'repeat(' + n + ', 1fr)';
+    var widthMap = {1: '640px', 2: '896px', 3: '1200px'};
+    document.getElementById('pane-sellers').style.maxWidth = widthMap[n] || '896px';
+    document.querySelectorAll('.sl-col-btn').forEach(function(btn) {
+      btn.classList.toggle('active', parseInt(btn.dataset.col) === n);
+    });
+    localStorage.setItem('sl_col_count', n);
+  }
+  // 頁面載入時讀取欄數偏好
+  (function() {
+    var saved = parseInt(localStorage.getItem('sl_col_count'));
+    var n = (saved >= 1 && saved <= 3) ? saved : (window.innerWidth < 640 ? 1 : 2);
+    setTimeout(function() { slSetColumns(n); }, 0);
+  })();
 
   // HTML 跳脫（防止 XSS）
   function _esc(s) {
@@ -8811,15 +8862,18 @@ OBJECTS_APP_HTML = """
   }
 
   // 刪除準賣方
-  function slDelete() {
-    if (!_slCurrent) return;
-    if (!confirm('確定要刪除此準賣方及所有互動記事？')) return;
-    fetch('/api/sellers/' + _slCurrent, { method: 'DELETE' })
+  function slDelete(id, name) {
+    // 可從卡片按鈕直接呼叫（傳入 id），或從 Modal 內的刪除按鈕呼叫（無參數，用 _slCurrent）
+    var targetId = id || _slCurrent;
+    if (!targetId) return;
+    var msg = name ? ('確定要刪除「' + name + '」及所有互動記事？') : '確定要刪除此準賣方及所有互動記事？';
+    if (!confirm(msg)) return;
+    fetch('/api/sellers/' + targetId, { method: 'DELETE' })
       .then(function(r){ return r.json(); })
       .then(function(d) {
         if (d.error) { toast('❌ ' + d.error, 'error'); return; }
         toast('✅ 已刪除', 'success');
-        slModalClose();
+        if (_slCurrent) slModalClose();  // 若從 Modal 刪才關 Modal
         slLoad();
       })
       .catch(function(){ toast('❌ 刪除失敗', 'error'); });
