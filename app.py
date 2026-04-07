@@ -4484,6 +4484,7 @@ def api_seller_update(seller_id):
             "source":        str(data.get("source", item.get("source", ""))).strip(),
             "status":        data.get("status", item.get("status", "培養中")),
             "note":          str(data.get("note", item.get("note", ""))).strip(),
+            "card_color":    str(data.get("card_color", item.get("card_color", ""))).strip(),
             "updated_at":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         ref.update(update)
@@ -5081,6 +5082,9 @@ OBJECTS_APP_HTML = """
     .card.sl-dragging{opacity:0.4;transform:scale(0.96);}
     .sl-avatar{width:44px;height:44px;border-radius:50%;object-fit:cover;flex-shrink:0;border:2px solid var(--bd);}
     .sl-avatar-ph{width:44px;height:44px;border-radius:50%;background:var(--ac);color:#fff;font-size:17px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+    .color-dot{width:28px;height:28px;border-radius:50%;border:2px solid transparent;cursor:pointer;transition:transform .15s,border-color .15s;flex-shrink:0;}
+    .color-dot:hover{transform:scale(1.15);border-color:var(--tx);}
+    .color-dot.selected{border-color:var(--ac);box-shadow:0 0 0 2px var(--ac);}
     /* 準賣方 Modal */
     .modal-bg{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;padding:1rem;}
     .modal-box{background:var(--bg-s);border:1px solid var(--bd);border-radius:1.25rem;width:100%;max-width:520px;max-height:92vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.3);}
@@ -5934,6 +5938,26 @@ OBJECTS_APP_HTML = """
         <label class="text-xs block mb-1 font-medium" style="color:var(--txs);">備註</label>
         <textarea id="sl-f-note" rows="3" placeholder="其他補充說明…"
           class="w-full rounded-lg px-3 py-2 text-sm focus:outline-none resize-none" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);"></textarea>
+      </div>
+
+      <!-- 卡片顏色 -->
+      <div class="mb-4">
+        <label class="text-xs block mb-1 font-medium" style="color:var(--txs);">卡片顏色</label>
+        <div id="sl-color-picker" class="flex gap-2 flex-wrap mt-1">
+          <button type="button" class="color-dot selected" data-color="" title="預設" onclick="slPickColor('')" style="background:var(--bg-s);border:2px solid var(--bd);"></button>
+          <button type="button" class="color-dot" data-color="#ffd6d6" title="淡玫瑰" onclick="slPickColor('#ffd6d6')" style="background:#ffd6d6;"></button>
+          <button type="button" class="color-dot" data-color="#ffdfc8" title="淡桃" onclick="slPickColor('#ffdfc8')" style="background:#ffdfc8;"></button>
+          <button type="button" class="color-dot" data-color="#fff3c4" title="淡黃" onclick="slPickColor('#fff3c4')" style="background:#fff3c4;"></button>
+          <button type="button" class="color-dot" data-color="#d6f5d6" title="淡綠" onclick="slPickColor('#d6f5d6')" style="background:#d6f5d6;"></button>
+          <button type="button" class="color-dot" data-color="#c8f0ec" title="淡薄荷" onclick="slPickColor('#c8f0ec')" style="background:#c8f0ec;"></button>
+          <button type="button" class="color-dot" data-color="#c8e8f8" title="淡水藍" onclick="slPickColor('#c8e8f8')" style="background:#c8e8f8;"></button>
+          <button type="button" class="color-dot" data-color="#d4d8f8" title="淡藍紫" onclick="slPickColor('#d4d8f8')" style="background:#d4d8f8;"></button>
+          <button type="button" class="color-dot" data-color="#ead5f8" title="淡紫" onclick="slPickColor('#ead5f8')" style="background:#ead5f8;"></button>
+          <button type="button" class="color-dot" data-color="#f8d5ec" title="淡粉紫" onclick="slPickColor('#f8d5ec')" style="background:#f8d5ec;"></button>
+          <button type="button" class="color-dot" data-color="#ede0d4" title="奶茶" onclick="slPickColor('#ede0d4')" style="background:#ede0d4;"></button>
+          <button type="button" class="color-dot" data-color="#e8e8e8" title="淡灰" onclick="slPickColor('#e8e8e8')" style="background:#e8e8e8;"></button>
+        </div>
+        <input type="hidden" id="sl-f-color" value="">
       </div>
 
       <!-- 互動記事區（編輯模式才顯示） -->
@@ -8756,6 +8780,7 @@ OBJECTS_APP_HTML = """
       if (s.owner_price)   priceInfo += '屋主：' + s.owner_price + '萬';
       if (s.suggest_price) priceInfo += (priceInfo ? '　' : '') + '建議：' + s.suggest_price + '萬';
       var location = [s.address, s.land_number].filter(Boolean).join(' / ');
+      var cardStyle = s.card_color ? 'background:' + s.card_color + ';' : '';
       // 頭像：有圖用圖，否則顯示名字首字
       var avatarHtml = s.avatar_url
         ? '<img class="sl-avatar mr-3" src="' + _esc(s.avatar_url) + '" alt="">'
@@ -8764,7 +8789,7 @@ OBJECTS_APP_HTML = """
       var parts = [];
       if (lastContact) parts.push('📅 追蹤 ' + lastContact);
       var bottomRow = parts.length ? '<p class="text-xs mt-1" style="color:var(--txm);">' + parts.join('　') + '</p>' : '';
-      return '<div class="card hover:border-slate-500 transition cursor-pointer" data-sl-id="' + s.id + '" onclick="slOpenEdit(this.dataset.slId)">'
+      return '<div class="card hover:border-slate-500 transition cursor-pointer" data-sl-id="' + s.id + '" style="' + cardStyle + '" onclick="slOpenEdit(this.dataset.slId)">'
         + '<div class="flex items-start justify-between">'
           + avatarHtml
           + '<div class="flex-1 min-w-0">'
@@ -8924,6 +8949,7 @@ OBJECTS_APP_HTML = """
     document.getElementById('sl-f-suggest-price').value = '';
     document.getElementById('sl-f-status').value        = '培養中';
     document.getElementById('sl-f-note').value          = '';
+    slPickColor('');
     document.getElementById('sl-avatar-section').style.display  = 'none';
     document.getElementById('sl-files-section').style.display   = 'none';
     document.getElementById('sl-contacts-section').style.display = 'none';
@@ -8948,6 +8974,7 @@ OBJECTS_APP_HTML = """
     document.getElementById('sl-f-suggest-price').value = s.suggest_price != null ? s.suggest_price : '';
     document.getElementById('sl-f-status').value        = s.status || '培養中';
     document.getElementById('sl-f-note').value          = s.note || '';
+    slPickColor(s.card_color || '');
     // 頭像區
     document.getElementById('sl-avatar-section').style.display = 'block';
     var imgEl = document.getElementById('sl-avatar-img');
@@ -8974,6 +9001,14 @@ OBJECTS_APP_HTML = """
     _slCurrent = null;
   }
 
+  // 卡片顏色選擇
+  function slPickColor(color) {
+    document.getElementById('sl-f-color').value = color;
+    document.querySelectorAll('#sl-color-picker .color-dot').forEach(function(btn) {
+      btn.classList.toggle('selected', btn.dataset.color === color);
+    });
+  }
+
   // 儲存（新增或更新）
   function slSave() {
     var name = document.getElementById('sl-f-name').value.trim();
@@ -8991,6 +9026,7 @@ OBJECTS_APP_HTML = """
       suggest_price: suggestP !== '' ? parseFloat(suggestP) : null,
       status:        document.getElementById('sl-f-status').value,
       note:          document.getElementById('sl-f-note').value.trim(),
+      card_color:    document.getElementById('sl-f-color').value || '',
     };
     var url    = _slCurrent ? '/api/sellers/' + _slCurrent : '/api/sellers';
     var method = _slCurrent ? 'PUT' : 'POST';
