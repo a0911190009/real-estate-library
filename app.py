@@ -8728,10 +8728,10 @@ OBJECTS_APP_HTML = """
             + bottomRow
           + '</div>'
           + '<div class="flex flex-col gap-1 ml-2 flex-shrink-0">'
-            + '<button title="編輯" style="width:30px;height:30px;border-radius:8px;border:1px solid var(--bd);background:transparent;display:flex;align-items:center;justify-content:center;cursor:pointer;" onclick="event.stopPropagation();slOpenEdit(\'' + s.id + '\')">'
+            + '<button title="編輯" data-sl-id="' + s.id + '" style="width:30px;height:30px;border-radius:8px;border:1px solid var(--bd);background:transparent;display:flex;align-items:center;justify-content:center;cursor:pointer;" onclick="event.stopPropagation();slOpenEdit(this.dataset.slId)">'
             + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--txs);"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>'
             + '</button>'
-            + '<button title="刪除" style="width:30px;height:30px;border-radius:8px;border:1px solid var(--bd);background:transparent;display:flex;align-items:center;justify-content:center;cursor:pointer;" onclick="event.stopPropagation();slDelete(\'' + s.id + '\',\'' + _esc(s.name) + '\')">'
+            + '<button title="刪除" data-sl-id="' + s.id + '" style="width:30px;height:30px;border-radius:8px;border:1px solid var(--bd);background:transparent;display:flex;align-items:center;justify-content:center;cursor:pointer;" onclick="event.stopPropagation();slDelete(this.dataset.slId)">'
             + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--dg);"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>'
             + '</button>'
           + '</div>'
@@ -8862,10 +8862,12 @@ OBJECTS_APP_HTML = """
   }
 
   // 刪除準賣方
-  function slDelete(id, name) {
+  function slDelete(id) {
     // 可從卡片按鈕直接呼叫（傳入 id），或從 Modal 內的刪除按鈕呼叫（無參數，用 _slCurrent）
     var targetId = id || _slCurrent;
     if (!targetId) return;
+    var item = _slData.find(function(x){ return x.id === targetId; });
+    var name = item ? item.name : '';
     var msg = name ? ('確定要刪除「' + name + '」及所有互動記事？') : '確定要刪除此準賣方及所有互動記事？';
     if (!confirm(msg)) return;
     fetch('/api/sellers/' + targetId, { method: 'DELETE' })
