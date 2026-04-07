@@ -6002,8 +6002,13 @@ OBJECTS_APP_HTML = """
 <!-- ── 地圖分頁 ── -->
 <div id="pane-map" style="display:none;height:calc(100vh - 90px);">
   <!-- 頂部統計列 -->
-  <div id="map-stat-bar" style="padding:6px 12px;font-size:0.8rem;color:var(--txs);background:var(--bg-s);border-bottom:1px solid var(--bd);">
-    載入中...
+  <div id="map-stat-bar" style="padding:4px 12px;font-size:0.8rem;color:var(--txs);background:var(--bg-s);border-bottom:1px solid var(--bd);display:flex;align-items:center;justify-content:space-between;height:32px;">
+    <span id="map-stat-text">載入中...</span>
+    <button id="map-pin-toggle" onclick="mapTogglePinMode()"
+      title="切換圖釘樣式"
+      style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:6px;border:1px solid var(--bd);background:var(--bg-h);color:var(--txs);cursor:pointer;flex-shrink:0;">
+      🔵 圓點模式
+    </button>
   </div>
   <!-- Leaflet 地圖容器 -->
   <div id="map-container" style="width:100%;height:calc(100% - 32px);"></div>
@@ -9275,60 +9280,86 @@ OBJECTS_APP_HTML = """
       mapLoad();
     };
 
-    function mapLoad() {
-      // 清除現有標記
+    var _mapItems   = [];        // 快取資料，切換模式時不重新 fetch
+    var _mapDotMode = false;     // false = 箭頭標籤，true = 圓點
+
+    // 根據目前模式建立 icon
+    function _makeIcon(p) {
+      var color = _catColor(p['物件類別']);
+      if (_mapDotMode) {
+        // 圓點模式：20px 實心圓 + drop-shadow
+        return L.divIcon({
+          className: '',
+          html: '<div style="width:18px;height:18px;border-radius:50%;background:' + color + ';border:2px solid #fff;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.45));"></div>',
+          iconSize: [18, 18],
+          iconAnchor: [9, 9]
+        });
+      } else {
+        // 箭頭標籤模式
+        var rawLabel = p['案名'] || p['物件地址'] || '未命名';
+        var label = rawLabel.length > 14 ? rawLabel.slice(0, 13) + '…' : rawLabel;
+        return L.divIcon({
+          className: '',
+          html: '<div style="display:inline-block;filter:drop-shadow(0 0 1px rgba(0,0,0,0.55)) drop-shadow(0 3px 5px rgba(0,0,0,0.35));">'
+            + '<div style="background:' + color + ';color:#fff;font-size:12px;font-weight:600;padding:5px 10px 5px 16px;border-radius:0 8px 8px 0;white-space:nowrap;clip-path:polygon(14px 0%,100% 0%,100% 100%,14px 100%,0% 50%);">'
+            + label + '</div></div>',
+          iconSize: null,
+          iconAnchor: [0, 16]
+        });
+      }
+    }
+
+    // 清除並重繪所有 marker（不重新 fetch）
+    function _mapRenderMarkers() {
       _mapObj.eachLayer(function(layer) {
         if (layer instanceof L.Marker) _mapObj.removeLayer(layer);
       });
-      document.getElementById('map-stat-bar').textContent = '載入中...';
+      _mapItems.forEach(function(p) {
+        var rawLabel = p['案名'] || p['物件地址'] || '未命名';
+        var label    = rawLabel.length > 14 ? rawLabel.slice(0, 13) + '…' : rawLabel;
+        var price    = p['售價'] ? p['售價'] + ' 萬' : '—';
+        var agent    = p['經紀人'] || '—';
+        var cat      = p['物件類別'] || '—';
+        var addr     = p['物件地址'] || '';
+        var popup    = '<div style="font-size:13px;line-height:1.8;">'
+          + '<b>' + rawLabel + '</b><br>'
+          + '類別：' + cat + '<br>'
+          + '售價：' + price + '<br>'
+          + '經紀人：' + agent + '<br>'
+          + (addr ? '地址：' + addr + '<br>' : '')
+          + '</div>';
+        var marker = L.marker([p.lat, p.lng], { icon: _makeIcon(p) });
+        marker.bindPopup(popup);
+        marker.addTo(_mapObj);
+      });
+    }
 
+    // 切換圖釘模式
+    window.mapTogglePinMode = function() {
+      _mapDotMode = !_mapDotMode;
+      var btn = document.getElementById('map-pin-toggle');
+      btn.textContent = _mapDotMode ? '🏷️ 標籤模式' : '🔵 圓點模式';
+      _mapRenderMarkers();
+    };
+
+    function mapLoad() {
+      document.getElementById('map-stat-text').textContent = '載入中...';
       fetch('/api/map/properties')
         .then(function(r){ return r.json(); })
         .then(function(d) {
-          if (d.error) { document.getElementById('map-stat-bar').textContent = '❌ ' + d.error; return; }
-          var items = d.items || [];
-          document.getElementById('map-stat-bar').textContent =
-            '🗺️ 銷售中物件（有座標）：' + items.length + ' 筆';
-
-          items.forEach(function(p) {
-            var color = _catColor(p['物件類別']);
-            var rawLabel = p['案名'] || p['物件地址'] || '未命名';
-            var label = rawLabel.length > 14 ? rawLabel.slice(0, 13) + '…' : rawLabel;
-            // 左箭頭圖釘（比照記事本地圖風格）
-            var icon = L.divIcon({
-              className: '',
-              html: '<div style="display:inline-block;filter:drop-shadow(0 0 1px rgba(0,0,0,0.55)) drop-shadow(0 3px 5px rgba(0,0,0,0.35));">'
-                + '<div style="background:' + color + ';color:#fff;font-size:12px;font-weight:600;padding:5px 10px 5px 16px;border-radius:0 8px 8px 0;white-space:nowrap;clip-path:polygon(14px 0%,100% 0%,100% 100%,14px 100%,0% 50%);">'
-                + label + '</div></div>',
-              iconSize: null,
-              iconAnchor: [0, 16]
-            });
-            var marker = L.marker([p.lat, p.lng], { icon: icon });
-
-            // 點擊顯示 popup
-            var price  = p['售價'] ? p['售價'] + ' 萬' : '—';
-            var agent  = p['經紀人'] || '—';
-            var cat    = p['物件類別'] || '—';
-            var addr   = p['物件地址'] || '';
-            var popup  = '<div style="font-size:13px;line-height:1.8;">'
-              + '<b>' + label + '</b><br>'
-              + '類別：' + cat + '<br>'
-              + '售價：' + price + '<br>'
-              + '經紀人：' + agent + '<br>'
-              + (addr ? '地址：' + addr + '<br>' : '')
-              + '</div>';
-            marker.bindPopup(popup);
-            marker.addTo(_mapObj);
-          });
-
-          // 若有物件，自動調整視野含蓋所有標記
-          if (items.length > 0) {
-            var bounds = L.latLngBounds(items.map(function(p){ return [p.lat, p.lng]; }));
+          if (d.error) { document.getElementById('map-stat-text').textContent = '❌ ' + d.error; return; }
+          _mapItems = d.items || [];
+          document.getElementById('map-stat-text').textContent =
+            '🗺️ 銷售中物件（有座標）：' + _mapItems.length + ' 筆';
+          _mapRenderMarkers();
+          // 自動調整視野含蓋所有標記
+          if (_mapItems.length > 0) {
+            var bounds = L.latLngBounds(_mapItems.map(function(p){ return [p.lat, p.lng]; }));
             _mapObj.fitBounds(bounds, { padding: [40, 40] });
           }
         })
         .catch(function(e) {
-          document.getElementById('map-stat-bar').textContent = '❌ 無法載入地圖資料';
+          document.getElementById('map-stat-text').textContent = '❌ 無法載入地圖資料';
           console.error('mapLoad error', e);
         });
     }
