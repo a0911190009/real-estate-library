@@ -1623,12 +1623,37 @@ def _is_selling(r):
 
 @app.route("/api/map/properties", methods=["GET"])
 def api_map_properties():
-    """回傳所有銷售中且有「座標」欄位的物件，供地圖頁顯示。"""
+    """回傳銷售中且有座標的物件，支援類別/地區/經紀人篩選。
+    Query params:
+      cats   - 逗號分隔的物件類別（支援大類名稱，空白=全部）
+      areas  - 逗號分隔的地區（空白=全部）
+      agents - 逗號分隔的經紀人（空白=全部）
+    """
     if not session.get("user_email"):
         return jsonify({"error": "請先登入"}), 401
+
+    # 解析篩選參數
+    cats_raw   = request.args.get("cats", "").strip()
+    areas_raw  = request.args.get("areas", "").strip()
+    agents_raw = request.args.get("agents", "").strip()
+
+    # 展開大類 → 原始類別 set（空白 = 不篩選）
+    filter_cats = set()
+    filter_cats_other = False  # 是否包含「其他」大類
+    if cats_raw:
+        for c in cats_raw.split(","):
+            c = c.strip()
+            if not c: continue
+            if c == _OTHER_GROUP:
+                filter_cats_other = True
+            else:
+                filter_cats.update(_expand_category_group(c))
+
+    filter_areas  = {a.strip() for a in areas_raw.split(",")  if a.strip()} if areas_raw  else set()
+    filter_agents = {a.strip() for a in agents_raw.split(",") if a.strip()} if agents_raw else set()
+
     db = _get_db()
     results = []
-    # 全量讀取後在 Python 端篩選（Firestore 不支援中文欄位名查詢）
     for doc in db.collection("company_properties").stream():
         r = doc.to_dict()
         r["id"] = doc.id
@@ -1638,7 +1663,6 @@ def api_map_properties():
         coord = r.get("座標", "").strip()
         if not coord:
             continue
-        # 座標格式：「lat,lng」例如 "22.759705,121.141959"
         parts = coord.split(",")
         if len(parts) != 2:
             continue
@@ -1647,6 +1671,27 @@ def api_map_properties():
             lng = float(parts[1].strip())
         except ValueError:
             continue
+
+        # 篩選類別
+        if filter_cats or filter_cats_other:
+            cat = r.get("物件類別", "")
+            in_known = cat in filter_cats
+            in_other = filter_cats_other and _CAT_REVERSE.get(cat) is None
+            if not in_known and not in_other:
+                continue
+
+        # 篩選地區
+        if filter_areas:
+            area = r.get("鄉/市/鎮", "") or r.get("地區", "") or ""
+            if area not in filter_areas:
+                continue
+
+        # 篩選經紀人
+        if filter_agents:
+            agent = r.get("經紀人", "")
+            if agent not in filter_agents:
+                continue
+
         results.append({
             "id":       r["id"],
             "案名":     r.get("案名", ""),
@@ -1654,10 +1699,154 @@ def api_map_properties():
             "物件類別": r.get("物件類別", ""),
             "售價":     r.get("售價(萬)", ""),
             "經紀人":   r.get("經紀人", ""),
+            "地區":     r.get("鄉/市/鎮", "") or r.get("地區", ""),
             "lat":      lat,
             "lng":      lng,
         })
     return jsonify({"items": results})
+
+
+# ── 地圖：篩選選項 API ──
+
+@app.route("/api/map/options", methods=["GET"])
+def api_map_options():
+    """回傳地圖篩選用的類別/地區/經紀人選項（只統計有座標的銷售中物件）。"""
+    if not session.get("user_email"):
+        return jsonify({"error": "請先登入"}), 401
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    try:
+        import re as _re
+        raw_categories = set()
+        areas = set()
+        agents = set()
+        for doc in db.collection("company_properties").stream():
+            r = doc.to_dict()
+            if not _is_selling(r):
+                continue
+            coord = r.get("座標", "").strip()
+            if not coord or len(coord.split(",")) != 2:
+                continue
+            if r.get("物件類別"):
+                raw_categories.add(r["物件類別"])
+            area = r.get("鄉/市/鎮", "") or r.get("地區", "")
+            if area:
+                areas.add(area)
+            raw_ag = str(r.get("經紀人", ""))
+            parts = _re.split(r'[/．、,，\s]+', raw_ag)
+            for ag in parts:
+                ag = ag.strip()
+                if ag and 2 <= len(ag) <= 4 and not _re.search(r'\d', ag):
+                    matched = False
+                    for known in ACTIVE_AGENTS:
+                        if known in ag and len(ag) > len(known):
+                            agents.add(known)
+                            matched = True
+                    if not matched:
+                        agents.add(ag)
+
+        # 大類整理
+        all_known_cats = {c for cats in CATEGORY_GROUPS.values() for c in cats}
+        display_categories = set(CATEGORY_GROUPS.keys())
+        has_other = any(c not in all_known_cats for c in raw_categories)
+        if has_other:
+            display_categories.add(_OTHER_GROUP)
+        group_order = list(CATEGORY_GROUPS.keys())
+        def cat_sort_key(c):
+            if c in group_order: return (0, group_order.index(c))
+            if c == _OTHER_GROUP: return (2, c)
+            return (1, c)
+
+        sorted_raw_areas = sorted(areas, key=_area_sort_key)
+        area_options = [{"value": a, "label": AREA_DISPLAY.get(a, a)} for a in sorted_raw_areas]
+        active_found   = [a for a in ACTIVE_AGENTS if a in agents]
+        inactive_found = sorted(agents - set(ACTIVE_AGENTS))
+
+        return jsonify({
+            "categories": sorted(display_categories, key=cat_sort_key),
+            "areas":      area_options,
+            "agents":     {"active": active_found, "inactive": inactive_found}
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── 地圖情境書籤 API ──
+
+@app.route("/api/map-presets", methods=["GET"])
+def api_map_presets_list():
+    """列出目前登入者的地圖篩選情境。"""
+    email, err = _require_user()
+    if err: return jsonify({"error": err[0]}), err[1]
+    db = _get_db()
+    if db is None: return jsonify({"error": "Firestore 未連線"}), 503
+    try:
+        docs = db.collection("map_presets").where("created_by", "==", email).stream()
+        items = []
+        for d in docs:
+            row = d.to_dict()
+            row["id"] = d.id
+            items.append(row)
+        items.sort(key=lambda x: x.get("created_at", ""))
+        return jsonify({"items": items})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/map-presets", methods=["POST"])
+def api_map_presets_create():
+    """新增或覆蓋地圖篩選情境（依 name 去重，同名則更新）。"""
+    email, err = _require_user()
+    if err: return jsonify({"error": err[0]}), err[1]
+    db = _get_db()
+    if db is None: return jsonify({"error": "Firestore 未連線"}), 503
+    try:
+        data = request.get_json(force=True) or {}
+        name = str(data.get("name", "")).strip()
+        if not name:
+            return jsonify({"error": "請填寫情境名稱"}), 400
+        params = data.get("params", {})
+        now = datetime.now(timezone.utc).isoformat()
+        existing = list(db.collection("map_presets")
+                        .where("created_by", "==", email)
+                        .where("name", "==", name)
+                        .stream())
+        if existing:
+            db.collection("map_presets").document(existing[0].id).update(
+                {"params": params, "updated_at": now})
+            return jsonify({"id": existing[0].id, "updated": True})
+        else:
+            doc_ref = db.collection("map_presets").add({
+                "name":       name,
+                "params":     params,
+                "created_by": email,
+                "created_at": now,
+                "updated_at": now,
+            })
+            return jsonify({"id": doc_ref[1].id, "created": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/map-presets/<preset_id>", methods=["DELETE"])
+def api_map_presets_delete(preset_id):
+    """刪除地圖篩選情境（只能刪自己的）。"""
+    email, err = _require_user()
+    if err: return jsonify({"error": err[0]}), err[1]
+    db = _get_db()
+    if db is None: return jsonify({"error": "Firestore 未連線"}), 503
+    try:
+        doc_ref = db.collection("map_presets").document(preset_id)
+        doc = doc_ref.get()
+        if not doc.exists:
+            return jsonify({"error": "找不到此情境"}), 404
+        if doc.to_dict().get("created_by") != email:
+            return jsonify({"error": "無權刪除他人情境"}), 403
+        doc_ref.delete()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # ── 公司物件庫搜尋 API（Firestore company_properties 集合） ──
@@ -6123,10 +6312,70 @@ OBJECTS_APP_HTML = """
   </div>
 </div>
 
-<!-- ── 地圖分頁 ── -->
-<div id="pane-map" style="display:none;height:calc(100vh - 90px);">
-  <!-- 頂部統計列 -->
-  <div id="map-stat-bar" style="padding:4px 12px;font-size:0.8rem;color:var(--txs);background:var(--bg-s);border-bottom:1px solid var(--bd);display:flex;align-items:center;justify-content:space-between;height:32px;">
+<!-- ── 地圖分頁（flex 直向排列）── -->
+<div id="pane-map" style="display:none;height:calc(100vh - 90px);flex-direction:column;overflow:hidden;">
+  <!-- 篩選列 -->
+  <div id="map-filter-bar" style="padding:6px 12px;background:var(--bg-s);border-bottom:1px solid var(--bd);display:flex;flex-wrap:wrap;align-items:center;gap:6px;flex-shrink:0;">
+    <!-- 類別複選 -->
+    <div class="relative">
+      <button id="map-cat-btn" onclick="mapToggleDropdown('cat')"
+        class="flex items-center gap-1 rounded-lg px-3 py-1.5 text-sm transition" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
+        <span id="map-cat-label">全部類別</span>
+        <svg class="w-3 h-3" style="color:var(--txs);" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+      </button>
+      <div id="map-cat-panel" class="hidden absolute left-0 top-full mt-1 z-50 rounded-xl p-3 min-w-[160px] max-h-60 overflow-y-auto" style="background:var(--bg-s);border:1px solid var(--bd);box-shadow:var(--sh);">
+        <div id="map-cat-list" class="space-y-1"></div>
+      </div>
+    </div>
+    <!-- 地區複選 -->
+    <div class="relative">
+      <button id="map-area-btn" onclick="mapToggleDropdown('area')"
+        class="flex items-center gap-1 rounded-lg px-3 py-1.5 text-sm transition" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
+        <span id="map-area-label">全部地區</span>
+        <svg class="w-3 h-3" style="color:var(--txs);" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+      </button>
+      <div id="map-area-panel" class="hidden absolute left-0 top-full mt-1 z-50 rounded-xl p-3 min-w-[180px] max-h-60 overflow-y-auto" style="background:var(--bg-s);border:1px solid var(--bd);box-shadow:var(--sh);">
+        <div id="map-area-list" class="space-y-1"></div>
+      </div>
+    </div>
+    <!-- 經紀人複選 -->
+    <div class="relative">
+      <button id="map-agent-btn" onclick="mapToggleDropdown('agent')"
+        class="flex items-center gap-1 rounded-lg px-3 py-1.5 text-sm transition" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);">
+        <span id="map-agent-label">全部經紀人</span>
+        <svg class="w-3 h-3" style="color:var(--txs);" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+      </button>
+      <div id="map-agent-panel" class="hidden absolute left-0 top-full mt-1 z-50 rounded-xl p-3 min-w-[160px] max-h-60 overflow-y-auto" style="background:var(--bg-s);border:1px solid var(--bd);box-shadow:var(--sh);">
+        <p class="text-xs mb-2" style="color:var(--txm);">── 在線人員 ──</p>
+        <div id="map-agent-active-list" class="space-y-1 mb-2"></div>
+        <p class="text-xs mb-2" style="color:var(--txm);">── 其他 ──</p>
+        <div id="map-agent-inactive-list" class="space-y-1"></div>
+      </div>
+    </div>
+    <!-- 套用 / 重設 -->
+    <button onclick="mapApplyFilter()"
+      class="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition">套用</button>
+    <button onclick="mapResetFilter()"
+      class="px-3 py-1.5 rounded-lg text-sm transition" style="background:var(--bg-h);color:var(--txs);">重設</button>
+    <!-- 情境書籤（靠右） -->
+    <div class="flex items-center gap-1 ml-auto">
+      <span class="text-xs" style="color:var(--txs);">情境：</span>
+      <select id="map-preset-select"
+        onchange="mapApplyPreset()"
+        class="text-xs rounded-lg px-2 py-1.5 focus:outline-none max-w-[130px]" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);"
+        title="選擇已儲存的地圖篩選情境">
+        <option value="">— 選擇情境 —</option>
+      </select>
+      <button id="map-preset-delete-btn" onclick="mapDeletePreset()" title="刪除此情境"
+        class="hidden text-red-400 hover:text-red-300 text-base leading-none px-1">×</button>
+      <button onclick="mapSavePreset()" title="將目前篩選另存為情境"
+        class="px-2 py-1.5 rounded-lg bg-purple-700 hover:bg-purple-600 text-purple-100 text-xs transition flex items-center gap-1">
+        💾 儲存情境
+      </button>
+    </div>
+  </div>
+  <!-- 統計列 + 圖釘切換 -->
+  <div id="map-stat-bar" style="padding:4px 12px;font-size:0.8rem;color:var(--txs);background:var(--bg-s);border-bottom:1px solid var(--bd);display:flex;align-items:center;justify-content:space-between;height:32px;flex-shrink:0;">
     <span id="map-stat-text">載入中...</span>
     <button id="map-pin-toggle" onclick="mapTogglePinMode()"
       title="切換圖釘樣式"
@@ -6134,8 +6383,8 @@ OBJECTS_APP_HTML = """
       🔵 圓點模式
     </button>
   </div>
-  <!-- Leaflet 地圖容器 -->
-  <div id="map-container" style="width:100%;height:calc(100% - 32px);"></div>
+  <!-- Leaflet 地圖容器（flex:1 填滿剩餘空間） -->
+  <div id="map-container" style="flex:1;width:100%;min-height:0;"></div>
 </div>
 
 <!-- ══ 資料庫檢視分頁（管理員限定）══ -->
@@ -6670,8 +6919,10 @@ OBJECTS_APP_HTML = """
       if (paneSellersEl) paneSellersEl.style.display = 'block';
       slLoad();  // 進入準賣方管理頁自動載入列表
     } else if (tab === 'map') {
-      if (paneMapEl) paneMapEl.style.display = 'block';
+      if (paneMapEl) paneMapEl.style.display = 'flex';  // flex 讓內部直向排列
       mapInit();  // 初始化地圖（第一次進入才建立，之後只重整資料）
+      if (!window._mapOptionsLoaded) { window._mapOptionsLoaded = true; mapLoadOptions(); }
+      if (!window._mapPresetsLoaded) { window._mapPresetsLoaded = true; mapLoadPresets(); }
     }
 
     // 分頁按鈕樣式
@@ -9391,6 +9642,127 @@ OBJECTS_APP_HTML = """
       return DEFAULT_COLOR;
     }
 
+    // ── 篩選狀態 ──
+    var _mapSel = { cat: new Set(), area: new Set(), agent: new Set() };
+
+    // 更新篩選按鈕標籤
+    function _mapUpdateLabel(type) {
+      var labels = { cat: '全部類別', area: '全部地區', agent: '全部經紀人' };
+      var el = document.getElementById('map-' + type + '-label');
+      if (!el) return;
+      var sel = _mapSel[type];
+      if (sel.size === 0) {
+        el.textContent = labels[type];
+      } else if (sel.size === 1) {
+        el.textContent = Array.from(sel)[0];
+      } else {
+        el.textContent = sel.size + ' 項已選';
+      }
+    }
+
+    // 切換下拉面板（點按鈕開/關，點其他地方關閉）
+    window.mapToggleDropdown = function(type) {
+      var types = ['cat', 'area', 'agent'];
+      types.forEach(function(t) {
+        var panel = document.getElementById('map-' + t + '-panel');
+        if (!panel) return;
+        if (t === type) {
+          panel.classList.toggle('hidden');
+        } else {
+          panel.classList.add('hidden');
+        }
+      });
+    };
+
+    // 點擊空白處關閉所有下拉
+    document.addEventListener('click', function(e) {
+      var types = ['cat', 'area', 'agent'];
+      types.forEach(function(t) {
+        var btn   = document.getElementById('map-' + t + '-btn');
+        var panel = document.getElementById('map-' + t + '-panel');
+        if (!btn || !panel) return;
+        if (!btn.contains(e.target) && !panel.contains(e.target)) {
+          panel.classList.add('hidden');
+        }
+      });
+    });
+
+    // checkbox 變更時更新 _mapSel
+    window.mapOnCheck = function(type, value, checked) {
+      if (checked) {
+        _mapSel[type].add(value);
+      } else {
+        _mapSel[type].delete(value);
+      }
+      _mapUpdateLabel(type);
+    };
+
+    // 載入篩選選項（初次進入地圖分頁時呼叫）
+    window.mapLoadOptions = function() {
+      fetch('/api/map/options')
+        .then(function(r){ return r.json(); })
+        .then(function(d) {
+          if (d.error) return;
+          // 類別
+          var catList = document.getElementById('map-cat-list');
+          if (catList) {
+            catList.innerHTML = (d.categories || []).map(function(c) {
+              return '<label class="flex items-center gap-2 text-sm cursor-pointer py-0.5" style="color:var(--tx);">'
+                + '<input type="checkbox" value="' + escapeHtml(c) + '" onchange="mapOnCheck(\'cat\',this.value,this.checked)" class="rounded"> '
+                + escapeHtml(c) + '</label>';
+            }).join('');
+          }
+          // 地區
+          var areaList = document.getElementById('map-area-list');
+          if (areaList) {
+            areaList.innerHTML = (d.areas || []).map(function(a) {
+              return '<label class="flex items-center gap-2 text-sm cursor-pointer py-0.5" style="color:var(--tx);">'
+                + '<input type="checkbox" value="' + escapeHtml(a.value) + '" onchange="mapOnCheck(\'area\',this.value,this.checked)" class="rounded"> '
+                + escapeHtml(a.label) + '</label>';
+            }).join('');
+          }
+          // 經紀人（在線 + 其他）
+          var activeList   = document.getElementById('map-agent-active-list');
+          var inactiveList = document.getElementById('map-agent-inactive-list');
+          var mkAgent = function(name) {
+            return '<label class="flex items-center gap-2 text-sm cursor-pointer py-0.5" style="color:var(--tx);">'
+              + '<input type="checkbox" value="' + escapeHtml(name) + '" onchange="mapOnCheck(\'agent\',this.value,this.checked)" class="rounded"> '
+              + escapeHtml(name) + '</label>';
+          };
+          if (activeList)   activeList.innerHTML   = (d.agents.active   || []).map(mkAgent).join('');
+          if (inactiveList) inactiveList.innerHTML = (d.agents.inactive || []).map(mkAgent).join('');
+        })
+        .catch(function(){});
+    };
+
+    // 套用篩選（重新 fetch + 渲染）
+    window.mapApplyFilter = function() {
+      // 關閉所有下拉
+      ['cat','area','agent'].forEach(function(t) {
+        var p = document.getElementById('map-' + t + '-panel');
+        if (p) p.classList.add('hidden');
+      });
+      mapLoad();
+    };
+
+    // 重設篩選
+    window.mapResetFilter = function() {
+      _mapSel = { cat: new Set(), area: new Set(), agent: new Set() };
+      ['cat','area','agent'].forEach(function(t) {
+        _mapUpdateLabel(t);
+        var panels = ['map-' + t + '-list', 'map-' + t + '-active-list', 'map-' + t + '-inactive-list'];
+        panels.forEach(function(pid) {
+          var el = document.getElementById(pid);
+          if (el) el.querySelectorAll('input[type=checkbox]').forEach(function(cb){ cb.checked = false; });
+        });
+      });
+      // 清除情境選擇
+      var sel = document.getElementById('map-preset-select');
+      if (sel) sel.value = '';
+      mapUpdatePresetDeleteBtn();
+      mapLoad();
+    };
+
     window.mapInit = function() {
       // 第一次才建立地圖實例
       if (!_mapInited) {
@@ -9411,7 +9783,7 @@ OBJECTS_APP_HTML = """
     function _makeIcon(p) {
       var color = _catColor(p['物件類別']);
       if (_mapDotMode) {
-        // 圓點模式：20px 實心圓 + drop-shadow
+        // 圓點模式：18px 實心圓 + drop-shadow
         return L.divIcon({
           className: '',
           html: '<div style="width:18px;height:18px;border-radius:50%;background:' + color + ';border:2px solid #fff;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.45));"></div>',
@@ -9440,7 +9812,6 @@ OBJECTS_APP_HTML = """
       });
       _mapItems.forEach(function(p) {
         var rawLabel = p['案名'] || p['物件地址'] || '未命名';
-        var label    = rawLabel.length > 14 ? rawLabel.slice(0, 13) + '…' : rawLabel;
         var price    = p['售價'] ? p['售價'] + ' 萬' : '—';
         var agent    = p['經紀人'] || '—';
         var cat      = p['物件類別'] || '—';
@@ -9468,13 +9839,20 @@ OBJECTS_APP_HTML = """
 
     function mapLoad() {
       document.getElementById('map-stat-text').textContent = '載入中...';
-      fetch('/api/map/properties')
+      // 組裝篩選 query string
+      var params = new URLSearchParams();
+      if (_mapSel.cat.size)   params.set('cats',   Array.from(_mapSel.cat).join(','));
+      if (_mapSel.area.size)  params.set('areas',  Array.from(_mapSel.area).join(','));
+      if (_mapSel.agent.size) params.set('agents', Array.from(_mapSel.agent).join(','));
+      var url = '/api/map/properties' + (params.toString() ? '?' + params.toString() : '');
+      fetch(url)
         .then(function(r){ return r.json(); })
         .then(function(d) {
           if (d.error) { document.getElementById('map-stat-text').textContent = '❌ ' + d.error; return; }
           _mapItems = d.items || [];
+          var hasFilter = _mapSel.cat.size || _mapSel.area.size || _mapSel.agent.size;
           document.getElementById('map-stat-text').textContent =
-            '🗺️ 銷售中物件（有座標）：' + _mapItems.length + ' 筆';
+            '🗺️ 銷售中（有座標）' + (hasFilter ? '篩選後' : '') + '：' + _mapItems.length + ' 筆';
           _mapRenderMarkers();
           // 自動調整視野含蓋所有標記
           if (_mapItems.length > 0) {
@@ -9487,6 +9865,104 @@ OBJECTS_APP_HTML = """
           console.error('mapLoad error', e);
         });
     }
+
+    // ══ 情境書籤 ══
+    var _mapPresets = [];  // 快取情境清單
+
+    window.mapLoadPresets = function() {
+      fetch('/api/map-presets')
+        .then(function(r){ return r.json(); })
+        .then(function(d) {
+          _mapPresets = d.items || [];
+          var sel = document.getElementById('map-preset-select');
+          if (!sel) return;
+          var current = sel.value;
+          sel.innerHTML = '<option value="">— 選擇情境 —</option>'
+            + _mapPresets.map(function(p) {
+                return '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(p.name) + '</option>';
+              }).join('');
+          if (current) sel.value = current;
+          mapUpdatePresetDeleteBtn();
+        })
+        .catch(function(){});
+    };
+
+    function mapUpdatePresetDeleteBtn() {
+      var sel = document.getElementById('map-preset-select');
+      var btn = document.getElementById('map-preset-delete-btn');
+      if (!sel || !btn) return;
+      btn.classList.toggle('hidden', !sel.value);
+    }
+
+    window.mapApplyPreset = function() {
+      var sel = document.getElementById('map-preset-select');
+      mapUpdatePresetDeleteBtn();
+      if (!sel || !sel.value) return;
+      var preset = _mapPresets.find(function(p){ return p.id === sel.value; });
+      if (!preset || !preset.params) return;
+      var params = preset.params;
+      // 還原各篩選 Set
+      ['cat','area','agent'].forEach(function(t) {
+        var vals = params['sel_' + t] ? params['sel_' + t].split(',').filter(Boolean) : [];
+        _mapSel[t] = new Set(vals);
+        _mapUpdateLabel(t);
+        // 同步 checkbox
+        var panels = ['map-' + t + '-list', 'map-' + t + '-active-list', 'map-' + t + '-inactive-list'];
+        panels.forEach(function(pid) {
+          var el = document.getElementById(pid);
+          if (!el) return;
+          el.querySelectorAll('input[type=checkbox]').forEach(function(cb) {
+            cb.checked = vals.indexOf(cb.value) !== -1;
+          });
+        });
+      });
+      mapLoad();
+      toast('✅ 已套用情境「' + preset.name + '」', 'info');
+    };
+
+    window.mapSavePreset = function() {
+      var name = prompt('請輸入情境名稱（同名會覆蓋）：');
+      if (!name || !name.trim()) return;
+      var params = {
+        sel_cat:   Array.from(_mapSel.cat).join(','),
+        sel_area:  Array.from(_mapSel.area).join(','),
+        sel_agent: Array.from(_mapSel.agent).join(','),
+      };
+      fetch('/api/map-presets', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ name: name.trim(), params: params }),
+      })
+      .then(function(r){ return r.json(); })
+      .then(function(d) {
+        if (d.error) { toast(d.error, 'error'); return; }
+        toast('💾 情境「' + name.trim() + '」已儲存', 'success');
+        mapLoadPresets();
+        setTimeout(function() {
+          var sel = document.getElementById('map-preset-select');
+          if (sel && d.id) { sel.value = d.id; mapUpdatePresetDeleteBtn(); }
+        }, 400);
+      })
+      .catch(function(){ toast('儲存失敗', 'error'); });
+    };
+
+    window.mapDeletePreset = function() {
+      var sel = document.getElementById('map-preset-select');
+      if (!sel || !sel.value) return;
+      var preset = _mapPresets.find(function(p){ return p.id === sel.value; });
+      if (!preset) return;
+      if (!confirm('確定刪除情境「' + preset.name + '」？')) return;
+      fetch('/api/map-presets/' + encodeURIComponent(sel.value), { method: 'DELETE' })
+        .then(function(r){ return r.json(); })
+        .then(function(d) {
+          if (d.error) { toast(d.error, 'error'); return; }
+          toast('已刪除情境「' + preset.name + '」', 'info');
+          sel.value = '';
+          mapUpdatePresetDeleteBtn();
+          mapLoadPresets();
+        })
+        .catch(function(){ toast('刪除失敗', 'error'); });
+    };
   })();
   // ══ 地圖分頁 JS 結束 ══
 
