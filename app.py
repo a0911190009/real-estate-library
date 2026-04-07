@@ -1514,7 +1514,7 @@ def _is_selling(r):
 @app.route("/api/map/properties", methods=["GET"])
 def api_map_properties():
     """回傳所有銷售中且有「座標」欄位的物件，供地圖頁顯示。"""
-    if not session.get("user"):
+    if not session.get("user_email"):
         return jsonify({"error": "請先登入"}), 401
     db = _get_db()
     results = []
