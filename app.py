@@ -1103,15 +1103,20 @@ _sync_lock = threading.Lock()   # 避免同時多次同步
 _sync_status = {"running": False, "last_run": None, "last_result": None}
 
 
-def _sheets_read_all():
-    """用 ADC 讀取整張 Sheets，回傳 (headers, data_rows)。"""
+def _get_sheets_service():
+    """建立 Sheets API service（讀寫權限）。"""
     import google.auth
     from googleapiclient.discovery import build
     creds, _ = google.auth.default(scopes=[
         "https://www.googleapis.com/auth/cloud-platform",
-        "https://www.googleapis.com/auth/spreadsheets.readonly"
+        "https://www.googleapis.com/auth/spreadsheets",   # 讀寫（原為 readonly）
     ])
-    service = build("sheets", "v4", credentials=creds, cache_discovery=False)
+    return build("sheets", "v4", credentials=creds, cache_discovery=False)
+
+
+def _sheets_read_all():
+    """用 ADC 讀取整張 Sheets，回傳 (headers, data_rows)。"""
+    service = _get_sheets_service()
     result = service.spreadsheets().values().get(
         spreadsheetId=SHEET_ID,
         range=f"{SHEET_NAME}!A1:AZ9999"
@@ -1128,6 +1133,82 @@ def _sheets_read_all():
     # 第4行起為資料，過濾空行和重複標題行
     data_rows = [r for r in all_rows[3:] if any(c.strip() for c in r) and not is_header_row(r)]
     return headers, data_rows
+
+
+def _sheets_write_selling_status(seq_to_selling: dict):
+    """
+    把 Firestore 的「銷售中」值回寫到 Sheets，只動這一欄，其他欄位完全不碰。
+    seq_to_selling: {資料序號(str): True/False, ...}
+    """
+    import logging
+    log = logging.getLogger("sheets-writeback")
+    if not seq_to_selling:
+        return {"ok": True, "updated": 0}
+
+    try:
+        service = _get_sheets_service()
+        # 讀取整張，只需要找 header 位置和 資料序號 欄
+        result = service.spreadsheets().values().get(
+            spreadsheetId=SHEET_ID,
+            range=f"{SHEET_NAME}!A1:AZ9999"
+        ).execute()
+        all_rows = result.get("values", [])
+        if len(all_rows) < 4:
+            return {"ok": False, "error": "Sheets 資料列數不足"}
+
+        headers = all_rows[1]  # 第2行是 header
+
+        # 找「資料序號」和「銷售中」的欄索引
+        try:
+            seq_col_idx     = headers.index("資料序號")
+            selling_col_idx = headers.index("銷售中")
+        except ValueError as e:
+            return {"ok": False, "error": f"找不到欄位：{e}"}
+
+        # 轉成 Sheets 欄字母（A=0, B=1, ...）
+        def col_letter(idx):
+            result = ""
+            while idx >= 0:
+                result = chr(idx % 26 + ord('A')) + result
+                idx = idx // 26 - 1
+            return result
+
+        selling_col = col_letter(selling_col_idx)
+
+        # 掃描資料列（第4行起 = all_rows index 3 起），找出需要更新的列
+        # all_rows[0]=第1行, [1]=第2行(header), [2]=第3行, [3]=第4行...
+        updates = []  # list of (sheets_row_number_1based, new_value)
+        for i, row in enumerate(all_rows):
+            if i < 3:  # 跳過前3行（標題/header/空行）
+                continue
+            seq_val = row[seq_col_idx].strip() if seq_col_idx < len(row) else ""
+            if seq_val in seq_to_selling:
+                new_val = "TRUE" if seq_to_selling[seq_val] else "FALSE"
+                sheets_row = i + 1  # Sheets 列號從 1 開始
+                updates.append({
+                    "range": f"{SHEET_NAME}!{selling_col}{sheets_row}",
+                    "values": [[new_val]]
+                })
+
+        if not updates:
+            log.info("sheets_write_selling_status：無需更新的列")
+            return {"ok": True, "updated": 0}
+
+        # 用 batchUpdate 一次送出，不逐列打 API
+        body = {
+            "valueInputOption": "RAW",
+            "data": updates
+        }
+        service.spreadsheets().values().batchUpdate(
+            spreadsheetId=SHEET_ID, body=body
+        ).execute()
+
+        log.info(f"sheets_write_selling_status：已更新 {len(updates)} 列")
+        return {"ok": True, "updated": len(updates)}
+
+    except Exception as e:
+        log.exception("sheets_write_selling_status 失敗")
+        return {"ok": False, "error": str(e)}
 
 
 def _parse_price_num(val):
@@ -1386,6 +1467,35 @@ def api_sync_properties_status():
         "last_run": _sync_status["last_run"],
         "last_result": _sync_status["last_result"]
     })
+
+
+@app.route("/api/internal/scheduled-sync", methods=["POST"])
+def api_internal_scheduled_sync():
+    """
+    Cloud Scheduler 定時觸發的 Sheets 同步端點（不需 session，用 SERVICE_API_KEY 驗證）。
+    設定方式：Cloud Scheduler → 每天 06:00 打此端點，Header 帶 X-Api-Key。
+    """
+    api_key = request.headers.get("X-Api-Key", "")
+    if not api_key or api_key != SERVICE_API_KEY:
+        return jsonify({"error": "unauthorized"}), 401
+
+    with _sync_lock:
+        if _sync_status["running"]:
+            return jsonify({"ok": False, "message": "同步已在進行中"}), 409
+        _sync_status["running"] = True
+
+    import threading
+    def _run():
+        try:
+            result = _do_sync()
+            _sync_status["last_result"] = result
+            _sync_status["last_run"] = datetime.now(timezone.utc).isoformat()
+        finally:
+            _sync_status["running"] = False
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return jsonify({"ok": True, "message": "同步已啟動（背景執行）"})
 
 
 # ── 物件類別大類對應表（不影響 Sheets 原始資料） ──
@@ -2519,6 +2629,7 @@ def api_word_review_apply():
 
     col = db.collection("company_properties")
     updated = 0
+    selling_writeback = {}  # {資料序號: True/False}，用於回寫 Sheets
     for it in items:
         did = it.get("doc_id")
         if not did:
@@ -2538,8 +2649,21 @@ def api_word_review_apply():
         try:
             col.document(did).update(upd)
             updated += 1
+            # 收集有資料序號的更新，供回寫 Sheets 用
+            if did and did.isdigit():
+                selling_writeback[did] = True  # apply-word-match 確認的都是銷售中
         except Exception:
             pass
+
+    # 非同步回寫 Sheets「銷售中」欄（只改這一欄，不動其他欄位）
+    if selling_writeback:
+        import threading
+        t = threading.Thread(
+            target=_sheets_write_selling_status,
+            args=(selling_writeback,),
+            daemon=True
+        )
+        t.start()
 
     return jsonify({"ok": True, "updated": updated,
                     "message": f"已更新 {updated} 筆物件（銷售中、售價、到期日）"})
