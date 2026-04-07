@@ -4333,6 +4333,45 @@ def _recalc_seller_last_contact(db, seller_id):
         return None
 
 
+@app.route("/api/sellers/sort-order", methods=["GET"])
+def api_sellers_sort_order_get():
+    """取得準賣方卡片的自訂排列順序。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    try:
+        doc = db.collection("user_settings").document(email).get()
+        if doc.exists:
+            return jsonify({"order": doc.to_dict().get("seller_sort_order", [])})
+        return jsonify({"order": []})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/sellers/sort-order", methods=["PUT"])
+def api_sellers_sort_order_put():
+    """儲存準賣方卡片的自訂排列順序。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    try:
+        data = request.get_json(force=True) or {}
+        order = data.get("order", [])
+        if not isinstance(order, list):
+            return jsonify({"error": "order 格式不正確"}), 400
+        db.collection("user_settings").document(email).set(
+            {"seller_sort_order": order}, merge=True)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/sellers", methods=["GET"])
 def api_sellers_list():
     """取得目前登入者的所有準賣方（依最後追蹤時間排序）。"""
@@ -5036,6 +5075,10 @@ OBJECTS_APP_HTML = """
     .sl-col-btn{width:28px;height:28px;border-radius:6px;border:1px solid var(--bd);background:transparent;color:var(--txs);font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;}
     .sl-col-btn:hover{border-color:var(--ac);color:var(--ac);}
     .sl-col-btn.active{background:var(--ac);color:var(--act);border-color:var(--ac);}
+    #sl-list.drag-mode .card{cursor:grab;user-select:none;}
+    #sl-list.drag-mode .card:active{cursor:grabbing;}
+    .card.sl-drag-over{border:2px dashed var(--ac);opacity:0.7;}
+    .card.sl-dragging{opacity:0.4;transform:scale(0.96);}
     .sl-avatar{width:44px;height:44px;border-radius:50%;object-fit:cover;flex-shrink:0;border:2px solid var(--bd);}
     .sl-avatar-ph{width:44px;height:44px;border-radius:50%;background:var(--ac);color:#fff;font-size:17px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
     /* 準賣方 Modal */
@@ -5777,6 +5820,8 @@ OBJECTS_APP_HTML = """
       <button class="sl-col-btn" data-col="1" onclick="slSetColumns(1)">1</button>
       <button class="sl-col-btn active" data-col="2" onclick="slSetColumns(2)">2</button>
       <button class="sl-col-btn" data-col="3" onclick="slSetColumns(3)">3</button>
+      <button class="sl-col-btn" data-col="4" onclick="slSetColumns(4)">4</button>
+      <button class="sl-col-btn" data-col="5" onclick="slSetColumns(5)">5</button>
     </div>
   </div>
 
@@ -8651,17 +8696,27 @@ OBJECTS_APP_HTML = """
 
   // 載入準賣方列表
   function slLoad() {
-    if (!window._slLoaded) {
-      window._slLoaded = true;
-    }
-    fetch('/api/sellers')
-      .then(function(r){ return r.json(); })
-      .then(function(d) {
-        if (d.error) { toast('❌ ' + d.error, 'error'); return; }
-        _slData = d.items || [];
-        slFilterRender();
-      })
-      .catch(function(){ toast('❌ 載入準賣方失敗', 'error'); });
+    // 同時載入準賣方列表 + 自訂排序
+    Promise.all([
+      fetch('/api/sellers').then(function(r){ return r.json(); }),
+      fetch('/api/sellers/sort-order').then(function(r){ return r.json(); }).catch(function(){ return {order:[]}; })
+    ]).then(function(results) {
+      var d = results[0], sortRes = results[1];
+      if (d.error) { toast('❌ ' + d.error, 'error'); return; }
+      _slData = d.items || [];
+      _slSavedOrder = sortRes.order || [];
+      // 套用自訂排序（若有儲存過）
+      if (_slSavedOrder.length) {
+        var orderMap = {};
+        _slSavedOrder.forEach(function(id, i){ orderMap[id] = i; });
+        _slData.sort(function(a, b) {
+          var ia = orderMap[a.id] != null ? orderMap[a.id] : 9999;
+          var ib = orderMap[b.id] != null ? orderMap[b.id] : 9999;
+          return ia - ib;
+        });
+      }
+      slFilterRender();
+    }).catch(function(){ toast('❌ 載入準賣方失敗', 'error'); });
   }
 
   // 依關鍵字 + 狀態篩選後重新渲染卡片列表
@@ -8738,13 +8793,15 @@ OBJECTS_APP_HTML = """
         + '</div>'
       + '</div>';
     }).join('');
+    // 渲染完後綁定拖曳事件
+    _slBindDragEvents();
   }
 
   // 欄數切換（記住偏好）
   function slSetColumns(n) {
     var list = document.getElementById('sl-list');
     list.style.gridTemplateColumns = 'repeat(' + n + ', 1fr)';
-    var widthMap = {1: '640px', 2: '896px', 3: '1200px'};
+    var widthMap = {1: '640px', 2: '896px', 3: '1200px', 4: '1400px', 5: '100%'};
     document.getElementById('pane-sellers').style.maxWidth = widthMap[n] || '896px';
     document.querySelectorAll('.sl-col-btn').forEach(function(btn) {
       btn.classList.toggle('active', parseInt(btn.dataset.col) === n);
@@ -8754,9 +8811,99 @@ OBJECTS_APP_HTML = """
   // 頁面載入時讀取欄數偏好
   (function() {
     var saved = parseInt(localStorage.getItem('sl_col_count'));
-    var n = (saved >= 1 && saved <= 3) ? saved : (window.innerWidth < 640 ? 1 : 2);
+    var n = (saved >= 1 && saved <= 5) ? saved : (window.innerWidth < 640 ? 1 : 2);
     setTimeout(function() { slSetColumns(n); }, 0);
   })();
+
+  // ═══════════════════════════
+  //  準賣方拖曳自由排列
+  // ═══════════════════════════
+  var _slDragSrc = null;
+  var _slIsDragging = false;
+  var _slTouchDragEl = null;
+  var _slSavedOrder = [];
+
+  function _slBindDragEvents() {
+    var list = document.getElementById('sl-list');
+    if (!list) return;
+    list.classList.add('drag-mode');
+    var cards = list.querySelectorAll('.card[data-sl-id]');
+    cards.forEach(function(card) {
+      // ── 桌面：HTML5 Drag & Drop ──
+      card.setAttribute('draggable', 'true');
+      card.ondragstart = function(e) {
+        _slDragSrc = card; _slIsDragging = true;
+        card.classList.add('sl-dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', card.dataset.slId);
+      };
+      card.ondragend = function() {
+        card.classList.remove('sl-dragging');
+        list.querySelectorAll('.sl-drag-over').forEach(function(el) { el.classList.remove('sl-drag-over'); });
+        setTimeout(function() { _slIsDragging = false; }, 50);
+      };
+      card.ondragover = function(e) {
+        e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+        if (card !== _slDragSrc) card.classList.add('sl-drag-over');
+      };
+      card.ondragleave = function() { card.classList.remove('sl-drag-over'); };
+      card.ondrop = function(e) {
+        e.preventDefault(); card.classList.remove('sl-drag-over');
+        if (_slDragSrc && _slDragSrc !== card) {
+          var all = Array.from(list.querySelectorAll('.card[data-sl-id]'));
+          var si = all.indexOf(_slDragSrc), ti = all.indexOf(card);
+          list.insertBefore(_slDragSrc, si < ti ? card.nextSibling : card);
+          _slSaveDragOrder();
+        }
+      };
+      // ── 手機：長壓觸控 ──
+      var _tt = null;
+      card.ontouchstart = function() {
+        _tt = setTimeout(function() { _slTouchDragEl = card; card.classList.add('sl-dragging'); }, 400);
+      };
+      card.ontouchmove = function(e) {
+        if (!_slTouchDragEl) { clearTimeout(_tt); return; }
+        e.preventDefault();
+        var t = e.touches[0];
+        _slTouchDragEl.style.pointerEvents = 'none';
+        var tgt = document.elementFromPoint(t.clientX, t.clientY);
+        _slTouchDragEl.style.pointerEvents = '';
+        list.querySelectorAll('.sl-drag-over').forEach(function(el) { el.classList.remove('sl-drag-over'); });
+        if (tgt) { var tc = tgt.closest('.card[data-sl-id]'); if (tc && tc !== _slTouchDragEl) tc.classList.add('sl-drag-over'); }
+      };
+      card.ontouchend = function() {
+        clearTimeout(_tt);
+        if (!_slTouchDragEl) return;
+        var ov = list.querySelector('.sl-drag-over');
+        if (ov && ov !== _slTouchDragEl) {
+          var all = Array.from(list.querySelectorAll('.card[data-sl-id]'));
+          var si = all.indexOf(_slTouchDragEl), ti = all.indexOf(ov);
+          list.insertBefore(_slTouchDragEl, si < ti ? ov.nextSibling : ov);
+          _slSaveDragOrder();
+        }
+        _slTouchDragEl.classList.remove('sl-dragging');
+        list.querySelectorAll('.sl-drag-over').forEach(function(el) { el.classList.remove('sl-drag-over'); });
+        _slTouchDragEl = null;
+      };
+      // 拖曳後攔截 click，普通點擊正常開 modal
+      card.addEventListener('click', function(e) {
+        if (_slIsDragging) { e.stopImmediatePropagation(); e.preventDefault(); }
+      }, true);
+    });
+  }
+
+  function _slSaveDragOrder() {
+    var list = document.getElementById('sl-list');
+    var order = Array.from(list.querySelectorAll('.card[data-sl-id]')).map(function(el) { return el.dataset.slId; });
+    fetch('/api/sellers/sort-order', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({order: order})
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      if (d.ok) { _slSavedOrder = order; }
+      else { toast(d.error || '排列儲存失敗', 'error'); }
+    }).catch(function() { toast('排列儲存失敗', 'error'); });
+  }
 
   // HTML 跳脫（防止 XSS）
   function _esc(s) {
