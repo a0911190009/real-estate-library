@@ -9708,7 +9708,7 @@ OBJECTS_APP_HTML = """
           if (catList) {
             catList.innerHTML = (d.categories || []).map(function(c) {
               return '<label class="flex items-center gap-2 text-sm cursor-pointer py-0.5" style="color:var(--tx);">'
-                + '<input type="checkbox" value="' + escapeHtml(c) + '" onchange="mapOnCheck(\'cat\',this.value,this.checked)" class="rounded"> '
+                + '<input type="checkbox" data-type="cat" value="' + escapeHtml(c) + '" onchange="mapOnCheck(this.dataset.type,this.value,this.checked)" class="rounded"> '
                 + escapeHtml(c) + '</label>';
             }).join('');
           }
@@ -9717,7 +9717,7 @@ OBJECTS_APP_HTML = """
           if (areaList) {
             areaList.innerHTML = (d.areas || []).map(function(a) {
               return '<label class="flex items-center gap-2 text-sm cursor-pointer py-0.5" style="color:var(--tx);">'
-                + '<input type="checkbox" value="' + escapeHtml(a.value) + '" onchange="mapOnCheck(\'area\',this.value,this.checked)" class="rounded"> '
+                + '<input type="checkbox" data-type="area" value="' + escapeHtml(a.value) + '" onchange="mapOnCheck(this.dataset.type,this.value,this.checked)" class="rounded"> '
                 + escapeHtml(a.label) + '</label>';
             }).join('');
           }
@@ -9726,7 +9726,7 @@ OBJECTS_APP_HTML = """
           var inactiveList = document.getElementById('map-agent-inactive-list');
           var mkAgent = function(name) {
             return '<label class="flex items-center gap-2 text-sm cursor-pointer py-0.5" style="color:var(--tx);">'
-              + '<input type="checkbox" value="' + escapeHtml(name) + '" onchange="mapOnCheck(\'agent\',this.value,this.checked)" class="rounded"> '
+              + '<input type="checkbox" data-type="agent" value="' + escapeHtml(name) + '" onchange="mapOnCheck(this.dataset.type,this.value,this.checked)" class="rounded"> '
               + escapeHtml(name) + '</label>';
           };
           if (activeList)   activeList.innerHTML   = (d.agents.active   || []).map(mkAgent).join('');
