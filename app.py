@@ -9767,11 +9767,13 @@ OBJECTS_APP_HTML = """
       // 第一次才建立地圖實例
       if (!_mapInited) {
         _mapInited = true;
-        _mapObj = L.map('map-container').setView([22.750699, 121.177817], 13);
+        // zoomControl:false 先關掉預設左上角縮放鍵，再手動加到右下角
+        _mapObj = L.map('map-container', { zoomControl: false }).setView([22.750699, 121.177817], 13);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
           attribution: '© OpenStreetMap contributors',
           maxZoom: 19
         }).addTo(_mapObj);
+        L.control.zoom({ position: 'bottomright' }).addTo(_mapObj);
       }
       mapLoad();
     };
