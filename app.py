@@ -5109,19 +5109,6 @@ OBJECTS_APP_HTML = """
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
     /* 地圖標記 label 樣式 */
-    .map-pin-label {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 3px 8px;
-      border-radius: 6px;
-      font-size: 11px;
-      font-weight: 700;
-      color: #fff;
-      white-space: nowrap;
-      cursor: pointer;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.4);
-    }
   </style>
 </head>
 <body data-theme="navy-dark" class="min-h-screen font-sans antialiased">
@@ -9305,12 +9292,16 @@ OBJECTS_APP_HTML = """
 
           items.forEach(function(p) {
             var color = _catColor(p['物件類別']);
-            var label = p['案名'] || p['物件地址'] || '未命名';
-            // 自訂圖示：色塊 + 文字
+            var rawLabel = p['案名'] || p['物件地址'] || '未命名';
+            var label = rawLabel.length > 14 ? rawLabel.slice(0, 13) + '…' : rawLabel;
+            // 左箭頭圖釘（比照記事本地圖風格）
             var icon = L.divIcon({
               className: '',
-              html: '<div class="map-pin-label" style="background:' + color + '">' + label + '</div>',
-              iconAnchor: [0, 10]
+              html: '<div style="display:inline-block;filter:drop-shadow(0 0 1px rgba(0,0,0,0.55)) drop-shadow(0 3px 5px rgba(0,0,0,0.35));">'
+                + '<div style="background:' + color + ';color:#fff;font-size:12px;font-weight:600;padding:5px 10px 5px 16px;border-radius:0 8px 8px 0;white-space:nowrap;clip-path:polygon(14px 0%,100% 0%,100% 100%,14px 100%,0% 50%);">'
+                + label + '</div></div>',
+              iconSize: null,
+              iconAnchor: [0, 16]
             });
             var marker = L.marker([p.lat, p.lng], { icon: icon });
 
