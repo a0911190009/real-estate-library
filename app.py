@@ -6313,9 +6313,9 @@ OBJECTS_APP_HTML = """
 </div>
 
 <!-- ── 地圖分頁（flex 直向排列）── -->
-<div id="pane-map" style="display:none;height:calc(100vh - 90px);flex-direction:column;overflow:hidden;">
-  <!-- 篩選列 -->
-  <div id="map-filter-bar" style="padding:6px 12px;background:var(--bg-s);border-bottom:1px solid var(--bd);display:flex;flex-wrap:wrap;align-items:center;gap:6px;flex-shrink:0;">
+<div id="pane-map" style="display:none;height:calc(100vh - 90px);flex-direction:column;">
+  <!-- 篩選列（position:relative + z-index 確保下拉蓋住 Leaflet） -->
+  <div id="map-filter-bar" style="padding:6px 12px;background:var(--bg-s);border-bottom:1px solid var(--bd);display:flex;flex-wrap:wrap;align-items:center;gap:6px;flex-shrink:0;position:relative;z-index:500;">
     <!-- 類別複選 -->
     <div class="relative">
       <button id="map-cat-btn" onclick="mapToggleDropdown('cat')"
@@ -6323,7 +6323,7 @@ OBJECTS_APP_HTML = """
         <span id="map-cat-label">全部類別</span>
         <svg class="w-3 h-3" style="color:var(--txs);" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
       </button>
-      <div id="map-cat-panel" class="hidden absolute left-0 top-full mt-1 z-50 rounded-xl p-3 min-w-[160px] max-h-60 overflow-y-auto" style="background:var(--bg-s);border:1px solid var(--bd);box-shadow:var(--sh);">
+      <div id="map-cat-panel" class="hidden absolute left-0 top-full mt-1 rounded-xl p-3 min-w-[160px] max-h-60 overflow-y-auto" style="background:var(--bg-s);border:1px solid var(--bd);box-shadow:var(--sh);z-index:1000;">
         <div id="map-cat-list" class="space-y-1"></div>
       </div>
     </div>
@@ -6334,7 +6334,7 @@ OBJECTS_APP_HTML = """
         <span id="map-area-label">全部地區</span>
         <svg class="w-3 h-3" style="color:var(--txs);" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
       </button>
-      <div id="map-area-panel" class="hidden absolute left-0 top-full mt-1 z-50 rounded-xl p-3 min-w-[180px] max-h-60 overflow-y-auto" style="background:var(--bg-s);border:1px solid var(--bd);box-shadow:var(--sh);">
+      <div id="map-area-panel" class="hidden absolute left-0 top-full mt-1 rounded-xl p-3 min-w-[180px] max-h-60 overflow-y-auto" style="background:var(--bg-s);border:1px solid var(--bd);box-shadow:var(--sh);z-index:1000;">
         <div id="map-area-list" class="space-y-1"></div>
       </div>
     </div>
@@ -6345,7 +6345,7 @@ OBJECTS_APP_HTML = """
         <span id="map-agent-label">全部經紀人</span>
         <svg class="w-3 h-3" style="color:var(--txs);" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
       </button>
-      <div id="map-agent-panel" class="hidden absolute left-0 top-full mt-1 z-50 rounded-xl p-3 min-w-[160px] max-h-60 overflow-y-auto" style="background:var(--bg-s);border:1px solid var(--bd);box-shadow:var(--sh);">
+      <div id="map-agent-panel" class="hidden absolute left-0 top-full mt-1 rounded-xl p-3 min-w-[160px] max-h-60 overflow-y-auto" style="background:var(--bg-s);border:1px solid var(--bd);box-shadow:var(--sh);z-index:1000;">
         <p class="text-xs mb-2" style="color:var(--txm);">── 在線人員 ──</p>
         <div id="map-agent-active-list" class="space-y-1 mb-2"></div>
         <p class="text-xs mb-2" style="color:var(--txm);">── 其他 ──</p>
