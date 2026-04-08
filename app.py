@@ -9769,10 +9769,30 @@ OBJECTS_APP_HTML = """
         _mapInited = true;
         // zoomControl:false 先關掉預設左上角縮放鍵，再手動加到右下角
         _mapObj = L.map('map-container', { zoomControl: false }).setView([22.750699, 121.177817], 13);
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-          attribution: '© OpenStreetMap contributors',
-          maxZoom: 19
-        }).addTo(_mapObj);
+
+        // 定義底圖圖層（同 Survey 工具）
+        var _osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+        });
+        var _googleStreet = L.tileLayer('https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
+          maxZoom: 22, subdomains: '0123', attribution: '&copy; Google Maps'
+        });
+        var _googleSatellite = L.tileLayer('https://mt{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
+          maxZoom: 22, subdomains: '0123', attribution: '&copy; Google Maps'
+        });
+        var _googleHybrid = L.tileLayer('https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', {
+          maxZoom: 22, subdomains: '0123', attribution: '&copy; Google Maps'
+        });
+        _googleStreet.addTo(_mapObj);  // 預設 Google 街道
+
+        // 圖層切換控制（右上角）
+        L.control.layers({
+          '🗺️ Google 街道':    _googleStreet,
+          '🛰️ Google 衛星':    _googleSatellite,
+          '🛰️ Google 衛星+路名': _googleHybrid,
+          '🗺️ OpenStreetMap':  _osmLayer,
+        }, null, { position: 'topright' }).addTo(_mapObj);
+
         L.control.zoom({ position: 'bottomright' }).addTo(_mapObj);
       }
       mapLoad();
