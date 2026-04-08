@@ -1211,6 +1211,37 @@ def _sheets_write_selling_status(seq_to_selling: dict):
         return {"ok": False, "error": str(e)}
 
 
+@app.route("/api/debug/sheets-headers", methods=["GET"])
+def api_debug_sheets_headers():
+    """管理員診斷用：讀取 Sheets header 行，確認欄位名稱是否正確。"""
+    email, err = _require_user()
+    if err: return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email): return jsonify({"error": "僅管理員"}), 403
+    try:
+        service = _get_sheets_service()
+        result = service.spreadsheets().values().get(
+            spreadsheetId=SHEET_ID,
+            range=f"{SHEET_NAME}!A1:AZ20"
+        ).execute()
+        rows = result.get("values", [])
+        headers = rows[1] if len(rows) > 1 else []
+        return jsonify({
+            "sheet_id": SHEET_ID,
+            "sheet_name": SHEET_NAME,
+            "total_rows_fetched": len(rows),
+            "row1": rows[0] if rows else [],
+            "row2_headers": headers,
+            "row3": rows[2] if len(rows) > 2 else [],
+            "row4": rows[3] if len(rows) > 3 else [],
+            "has_seq_col": "資料序號" in headers,
+            "has_selling_col": "銷售中" in headers,
+            "seq_col_index": headers.index("資料序號") if "資料序號" in headers else -1,
+            "selling_col_index": headers.index("銷售中") if "銷售中" in headers else -1,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 def _parse_price_num(val):
     if val is None:
         return None
