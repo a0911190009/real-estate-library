@@ -1295,7 +1295,7 @@ def _row_to_doc(headers, row):
         if h in _NUMERIC_FIELDS:
             data[h] = _parse_price_num(val)
         elif h == "銷售中":
-            data["銷售中"] = str(val).strip().lower() not in ("no", "否", "false", "0")
+            pass  # 銷售中由 Firestore 自行管理（Word 審查或手動回寫），不從 Sheets 覆蓋
         else:
             data[h] = val
     return data
@@ -1350,7 +1350,9 @@ def _do_sync(org_id=None):
             # 標記組織歸屬，讓不同公司的資料互相隔離
             if org_id:
                 d["org_id"] = org_id
-            col.document(doc_id).set(d)
+            # merge=True：只更新有值的欄位，不覆蓋 Firestore 中沒在 Sheets 的欄位
+            # 特別保護「銷售中」：由 Word 審查或手動回寫管理，不被 Sheets 覆蓋
+            col.document(doc_id).set(d, merge=True)
             written += 1
             if written % 200 == 0:
                 log.info(f"進度：{written}/{len(data_rows)}")
