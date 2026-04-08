@@ -9050,7 +9050,7 @@ OBJECTS_APP_HTML = """
 
   // 一鍵回寫 Firestore 銷售中 → Google Sheets
   function cpWritebackSelling() {
-    if (!confirm('確定要把 Firestore 所有物件的「銷售中」狀態回寫到 Google Sheets 嗎？\n（只更新銷售中欄，其他欄位不動）')) return;
+    if (!confirm('確定要把 Firestore 所有物件的「銷售中」狀態回寫到 Google Sheets 嗎？（只更新銷售中欄，其他欄位不動）')) return;
     var btn = document.getElementById('cp-writeback-btn');
     btn.disabled = true;
     btn.textContent = '回寫中…';
