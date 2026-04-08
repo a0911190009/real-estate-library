@@ -9720,7 +9720,7 @@ OBJECTS_APP_HTML = """
 
     var msg = '確定要套用 ' + applyModified.length + ' 筆修改';
     if (applyAdded.length > 0) msg += '＋新增 ' + applyAdded.length + ' 筆';
-    msg += ' 到原始 Sheets 主頁？\n\n此操作會直接寫入 Google Sheets，無法復原。';
+    msg += ' 到原始 Sheets 主頁？此操作會直接寫入 Google Sheets，無法復原。';
     if (!confirm(msg)) return;
 
     var btn = document.querySelector('#ac-modal button[onclick="accessApply()"]');
@@ -10916,13 +10916,14 @@ function closeMoreMenu(){ toggleMoreMenu(); }
 })();
 
   // ── Global feedback dialog ──
-  (function() {
+  document.addEventListener("DOMContentLoaded", function() {
     const overlay = document.getElementById("gf-overlay");
     const cancelBtn = document.getElementById("gf-cancel");
     const submitBtn = document.getElementById("gf-submit");
     const textEl = document.getElementById("gf-text");
     const catEl = document.getElementById("gf-category");
     const toast = document.getElementById("gf-toast");
+    if (!overlay || !cancelBtn || !submitBtn) return;
 
     cancelBtn.addEventListener("click", () => { overlay.classList.remove("show"); });
     overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.classList.remove("show"); });
@@ -10942,7 +10943,7 @@ function closeMoreMenu(){ toggleMoreMenu(); }
         setTimeout(() => { toast.style.display = "none"; overlay.classList.remove("show"); }, 1500);
       });
     });
-  })();
+  });
 </script>
   <!-- 通用意見反饋對話框 -->
   <div class="gf-overlay" id="gf-overlay">
