@@ -1211,6 +1211,38 @@ def _sheets_write_selling_status(seq_to_selling: dict):
         return {"ok": False, "error": str(e)}
 
 
+@app.route("/api/sheets/writeback-selling", methods=["POST"])
+def api_sheets_writeback_selling():
+    """
+    管理員專用：把 Firestore company_properties 所有物件的「銷售中」狀態
+    一次全部回寫到 Google Sheets，只更新這一欄，其他欄位完全不碰。
+    """
+    email, err = _require_user()
+    if err: return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email): return jsonify({"error": "僅管理員可使用"}), 403
+    db = _get_db()
+    if db is None: return jsonify({"error": "Firestore 未連線"}), 503
+    try:
+        # 讀出所有物件的 資料序號 → 銷售中 映射
+        seq_to_selling = {}
+        for doc in db.collection("company_properties").stream():
+            r = doc.to_dict()
+            seq = doc.id  # doc ID = 資料序號
+            if seq and seq.isdigit():
+                seq_to_selling[seq] = _is_selling(r)
+        if not seq_to_selling:
+            return jsonify({"ok": False, "error": "Firestore 無資料"}), 400
+        result = _sheets_write_selling_status(seq_to_selling)
+        if result.get("ok"):
+            return jsonify({"ok": True, "total": len(seq_to_selling),
+                            "updated": result["updated"],
+                            "message": f"已掃描 {len(seq_to_selling)} 筆，回寫 {result['updated']} 筆"})
+        else:
+            return jsonify({"ok": False, "error": result.get("error", "未知錯誤")}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/debug/sheets-headers", methods=["GET"])
 def api_debug_sheets_headers():
     """管理員診斷用：讀取 Sheets header 行，確認欄位名稱是否正確。"""
@@ -5803,6 +5835,12 @@ OBJECTS_APP_HTML = """
       🔍 比對審查
       <input type="file" accept=".csv,.json,.doc,.docx" multiple class="hidden" onchange="cpOpenReview(this)">
     </label>
+    <!-- 回寫銷售中 → Sheets -->
+    <button id="cp-writeback-btn" onclick="cpWritebackSelling()"
+      class="px-4 py-1.5 rounded-lg bg-indigo-700 hover:bg-indigo-600 text-white text-xs font-semibold transition"
+      title="把 Firestore 目前所有物件的「銷售中」狀態，一次回寫到 Google Sheets（只動銷售中欄）">
+      📤 回寫銷售中
+    </button>
     <!-- 說明按鈕 -->
     <button onclick="document.getElementById('cp-sync-help-modal').style.display='flex'"
       class="px-3 py-1.5 rounded-lg text-xs font-semibold transition" style="background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);"
@@ -8971,6 +9009,30 @@ OBJECTS_APP_HTML = """
         });
       }, 3000);
     }).catch(function(e){ toast('\u547c\u53eb\u5931\u6557: ' + e, 'error'); btn.disabled=false; });
+  }
+
+  // 一鍵回寫 Firestore 銷售中 → Google Sheets
+  function cpWritebackSelling() {
+    if (!confirm('確定要把 Firestore 所有物件的「銷售中」狀態回寫到 Google Sheets 嗎？\n（只更新銷售中欄，其他欄位不動）')) return;
+    var btn = document.getElementById('cp-writeback-btn');
+    btn.disabled = true;
+    btn.textContent = '回寫中…';
+    fetch('/api/sheets/writeback-selling', { method: 'POST' })
+      .then(function(r){ return r.json(); })
+      .then(function(d) {
+        btn.disabled = false;
+        btn.textContent = '📤 回寫銷售中';
+        if (d.ok) {
+          toast('✅ ' + d.message, 'success');
+        } else {
+          toast('❌ 回寫失敗：' + (d.error || '未知錯誤'), 'error');
+        }
+      })
+      .catch(function(e){
+        btn.disabled = false;
+        btn.textContent = '📤 回寫銷售中';
+        toast('❌ 呼叫失敗：' + e, 'error');
+      });
   }
 
   // ── Sidebar 使用者資訊初始化 ──
