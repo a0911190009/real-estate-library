@@ -5768,7 +5768,7 @@ OBJECTS_APP_HTML = """
     #user-dropdown .dd-danger:hover{background:var(--dgb);}
     #user-dropdown .dd-divider{height:1px;background:var(--bd);margin:4px 0;}
     @media(min-width:768px){body{padding-left:calc(80px + 1.5rem);padding-right:1.5rem;}}
-    @media(max-width:767px){#app-sidebar{display:none;}#app-header{display:flex;}body{padding-left:1rem;padding-right:1rem;padding-bottom:72px;}}
+    @media(max-width:767px){ #app-sidebar{display:none;} #app-header{display:flex;}body{padding-left:1rem;padding-right:1rem;padding-bottom:72px;}}
     /* 手機底部 Tab Bar（統一 Portal 風格） */
     .app-tb-item{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:4px 2px;color:var(--txm);font-size:0.62rem;text-decoration:none;transition:color 0.15s;border-top:2px solid transparent;}
     .app-tb-item:hover{color:var(--tx)!important;}
