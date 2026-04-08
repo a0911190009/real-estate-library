@@ -1534,6 +1534,41 @@ def api_sync_properties_status():
     })
 
 
+@app.route("/api/internal/scheduled-writeback", methods=["POST"])
+def api_internal_scheduled_writeback():
+    """
+    Cloud Scheduler 定時觸發的銷售中回寫端點（不需 session，用 SERVICE_API_KEY 驗證）。
+    設定方式：Cloud Scheduler → 每天 06:05 打此端點，Header 帶 X-Api-Key。
+    在 scheduled-sync（06:00）之後執行，把 Firestore 銷售中狀態同步回 Sheets。
+    """
+    api_key = request.headers.get("X-Api-Key", "")
+    if not api_key or api_key != SERVICE_API_KEY:
+        return jsonify({"error": "unauthorized"}), 401
+
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+
+    import threading
+    def _run():
+        try:
+            seq_to_selling = {}
+            for doc in db.collection("company_properties").stream():
+                r = doc.to_dict()
+                seq = doc.id
+                if seq and seq.isdigit():
+                    seq_to_selling[seq] = _is_selling(r)
+            if seq_to_selling:
+                _sheets_write_selling_status(seq_to_selling)
+        except Exception:
+            import logging
+            logging.getLogger("scheduled-writeback").exception("回寫失敗")
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return jsonify({"ok": True, "message": "銷售中回寫已啟動（背景執行）"})
+
+
 @app.route("/api/internal/scheduled-sync", methods=["POST"])
 def api_internal_scheduled_sync():
     """
