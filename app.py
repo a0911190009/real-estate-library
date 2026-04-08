@@ -1274,6 +1274,350 @@ def api_debug_sheets_headers():
         return jsonify({"error": str(e)}), 500
 
 
+def _col_letter(idx):
+    """0-based 欄位 index → 欄位字母（0→A, 25→Z, 26→AA …）"""
+    idx += 1
+    result = ""
+    while idx:
+        idx, rem = divmod(idx - 1, 26)
+        result = chr(65 + rem) + result
+    return result
+
+
+# ── ACCESS 比對欄位正規化 ──
+_ACCESS_DATE_FIELDS = {"委託到期日", "完成日期", "到期日", "建照日期"}
+_ACCESS_NUM_FIELDS  = {"地坪", "建坪", "室內坪", "管理費(元)",
+                       "委託價(萬)", "售價(萬)", "現有貸款(萬)", "成交金額(萬)"}
+
+def _access_norm_val(field, val):
+    """正規化欄位值供 ACCESS 比對（去單位、統一日期格式）"""
+    v = str(val).strip() if val is not None else ""
+    if not v:
+        return ""
+    if field in _ACCESS_NUM_FIELDS:
+        # 去萬、坪、元、逗號等後轉 float 字串
+        cleaned = re.sub(r'[萬坪元,，\s]', '', v)
+        try:
+            return str(round(float(cleaned), 2))
+        except Exception:
+            return v
+    if field in _ACCESS_DATE_FIELDS:
+        # 民國年 → 西元：113年1月15日 → 2024/01/15
+        m = re.match(r'^(\d{2,3})[\s年/\-](\d{1,2})[\s月/\-](\d{1,2})', v)
+        if m:
+            y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if y < 1000:
+                y += 1911
+            return f"{y}/{mo:02d}/{d:02d}"
+        # 已是西元格式
+        m2 = re.match(r'^(\d{4})[\-/](\d{1,2})[\-/](\d{1,2})', v)
+        if m2:
+            return f"{m2.group(1)}/{int(m2.group(2)):02d}/{int(m2.group(3)):02d}"
+        return v
+    # 一般字串：壓縮空白
+    return re.sub(r'\s+', ' ', v)
+
+def _access_make_key(d):
+    """建立比對主鍵：委託編號正規化；空白時 fallback → 案名 + 物件地址"""
+    comm = re.sub(r'\.0$', '', str(d.get("委託編號", "") or "").strip())
+    comm = re.sub(r'\s+', ' ', comm).strip()
+    if comm:
+        return ("comm", comm)
+    name = re.sub(r'\s+', '', str(d.get("案名", "") or "").strip())
+    addr = re.sub(r'\s+', '', str(d.get("物件地址", "") or "").strip())
+    return ("name_addr", f"{name}|{addr}")
+
+def _access_row_to_dict(headers, row):
+    """把一行資料轉成 {欄位名: 值} dict（按 header 名稱對應）"""
+    d = {}
+    for i, h in enumerate(headers):
+        if h and h.strip():
+            d[h.strip()] = row[i].strip() if i < len(row) else ""
+    return d
+
+
+@app.route("/api/access-compare", methods=["POST"])
+def api_access_compare():
+    """
+    比對「新貼入的 Access Sheets」與原始物件庫 Sheets 的差異。
+    Input JSON: { new_sheet_id, new_sheet_name (選填，空白=自動取第一個分頁) }
+    Output: { ok, added, modified, removed, compare_fields }
+    """
+    email, err = _require_user()
+    if err: return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email): return jsonify({"error": "僅管理員可使用"}), 403
+
+    data = request.get_json(silent=True) or {}
+    new_sheet_id   = (data.get("new_sheet_id") or "").strip()
+    new_sheet_name = (data.get("new_sheet_name") or "").strip()
+    if not new_sheet_id:
+        return jsonify({"error": "請提供新 Sheets ID"}), 400
+
+    try:
+        service = _get_sheets_service()
+
+        # ── 讀原始 Sheets（只取 A~AU 欄，跳過 AV+ 自訂欄）──
+        orig_result = service.spreadsheets().values().get(
+            spreadsheetId=SHEET_ID,
+            range=f"{SHEET_NAME}!A1:AU9999"
+        ).execute()
+        orig_all = orig_result.get("values", [])
+        if len(orig_all) < 4:
+            return jsonify({"error": "原始 Sheets 資料不足（需至少4行）"}), 400
+
+        orig_headers = [h.strip() for h in orig_all[1]]  # 第 2 行是 header
+
+        def _is_hdr(row):
+            return bool(row) and row[0].strip() == (orig_headers[0] if orig_headers else "")
+
+        # 第 4 行起為資料；同時記錄每行的 Sheets 列號（1-based）
+        orig_data = []
+        orig_row_numbers = []
+        for i, row in enumerate(orig_all[3:]):
+            if any(c.strip() for c in row) and not _is_hdr(row):
+                orig_data.append(row)
+                orig_row_numbers.append(4 + i)  # Sheets 第 4 行 = index 3 + 1-based
+
+        # ── 讀新 Sheets ──
+        if not new_sheet_name:
+            # 自動取第一個分頁名稱
+            meta = service.spreadsheets().get(spreadsheetId=new_sheet_id).execute()
+            new_sheet_name = meta["sheets"][0]["properties"]["title"]
+
+        new_result = service.spreadsheets().values().get(
+            spreadsheetId=new_sheet_id,
+            range=f"{new_sheet_name}!A1:AU9999"
+        ).execute()
+        new_all = new_result.get("values", [])
+        if not new_all:
+            return jsonify({"error": "新 Sheets 無資料"}), 400
+
+        # 自動偵測 header 行（找含「委託編號」「案名」「資料序號」任一欄的行）
+        new_header_idx = 0
+        for i, row in enumerate(new_all[:6]):
+            if any(c.strip() in ("委託編號", "案名", "資料序號") for c in row):
+                new_header_idx = i
+                break
+        new_headers = [h.strip() for h in new_all[new_header_idx]]
+        new_data = [r for r in new_all[new_header_idx + 1:] if any(c.strip() for c in r)]
+        # 過濾重複的 header 行
+        new_data = [r for r in new_data if not (r and r[0].strip() == new_headers[0])]
+
+        # ── 決定比較欄位（取兩邊 header 的交集，排除資料序號）──
+        orig_hdr_set = set(h for h in orig_headers if h)
+        new_hdr_set  = set(h for h in new_headers  if h)
+        _IMPORTANT = ["案名", "售價(萬)", "委託到期日", "銷售中", "物件地址",
+                      "經紀人", "委託編號", "物件類別", "地坪", "建坪", "室內坪"]
+        all_common = [h for h in orig_headers if h and h in new_hdr_set and h != "資料序號"]
+        # 重要欄位前置，其餘依原始順序
+        compare_fields = [f for f in _IMPORTANT if f in orig_hdr_set and f in new_hdr_set] + \
+                         [f for f in all_common if f not in _IMPORTANT]
+
+        # ── 建立原始 Sheets index：key → {row_number, data_dict, seq} ──
+        orig_index = {}
+        for i, row in enumerate(orig_data):
+            d = _access_row_to_dict(orig_headers, row)
+            k = _access_make_key(d)
+            orig_index[k] = {
+                "row_number": orig_row_numbers[i],
+                "data": d,
+                "seq": d.get("資料序號", "").strip()
+            }
+
+        # ── 比對 ──
+        added    = []
+        modified = []
+        new_keys = set()
+
+        for new_row in new_data:
+            nd = _access_row_to_dict(new_headers, new_row)
+            k  = _access_make_key(nd)
+            new_keys.add(k)
+
+            if k not in orig_index:
+                # 新增：Access 有但原始 Sheets 沒有
+                added.append({
+                    "key":          str(k),
+                    "data":         {f: nd.get(f, "") for f in new_headers if f},
+                    "display_name": nd.get("案名", "") or nd.get("委託編號", "（未知案名）"),
+                    "price":        nd.get("售價(萬)", ""),
+                    "agent":        nd.get("經紀人", ""),
+                    "comm":         nd.get("委託編號", ""),
+                })
+            else:
+                # 比較差異（只看交集欄位）
+                od = orig_index[k]["data"]
+                changed_fields = []
+                for field in compare_fields:
+                    nv = _access_norm_val(field, nd.get(field, ""))
+                    ov = _access_norm_val(field, od.get(field, ""))
+                    if nv != ov:
+                        changed_fields.append({
+                            "field": field,
+                            "old":   od.get(field, ""),
+                            "new":   nd.get(field, ""),
+                        })
+                if changed_fields:
+                    modified.append({
+                        "key":           str(k),
+                        "row_in_orig":   orig_index[k]["row_number"],
+                        "seq":           orig_index[k]["seq"],
+                        "display_name":  od.get("案名", "") or str(k),
+                        "changed_fields": changed_fields,
+                        "new_data":      {f: nd.get(f, "") for f in new_headers if f},
+                    })
+
+        # 可能下架：原始 Sheets 有、Access 沒有
+        removed = []
+        for k, entry in orig_index.items():
+            if k not in new_keys:
+                d = entry["data"]
+                removed.append({
+                    "key":          str(k),
+                    "seq":          entry["seq"],
+                    "display_name": d.get("案名", "") or str(k),
+                    "comm":         d.get("委託編號", ""),
+                })
+
+        return jsonify({
+            "ok":             True,
+            "added":          added,
+            "modified":       modified,
+            "removed":        removed,
+            "compare_fields": compare_fields,
+        })
+
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "detail": traceback.format_exc()}), 500
+
+
+@app.route("/api/access-apply", methods=["POST"])
+def api_access_apply():
+    """
+    套用比對結果到原始 Sheets：
+    - 修改：cell-by-cell 更新指定欄位（只動 A~AU，AV~CY 完全不碰）
+    - 新增：追加到主頁末尾，自動分配資料序號
+    Input JSON: {
+      apply_modified: [{ row_in_orig (int), fields: {欄位名: 新值} }],
+      apply_added:    [{ 欄位名: 值, … }]
+    }
+    Output: { ok, modified_count, added_count, message }
+    """
+    email, err = _require_user()
+    if err: return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email): return jsonify({"error": "僅管理員可使用"}), 403
+
+    data = request.get_json(silent=True) or {}
+    apply_modified = data.get("apply_modified", [])
+    apply_added    = data.get("apply_added", [])
+
+    if not apply_modified and not apply_added:
+        return jsonify({"ok": True, "modified_count": 0, "added_count": 0,
+                        "message": "無變更需套用"})
+
+    try:
+        service = _get_sheets_service()
+
+        # 讀取原始 Sheets header 行，用名稱定位欄號（不用固定數字，防欄位順序改變出錯）
+        hdr_result = service.spreadsheets().values().get(
+            spreadsheetId=SHEET_ID,
+            range=f"{SHEET_NAME}!A2:AU2"
+        ).execute()
+        raw_headers = hdr_result.get("values", [[]])[0]
+        headers = [h.strip() for h in raw_headers]
+        header_to_col = {h: i for i, h in enumerate(headers) if h}
+
+        # ── 修改：逐欄位建立 batchUpdate 請求 ──
+        value_updates = []
+        for item in apply_modified:
+            row_num = item.get("row_in_orig")
+            fields  = item.get("fields", {})
+            if not row_num or not fields:
+                continue
+            for field_name, new_val in fields.items():
+                if field_name not in header_to_col:
+                    continue  # 欄位不存在原始 Sheets，跳過
+                col_idx    = header_to_col[field_name]
+                col_letter = _col_letter(col_idx)
+                value_updates.append({
+                    "range":  f"{SHEET_NAME}!{col_letter}{row_num}",
+                    "values": [[new_val]]
+                })
+
+        # ── 新增：找最大資料序號後追加 ──
+        added_count = 0
+        if apply_added:
+            orig_all = service.spreadsheets().values().get(
+                spreadsheetId=SHEET_ID,
+                range=f"{SHEET_NAME}!A1:AU9999"
+            ).execute().get("values", [])
+
+            orig_headers = [h.strip() for h in (orig_all[1] if len(orig_all) > 1 else headers)]
+            seq_col_idx  = next((i for i, h in enumerate(orig_headers) if h == "資料序號"), -1)
+
+            max_seq = 0
+            if seq_col_idx >= 0:
+                for row in orig_all[3:]:
+                    if seq_col_idx < len(row):
+                        try:
+                            v = int(float(row[seq_col_idx].strip()))
+                            if v > max_seq:
+                                max_seq = v
+                        except Exception:
+                            pass
+
+            new_seq = max_seq + 1
+            new_rows = []
+            for new_item in apply_added:
+                row_vals = []
+                for h in orig_headers:
+                    if h == "資料序號":
+                        row_vals.append(str(new_seq))
+                        new_seq += 1
+                    else:
+                        row_vals.append(new_item.get(h, ""))
+                new_rows.append(row_vals)
+
+            if new_rows:
+                service.spreadsheets().values().append(
+                    spreadsheetId=SHEET_ID,
+                    range=f"{SHEET_NAME}!A1",
+                    valueInputOption="USER_ENTERED",
+                    insertDataOption="INSERT_ROWS",
+                    body={"values": new_rows}
+                ).execute()
+                added_count = len(new_rows)
+
+        # ── 批次更新修改的欄位 ──
+        modified_count = 0
+        if value_updates:
+            service.spreadsheets().values().batchUpdate(
+                spreadsheetId=SHEET_ID,
+                body={
+                    "valueInputOption": "USER_ENTERED",
+                    "data": value_updates
+                }
+            ).execute()
+            modified_count = len({item.get("row_in_orig") for item in apply_modified
+                                   if item.get("row_in_orig")})
+
+        msg = f"已修改 {modified_count} 筆物件"
+        if added_count > 0:
+            msg += f"，新增 {added_count} 筆（請記得在 CR 欄向下複製公式）"
+
+        return jsonify({
+            "ok":             True,
+            "modified_count": modified_count,
+            "added_count":    added_count,
+            "message":        msg
+        })
+
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "detail": traceback.format_exc()}), 500
+
+
 def _parse_price_num(val):
     if val is None:
         return None
@@ -5878,6 +6222,12 @@ OBJECTS_APP_HTML = """
       title="把 Firestore 目前所有物件的「銷售中」狀態，一次回寫到 Google Sheets（只動銷售中欄）">
       📤 回寫銷售中
     </button>
+    <!-- ACCESS 比對更新 -->
+    <button onclick="openAccessCompareModal()"
+      class="px-4 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold transition"
+      title="把最新 Access 資料貼到新 Sheets，比對與我的物件庫有何差異，選擇要套用哪些變更">
+      📋 ACCESS比對
+    </button>
     <!-- 說明按鈕 -->
     <button onclick="document.getElementById('cp-sync-help-modal').style.display='flex'"
       class="px-3 py-1.5 rounded-lg text-xs font-semibold transition" style="background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);"
@@ -6169,6 +6519,110 @@ OBJECTS_APP_HTML = """
           </button>
           <button onclick="cpCloseReview()"
             style="padding:8px 16px;border-radius:8px;background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);font-size:12px;cursor:pointer;">
+            取消
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ACCESS 比對更新 Modal（管理員限定） -->
+  <div id="ac-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:650;align-items:flex-start;justify-content:center;padding-top:28px;"
+    onclick="if(event.target===this)document.getElementById('ac-modal').style.display='none'">
+    <div style="background:var(--bg-s);border:1px solid var(--bd);border-radius:16px;width:96%;max-width:820px;max-height:90vh;display:flex;flex-direction:column;box-shadow:var(--sh);overflow:hidden;">
+
+      <!-- Header -->
+      <div style="padding:16px 22px 12px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px;flex-shrink:0;">
+        <span style="font-size:15px;font-weight:700;color:var(--tx);">📋 ACCESS 比對更新</span>
+        <span id="ac-subtitle" style="font-size:12px;color:var(--txs);"></span>
+        <button onclick="document.getElementById('ac-modal').style.display='none'"
+          style="margin-left:auto;background:none;border:none;color:var(--txm);font-size:20px;cursor:pointer;line-height:1;">✕</button>
+      </div>
+
+      <!-- 輸入區 -->
+      <div id="ac-input-section" style="padding:16px 22px;border-bottom:1px solid var(--bd);flex-shrink:0;">
+        <p style="font-size:12px;color:var(--txs);margin:0 0 12px;">
+          把公司最新 Access 資料（欄位與主頁相同的 A~AU 欄）貼到一張全新的 Google Sheets，再把 Sheets ID 貼到下方開始比對。
+        </p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+          <div style="flex:1;min-width:220px;">
+            <label style="font-size:11px;color:var(--txs);display:block;margin-bottom:4px;">新 Sheets ID（必填）</label>
+            <input id="ac-sheet-id" type="text" placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms"
+              style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--bd);background:var(--bg-t);color:var(--tx);font-size:12px;box-sizing:border-box;">
+          </div>
+          <div style="width:160px;">
+            <label style="font-size:11px;color:var(--txs);display:block;margin-bottom:4px;">分頁名稱（空白=第一個分頁）</label>
+            <input id="ac-sheet-name" type="text" placeholder="工作表1"
+              style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--bd);background:var(--bg-t);color:var(--tx);font-size:12px;box-sizing:border-box;">
+          </div>
+          <button id="ac-compare-btn" onclick="accessRunCompare()"
+            style="padding:8px 18px;border-radius:8px;background:var(--ac);color:#fff;border:none;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;">
+            開始比對
+          </button>
+        </div>
+        <div id="ac-loading" style="display:none;padding:10px 0;font-size:13px;color:var(--txs);">⏳ 比對中，請稍候…</div>
+      </div>
+
+      <!-- 比對結果區 -->
+      <div id="ac-results" style="display:none;flex:1;overflow:hidden;flex-direction:column;">
+
+        <!-- 分頁按鈕 -->
+        <div style="display:flex;gap:0;border-bottom:1px solid var(--bd);padding:0 22px;flex-shrink:0;">
+          <button id="ac-tab-mod-btn" onclick="acTab('mod')"
+            style="padding:9px 14px;font-size:12px;font-weight:600;border:none;background:none;border-bottom:2px solid var(--ac);color:var(--ac);cursor:pointer;">
+            ✏️ 修改 <span id="ac-cnt-mod" style="background:var(--ac);color:#fff;border-radius:9px;padding:1px 7px;margin-left:3px;">0</span>
+          </button>
+          <button id="ac-tab-add-btn" onclick="acTab('add')"
+            style="padding:9px 14px;font-size:12px;font-weight:600;border:none;background:none;border-bottom:2px solid transparent;color:var(--txm);cursor:pointer;">
+            ➕ 新增 <span id="ac-cnt-add" style="background:var(--bg-h);color:var(--txs);border-radius:9px;padding:1px 7px;margin-left:3px;">0</span>
+          </button>
+          <button id="ac-tab-rem-btn" onclick="acTab('rem')"
+            style="padding:9px 14px;font-size:12px;font-weight:600;border:none;background:none;border-bottom:2px solid transparent;color:var(--txm);cursor:pointer;">
+            🔴 可能下架 <span id="ac-cnt-rem" style="background:var(--bg-h);color:var(--txs);border-radius:9px;padding:1px 7px;margin-left:3px;">0</span>
+          </button>
+        </div>
+
+        <!-- 分頁內容 -->
+        <div style="flex:1;overflow-y:auto;padding:14px 22px;">
+
+          <!-- 修改 Tab -->
+          <div id="ac-pane-mod">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+              <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--txs);cursor:pointer;">
+                <input type="checkbox" id="ac-mod-all" checked onchange="acToggleAll('mod',this)"> 全選
+              </label>
+              <span style="font-size:11px;color:var(--txs);">勾選要套用的修改項目</span>
+            </div>
+            <div id="ac-list-mod" style="display:flex;flex-direction:column;gap:8px;"></div>
+          </div>
+
+          <!-- 新增 Tab -->
+          <div id="ac-pane-add" style="display:none;">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+              <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--txs);cursor:pointer;">
+                <input type="checkbox" id="ac-add-all" checked onchange="acToggleAll('add',this)"> 全選
+              </label>
+              <span style="font-size:11px;color:var(--txs);">勾選要新增到主頁的物件（自動分配資料序號）</span>
+            </div>
+            <div id="ac-list-add" style="display:flex;flex-direction:column;gap:8px;"></div>
+          </div>
+
+          <!-- 可能下架 Tab（僅提示，不套用） -->
+          <div id="ac-pane-rem" style="display:none;">
+            <p style="font-size:12px;color:var(--txs);margin:0 0 10px;">⚠️ 以下物件在主頁有、但 Access 沒有。<strong>僅供提示，不會自動刪除。</strong>請自行確認是否已下架，再到 Sheets 手動更新「銷售中」欄。</p>
+            <div id="ac-list-rem" style="display:flex;flex-direction:column;gap:6px;"></div>
+          </div>
+        </div>
+
+        <!-- Footer -->
+        <div style="padding:12px 22px;border-top:1px solid var(--bd);display:flex;align-items:center;gap:12px;background:var(--bg-s);flex-shrink:0;">
+          <span id="ac-apply-count" style="font-size:12px;color:var(--txs);"></span>
+          <button onclick="accessApply()"
+            style="margin-left:auto;padding:8px 20px;border-radius:8px;background:var(--ok);color:#fff;border:none;font-size:13px;font-weight:700;cursor:pointer;">
+            ✅ 套用選取變更
+          </button>
+          <button onclick="document.getElementById('ac-modal').style.display='none'"
+            style="padding:8px 14px;border-radius:8px;background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);font-size:12px;cursor:pointer;">
             取消
           </button>
         </div>
@@ -9070,6 +9524,232 @@ OBJECTS_APP_HTML = """
         btn.textContent = '📤 回寫銷售中';
         toast('❌ 呼叫失敗：' + e, 'error');
       });
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  // ACCESS 比對更新
+  // ════════════════════════════════════════════════════════════════
+
+  // 全域比對結果暫存（供 accessApply 使用）
+  var _acData = { added: [], modified: [], removed: [], compare_fields: [] };
+
+  // 開啟 Modal
+  function openAccessCompareModal() {
+    document.getElementById('ac-modal').style.display = 'flex';
+    document.getElementById('ac-results').style.display = 'none';
+    document.getElementById('ac-loading').style.display = 'none';
+    document.getElementById('ac-subtitle').textContent = '';
+    document.getElementById('ac-compare-btn').disabled = false;
+    document.getElementById('ac-compare-btn').textContent = '開始比對';
+  }
+
+  // 切換分頁
+  function acTab(tab) {
+    ['mod','add','rem'].forEach(function(t) {
+      var pane = document.getElementById('ac-pane-' + t);
+      var btn  = document.getElementById('ac-tab-' + t + '-btn');
+      if (pane) pane.style.display = (t === tab) ? '' : 'none';
+      if (btn) {
+        btn.style.borderBottomColor = (t === tab) ? 'var(--ac)' : 'transparent';
+        btn.style.color = (t === tab) ? 'var(--ac)' : 'var(--txm)';
+      }
+    });
+    _acUpdateApplyCount();
+  }
+
+  // 全選 / 取消全選
+  function acToggleAll(type, cb) {
+    document.querySelectorAll('#ac-list-' + type + ' input[type=checkbox]')
+      .forEach(function(el) { el.checked = cb.checked; });
+    _acUpdateApplyCount();
+  }
+
+  // 更新「套用 X 筆」計數
+  function _acUpdateApplyCount() {
+    var modCnt = document.querySelectorAll('#ac-list-mod input[type=checkbox]:checked').length;
+    var addCnt = document.querySelectorAll('#ac-list-add input[type=checkbox]:checked').length;
+    var total  = modCnt + addCnt;
+    var el = document.getElementById('ac-apply-count');
+    if (el) el.textContent = '已勾選：修改 ' + modCnt + ' 筆、新增 ' + addCnt + ' 筆（共 ' + total + ' 筆）';
+  }
+
+  // 開始比對
+  function accessRunCompare() {
+    var sheetId   = (document.getElementById('ac-sheet-id').value || '').trim();
+    var sheetName = (document.getElementById('ac-sheet-name').value || '').trim();
+    if (!sheetId) { toast('請輸入新 Sheets ID', 'error'); return; }
+
+    var btn = document.getElementById('ac-compare-btn');
+    btn.disabled = true;
+    btn.textContent = '比對中…';
+    document.getElementById('ac-loading').style.display = '';
+    document.getElementById('ac-results').style.display = 'none';
+
+    fetch('/api/access-compare', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ new_sheet_id: sheetId, new_sheet_name: sheetName })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      btn.disabled = false;
+      btn.textContent = '開始比對';
+      document.getElementById('ac-loading').style.display = 'none';
+      if (!d.ok) {
+        toast('❌ 比對失敗：' + (d.error || '未知錯誤'), 'error');
+        return;
+      }
+      _acData = d;
+      _acRenderResults(d);
+    })
+    .catch(function(e) {
+      btn.disabled = false;
+      btn.textContent = '開始比對';
+      document.getElementById('ac-loading').style.display = 'none';
+      toast('❌ 呼叫失敗：' + e, 'error');
+    });
+  }
+
+  // 渲染比對結果
+  function _acRenderResults(d) {
+    // 更新 Tab 計數
+    document.getElementById('ac-cnt-mod').textContent = d.modified.length;
+    document.getElementById('ac-cnt-add').textContent = d.added.length;
+    document.getElementById('ac-cnt-rem').textContent = d.removed.length;
+
+    var total = d.modified.length + d.added.length;
+    document.getElementById('ac-subtitle').textContent =
+      '修改 ' + d.modified.length + ' ／ 新增 ' + d.added.length + ' ／ 可能下架 ' + d.removed.length;
+
+    // ── 修改列表 ──
+    var modList = document.getElementById('ac-list-mod');
+    modList.innerHTML = '';
+    if (d.modified.length === 0) {
+      modList.innerHTML = '<p style="color:var(--txs);font-size:13px;">✅ 無修改差異</p>';
+    } else {
+      d.modified.forEach(function(item, idx) {
+        var fieldsHtml = item.changed_fields.map(function(f) {
+          return '<div style="display:flex;gap:6px;align-items:baseline;flex-wrap:wrap;margin-bottom:3px;">' +
+            '<span style="font-size:11px;color:var(--txm);min-width:80px;">' + _escHtml(f.field) + '</span>' +
+            '<span style="font-size:12px;color:#f87171;text-decoration:line-through;">' + _escHtml(f.old || '（空）') + '</span>' +
+            '<span style="font-size:11px;color:var(--txs);">→</span>' +
+            '<span style="font-size:12px;color:#4ade80;font-weight:600;">' + _escHtml(f.new || '（空）') + '</span>' +
+            '</div>';
+        }).join('');
+        var card = '<div style="border:1px solid var(--bd);border-radius:8px;padding:10px 12px;background:var(--bg-t);">' +
+          '<label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;">' +
+          '<input type="checkbox" class="ac-mod-cb" data-idx="' + idx + '" checked onchange="_acUpdateApplyCount()" style="margin-top:3px;flex-shrink:0;">' +
+          '<div style="flex:1;">' +
+          '<div style="font-size:13px;font-weight:600;color:var(--tx);margin-bottom:6px;">' +
+          _escHtml(item.display_name) +
+          (item.seq ? '<span style="font-size:11px;color:var(--txs);font-weight:400;margin-left:6px;">序號 ' + _escHtml(item.seq) + '</span>' : '') +
+          '</div>' +
+          fieldsHtml +
+          '</div></label></div>';
+        modList.innerHTML += card;
+      });
+    }
+
+    // ── 新增列表 ──
+    var addList = document.getElementById('ac-list-add');
+    addList.innerHTML = '';
+    if (d.added.length === 0) {
+      addList.innerHTML = '<p style="color:var(--txs);font-size:13px;">✅ 無新增物件</p>';
+    } else {
+      d.added.forEach(function(item, idx) {
+        var card = '<div style="border:1px solid var(--bd);border-radius:8px;padding:10px 12px;background:var(--bg-t);">' +
+          '<label style="display:flex;gap:8px;align-items:center;cursor:pointer;">' +
+          '<input type="checkbox" class="ac-add-cb" data-idx="' + idx + '" checked onchange="_acUpdateApplyCount()" style="flex-shrink:0;">' +
+          '<div>' +
+          '<span style="font-size:13px;font-weight:600;color:var(--tx);">' + _escHtml(item.display_name) + '</span>' +
+          (item.price ? '<span style="font-size:11px;color:var(--txs);margin-left:8px;">售價 ' + _escHtml(item.price) + ' 萬</span>' : '') +
+          (item.agent ? '<span style="font-size:11px;color:var(--txs);margin-left:8px;">經紀人 ' + _escHtml(item.agent) + '</span>' : '') +
+          (item.comm  ? '<span style="font-size:11px;color:var(--txs);margin-left:8px;">委託 ' + _escHtml(item.comm) + '</span>' : '') +
+          '</div></label></div>';
+        addList.innerHTML += card;
+      });
+    }
+
+    // ── 可能下架列表（只顯示，不勾選）──
+    var remList = document.getElementById('ac-list-rem');
+    remList.innerHTML = '';
+    if (d.removed.length === 0) {
+      remList.innerHTML = '<p style="color:var(--txs);font-size:13px;">✅ 無可能下架物件</p>';
+    } else {
+      d.removed.forEach(function(item) {
+        remList.innerHTML += '<div style="padding:7px 10px;border-radius:6px;background:var(--bg-t);border:1px solid var(--bd);font-size:12px;color:var(--txm);">' +
+          _escHtml(item.display_name) +
+          (item.comm ? '<span style="color:var(--txs);margin-left:6px;">委託 ' + _escHtml(item.comm) + '</span>' : '') +
+          (item.seq  ? '<span style="color:var(--txs);margin-left:6px;">序號 ' + _escHtml(item.seq) + '</span>' : '') +
+          '</div>';
+      });
+    }
+
+    // 顯示結果區，預設顯示修改 tab
+    document.getElementById('ac-results').style.display = 'flex';
+    acTab('mod');
+    _acUpdateApplyCount();
+  }
+
+  // 套用選取的變更
+  function accessApply() {
+    // ── 收集修改項目 ──
+    var applyModified = [];
+    document.querySelectorAll('#ac-list-mod .ac-mod-cb:checked').forEach(function(cb) {
+      var idx  = parseInt(cb.dataset.idx);
+      var item = _acData.modified[idx];
+      if (!item) return;
+      var fields = {};
+      item.changed_fields.forEach(function(f) { fields[f.field] = f.new; });
+      applyModified.push({ row_in_orig: item.row_in_orig, fields: fields });
+    });
+
+    // ── 收集新增項目 ──
+    var applyAdded = [];
+    document.querySelectorAll('#ac-list-add .ac-add-cb:checked').forEach(function(cb) {
+      var idx  = parseInt(cb.dataset.idx);
+      var item = _acData.added[idx];
+      if (!item) return;
+      applyAdded.push(item.data);
+    });
+
+    if (applyModified.length === 0 && applyAdded.length === 0) {
+      toast('請先勾選要套用的項目', 'error');
+      return;
+    }
+
+    var msg = '確定要套用 ' + applyModified.length + ' 筆修改';
+    if (applyAdded.length > 0) msg += '＋新增 ' + applyAdded.length + ' 筆';
+    msg += ' 到原始 Sheets 主頁？\n\n此操作會直接寫入 Google Sheets，無法復原。';
+    if (!confirm(msg)) return;
+
+    var btn = document.querySelector('#ac-modal button[onclick="accessApply()"]');
+    if (btn) { btn.disabled = true; btn.textContent = '套用中…'; }
+
+    fetch('/api/access-apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apply_modified: applyModified, apply_added: applyAdded })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (btn) { btn.disabled = false; btn.textContent = '✅ 套用選取變更'; }
+      if (d.ok) {
+        toast('✅ ' + d.message, 'success');
+        document.getElementById('ac-modal').style.display = 'none';
+      } else {
+        toast('❌ 套用失敗：' + (d.error || '未知錯誤'), 'error');
+      }
+    })
+    .catch(function(e) {
+      if (btn) { btn.disabled = false; btn.textContent = '✅ 套用選取變更'; }
+      toast('❌ 呼叫失敗：' + e, 'error');
+    });
+  }
+
+  // HTML 逸出（防 XSS）
+  function _escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
   // ── Sidebar 使用者資訊初始化 ──
