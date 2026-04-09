@@ -1103,13 +1103,13 @@ _sync_lock = threading.Lock()   # 避免同時多次同步
 _sync_status = {"running": False, "last_run": None, "last_result": None}
 
 
-def _get_sheets_service():
+def _get_sheets_service(timeout=30):
     """建立 Sheets API service（讀寫權限）。"""
     import google.auth
     from googleapiclient.discovery import build
     creds, _ = google.auth.default(scopes=[
         "https://www.googleapis.com/auth/cloud-platform",
-        "https://www.googleapis.com/auth/spreadsheets",   # 讀寫（原為 readonly）
+        "https://www.googleapis.com/auth/spreadsheets",
     ])
     return build("sheets", "v4", credentials=creds, cache_discovery=False)
 
@@ -1318,14 +1318,22 @@ def _access_norm_val(field, val):
     return re.sub(r'\s+', ' ', v)
 
 def _access_make_key(d):
-    """建立比對主鍵：委託編號正規化；空白時 fallback → 案名 + 物件地址"""
+    """建立比對主鍵（三層）：
+    1. 委託編號 + 建號：建物（同一委託多戶，靠建號區分）
+    2. 委託編號 + 地號：土地（同一委託多筆，靠地號區分）
+    3. fallback：案名 + 地號 + 物件地址
+    """
     comm = re.sub(r'\.0$', '', str(d.get("委託編號", "") or "").strip())
     comm = re.sub(r'\s+', ' ', comm).strip()
-    if comm:
-        return ("comm", comm)
+    bno  = re.sub(r'\.0$', '', str(d.get("建號", "") or "").strip())   # 建號
+    dino = re.sub(r'\s+', '', str(d.get("地號", "") or "").strip())    # 地號
     name = re.sub(r'\s+', '', str(d.get("案名", "") or "").strip())
     addr = re.sub(r'\s+', '', str(d.get("物件地址", "") or "").strip())
-    return ("name_addr", f"{name}|{addr}")
+    if comm:
+        # 加入建號或地號，確保同一委託的不同戶/筆不衝突
+        detail = bno or dino  # 優先用建號，土地用地號
+        return ("comm", f"{comm}|{detail}")
+    return ("name_addr", f"{name}|{dino}|{addr}")
 
 def _access_row_to_dict(headers, row):
     """把一行資料轉成 {欄位名: 值} dict（按 header 名稱對應）"""
@@ -1335,6 +1343,82 @@ def _access_row_to_dict(headers, row):
             d[h.strip()] = row[i].strip() if i < len(row) else ""
     return d
 
+
+# 伺服器端暫存完整比對資料（供 apply 使用，key = email）
+_AC_CACHE = {}
+
+# ── ACCESS 忽略規則 helpers ──
+
+def _ac_ignore_rule_id(object_key_str, field, ignored_value):
+    """產生忽略規則的 Firestore document ID（確保同一規則不重複建立）"""
+    import hashlib
+    raw = f"{object_key_str}|{field}|{ignored_value}"
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()[:20]
+
+def _ac_load_ignore_rules():
+    """從 Firestore 載入所有忽略規則，回傳 set of (object_key_str, field, ignored_value)"""
+    try:
+        docs = db.collection("access_ignore_rules").stream()
+        rules = {}
+        for doc in docs:
+            d = doc.to_dict()
+            key = (d.get("object_key", ""), d.get("field", ""), d.get("ignored_value", ""))
+            rules[key] = doc.id
+        return rules  # {(obj_key, field, val): doc_id}
+    except Exception:
+        return {}
+
+@app.route("/api/access-ignore-rules", methods=["GET"])
+def api_access_ignore_rules_list():
+    """列出所有忽略規則"""
+    email, err = _require_user()
+    if err: return jsonify({"error": err[0]}), err[1]
+    try:
+        docs = db.collection("access_ignore_rules").order_by("created_at", direction=firestore.Query.DESCENDING).stream()
+        rules = []
+        for doc in docs:
+            d = doc.to_dict()
+            d["id"] = doc.id
+            # Firestore timestamp → 字串
+            if hasattr(d.get("created_at"), "isoformat"):
+                d["created_at"] = d["created_at"].isoformat()
+            rules.append(d)
+        return jsonify({"ok": True, "rules": rules})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/access-ignore-rules", methods=["POST"])
+def api_access_ignore_rules_add():
+    """新增忽略規則"""
+    email, err = _require_user()
+    if err: return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email): return jsonify({"error": "僅管理員可使用"}), 403
+    data = request.get_json(silent=True) or {}
+    obj_key     = data.get("object_key", "").strip()
+    display_name= data.get("display_name", "").strip()
+    field       = data.get("field", "").strip()
+    ign_val     = data.get("ignored_value", "").strip()
+    if not obj_key or not field:
+        return jsonify({"error": "缺少必要欄位"}), 400
+    rule_id = _ac_ignore_rule_id(obj_key, field, ign_val)
+    db.collection("access_ignore_rules").document(rule_id).set({
+        "object_key":     obj_key,
+        "display_name":   display_name,
+        "field":          field,
+        "ignored_value":  ign_val,
+        "created_by":     email,
+        "created_at":     firestore.SERVER_TIMESTAMP,
+    })
+    return jsonify({"ok": True, "id": rule_id})
+
+@app.route("/api/access-ignore-rules/<rule_id>", methods=["DELETE"])
+def api_access_ignore_rules_delete(rule_id):
+    """刪除（解鎖）忽略規則"""
+    email, err = _require_user()
+    if err: return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email): return jsonify({"error": "僅管理員可使用"}), 403
+    db.collection("access_ignore_rules").document(rule_id).delete()
+    return jsonify({"ok": True})
 
 @app.route("/api/access-compare", methods=["POST"])
 def api_access_compare():
@@ -1354,13 +1438,16 @@ def api_access_compare():
         return jsonify({"error": "請提供新 Sheets ID"}), 400
 
     try:
-        service = _get_sheets_service()
+        service = _get_sheets_service(timeout=30)
+
+        # ── 載入忽略規則（全公司共用）──
+        ignore_rules = _ac_load_ignore_rules()  # {(obj_key_str, field, val): doc_id}
 
         # ── 讀原始 Sheets（只取 A~AU 欄，跳過 AV+ 自訂欄）──
         orig_result = service.spreadsheets().values().get(
             spreadsheetId=SHEET_ID,
             range=f"{SHEET_NAME}!A1:AU9999"
-        ).execute()
+        ).execute(num_retries=0)
         orig_all = orig_result.get("values", [])
         if len(orig_all) < 4:
             return jsonify({"error": "原始 Sheets 資料不足（需至少4行）"}), 400
@@ -1370,24 +1457,24 @@ def api_access_compare():
         def _is_hdr(row):
             return bool(row) and row[0].strip() == (orig_headers[0] if orig_headers else "")
 
-        # 第 4 行起為資料；同時記錄每行的 Sheets 列號（1-based）
+        # 第 5 行起為資料（前4列為標題/輔助列）；同時記錄每行的 Sheets 列號（1-based）
         orig_data = []
         orig_row_numbers = []
-        for i, row in enumerate(orig_all[3:]):
+        for i, row in enumerate(orig_all[4:]):
             if any(c.strip() for c in row) and not _is_hdr(row):
                 orig_data.append(row)
-                orig_row_numbers.append(4 + i)  # Sheets 第 4 行 = index 3 + 1-based
+                orig_row_numbers.append(5 + i)  # Sheets 第 5 行 = index 4 + 1-based
 
         # ── 讀新 Sheets ──
         if not new_sheet_name:
             # 自動取第一個分頁名稱
-            meta = service.spreadsheets().get(spreadsheetId=new_sheet_id).execute()
+            meta = service.spreadsheets().get(spreadsheetId=new_sheet_id).execute(num_retries=0)
             new_sheet_name = meta["sheets"][0]["properties"]["title"]
 
         new_result = service.spreadsheets().values().get(
             spreadsheetId=new_sheet_id,
             range=f"{new_sheet_name}!A1:AU9999"
-        ).execute()
+        ).execute(num_retries=0)
         new_all = new_result.get("values", [])
         if not new_all:
             return jsonify({"error": "新 Sheets 無資料"}), 400
@@ -1415,76 +1502,196 @@ def api_access_compare():
 
         # ── 建立原始 Sheets index：key → {row_number, data_dict, seq} ──
         orig_index = {}
+        orig_key_collision = []  # 記錄 key 衝突（同 key 多筆）
         for i, row in enumerate(orig_data):
             d = _access_row_to_dict(orig_headers, row)
             k = _access_make_key(d)
+            if k in orig_index:
+                # 同 key 第二筆起記錄衝突
+                orig_key_collision.append({
+                    "key": str(k),
+                    "kept":     orig_index[k]["data"].get("案名", ""),
+                    "overwritten": d.get("案名", ""),
+                })
             orig_index[k] = {
                 "row_number": orig_row_numbers[i],
                 "data": d,
-                "seq": d.get("資料序號", "").strip()
+                "seq": d.get("資料序號", "").strip(),
+                "_key": str(k),  # 除錯用
             }
 
         # ── 比對 ──
-        added    = []
-        modified = []
+        added_display    = []  # 前端顯示用（輕量）
+        modified_display = []
+        removed_display  = []
+        added_full       = []  # 完整資料，暫存在伺服器端
+        modified_full    = []
         new_keys = set()
 
-        for new_row in new_data:
+        for idx, new_row in enumerate(new_data):
             nd = _access_row_to_dict(new_headers, new_row)
             k  = _access_make_key(nd)
             new_keys.add(k)
 
             if k not in orig_index:
                 # 新增：Access 有但原始 Sheets 沒有
-                added.append({
-                    "key":          str(k),
-                    "data":         {f: nd.get(f, "") for f in new_headers if f},
+                added_display.append({
+                    "idx":          idx,
                     "display_name": nd.get("案名", "") or nd.get("委託編號", "（未知案名）"),
                     "price":        nd.get("售價(萬)", ""),
                     "agent":        nd.get("經紀人", ""),
                     "comm":         nd.get("委託編號", ""),
+                    "_key":         str(k),  # 除錯：顯示實際 key
                 })
+                added_full.append({f: nd.get(f, "") for f in new_headers if f})
             else:
                 # 比較差異（只看交集欄位）
                 od = orig_index[k]["data"]
+                obj_key_str = str(k)
                 changed_fields = []
                 for field in compare_fields:
                     nv = _access_norm_val(field, nd.get(field, ""))
                     ov = _access_norm_val(field, od.get(field, ""))
                     if nv != ov:
+                        raw_new = nd.get(field, "")
+                        rule_key = (obj_key_str, field, raw_new.strip())
+                        is_locked = rule_key in ignore_rules
                         changed_fields.append({
-                            "field": field,
-                            "old":   od.get(field, ""),
-                            "new":   nd.get(field, ""),
+                            "field":   field,
+                            "old":     od.get(field, ""),
+                            "new":     raw_new,
+                            "_locked": is_locked,
+                            "_rule_id": ignore_rules.get(rule_key, ""),
                         })
                 if changed_fields:
-                    modified.append({
-                        "key":           str(k),
+                    midx = len(modified_display)
+                    modified_display.append({
+                        "idx":           midx,
                         "row_in_orig":   orig_index[k]["row_number"],
                         "seq":           orig_index[k]["seq"],
                         "display_name":  od.get("案名", "") or str(k),
                         "changed_fields": changed_fields,
-                        "new_data":      {f: nd.get(f, "") for f in new_headers if f},
+                        "_key":          str(k),  # 除錯：顯示實際配對 key
+                    })
+                    modified_full.append({
+                        "row_in_orig": orig_index[k]["row_number"],
+                        "new_data":    {f: nd.get(f, "") for f in new_headers if f},
                     })
 
+        # ── 二次配對：name_addr 未配到的新增項，用「案名+物件地址」再比一次 ──
+        # 原因：新 Sheets 沒有委託編號的物件用 name_addr key；
+        # 但原始 Sheets 同一物件若有委託編號則用 comm key → 第一次配對永遠配不到
+        # 建立原始 Sheets「尚未被配對」的項目，以（案名, 物件地址）為次要索引
+        matched_orig_keys = set(new_keys) & set(orig_index.keys())  # 已配對的 orig key
+        orig_name_addr_fallback = {}  # (正規化案名, 正規化地址) → orig_index entry
+        for ok, entry in orig_index.items():
+            if ok not in matched_orig_keys:
+                d = entry["data"]
+                fname = re.sub(r'\s+', '', str(d.get("案名", "") or "").strip())
+                faddr = re.sub(r'\s+', '', str(d.get("物件地址", "") or "").strip())
+                if fname or faddr:
+                    fallback_key = (fname, faddr)
+                    if fallback_key not in orig_name_addr_fallback:
+                        orig_name_addr_fallback[fallback_key] = (ok, entry)
+
+        # 對所有「新增」項目嘗試二次配對
+        still_added_display = []
+        still_added_full    = []
+        for i, item in enumerate(added_display):
+            nd = added_full[i] if i < len(added_full) else {}
+            fname = re.sub(r'\s+', '', str(nd.get("案名", "") or "").strip())
+            faddr = re.sub(r'\s+', '', str(nd.get("物件地址", "") or "").strip())
+            fallback_key = (fname, faddr)
+            if (fname or faddr) and fallback_key in orig_name_addr_fallback:
+                # 二次配對成功，改為修改
+                orig_k, orig_entry = orig_name_addr_fallback[fallback_key]
+                del orig_name_addr_fallback[fallback_key]  # 每個 orig 只配一次
+                matched_orig_keys.add(orig_k)
+                new_keys.add(orig_k)  # 標記 orig key 已被配對，不算下架
+                od = orig_entry["data"]
+                obj_key_str2 = str(orig_k)
+                changed_fields = []
+                for field in compare_fields:
+                    nv = _access_norm_val(field, nd.get(field, ""))
+                    ov = _access_norm_val(field, od.get(field, ""))
+                    if nv != ov:
+                        raw_new = nd.get(field, "")
+                        rule_key2 = (obj_key_str2, field, raw_new.strip())
+                        is_locked2 = rule_key2 in ignore_rules
+                        changed_fields.append({
+                            "field":   field,
+                            "old":     od.get(field, ""),
+                            "new":     raw_new,
+                            "_locked": is_locked2,
+                            "_rule_id": ignore_rules.get(rule_key2, ""),
+                        })
+                if changed_fields:
+                    midx = len(modified_display)
+                    modified_display.append({
+                        "idx":            midx,
+                        "row_in_orig":    orig_entry["row_number"],
+                        "seq":            orig_entry["seq"],
+                        "display_name":   od.get("案名", "") or str(orig_k),
+                        "changed_fields": changed_fields,
+                        "_key":           str(orig_k) + "→fallback",
+                    })
+                    modified_full.append({
+                        "row_in_orig": orig_entry["row_number"],
+                        "new_data":    {f: nd.get(f, "") for f in new_headers if f},
+                    })
+            else:
+                still_added_display.append(item)
+                if i < len(added_full):
+                    still_added_full.append(added_full[i])
+        added_display = still_added_display
+        added_full    = still_added_full
+
         # 可能下架：原始 Sheets 有、Access 沒有
-        removed = []
         for k, entry in orig_index.items():
             if k not in new_keys:
                 d = entry["data"]
-                removed.append({
-                    "key":          str(k),
+                removed_display.append({
                     "seq":          entry["seq"],
                     "display_name": d.get("案名", "") or str(k),
                     "comm":         d.get("委託編號", ""),
                 })
 
+        # ── 伺服器端暫存完整資料（供 apply 使用）──
+        _AC_CACHE[email] = {
+            "orig_headers":  orig_headers,
+            "added_full":    added_full,
+            "modified_full": modified_full,
+        }
+
+        # ── 診斷：取前 3 筆 key 供除錯 ──
+        orig_sample = [str(k) for k in list(orig_index.keys())[:3]]
+        new_sample  = []
+        for new_row in new_data[:5]:
+            nd = _access_row_to_dict(new_headers, new_row)
+            new_sample.append(str(_access_make_key(nd)))
+
+        # 輕量顯示資料（不含完整行，只有差異欄位），5000 筆以內不會凍結
+        _DISP_LIMIT = 5000
         return jsonify({
-            "ok":             True,
-            "added":          added,
-            "modified":       modified,
-            "removed":        removed,
-            "compare_fields": compare_fields,
+            "ok":              True,
+            "added":           added_display[:_DISP_LIMIT],
+            "added_total":     len(added_display),
+            "modified":        modified_display[:_DISP_LIMIT],
+            "modified_total":  len(modified_display),
+            "removed":         removed_display[:_DISP_LIMIT],
+            "removed_total":   len(removed_display),
+            "compare_fields":  compare_fields,
+            "_diag": {
+                "orig_headers_sample":  orig_headers[:5],
+                "new_headers_sample":   new_headers[:5],
+                "orig_keys_sample":     orig_sample,
+                "new_keys_sample":      new_sample,
+                "new_header_idx":       new_header_idx,
+                "orig_data_count":      len(orig_data),
+                "new_data_count":       len(new_data),
+                "key_collisions":       orig_key_collision[:20],  # 最多顯示20筆衝突
+                "key_collision_count":  len(orig_key_collision),
+            },
         })
 
     except Exception as e:
@@ -1509,6 +1716,8 @@ def api_access_apply():
     if not _is_admin(email): return jsonify({"error": "僅管理員可使用"}), 403
 
     data = request.get_json(silent=True) or {}
+    # apply_modified: [{ idx (int), row_in_orig, changed_fields:[{field,new}] }]
+    # apply_added:    [{ idx (int) }]  — 實際資料從 _AC_CACHE[email] 取
     apply_modified = data.get("apply_modified", [])
     apply_added    = data.get("apply_added", [])
 
@@ -1516,14 +1725,18 @@ def api_access_apply():
         return jsonify({"ok": True, "modified_count": 0, "added_count": 0,
                         "message": "無變更需套用"})
 
+    cache = _AC_CACHE.get(email)
+    if not cache:
+        return jsonify({"error": "比對資料已過期，請重新執行比對"}), 400
+
     try:
-        service = _get_sheets_service()
+        service = _get_sheets_service(timeout=30)
 
         # 讀取原始 Sheets header 行，用名稱定位欄號（不用固定數字，防欄位順序改變出錯）
         hdr_result = service.spreadsheets().values().get(
             spreadsheetId=SHEET_ID,
             range=f"{SHEET_NAME}!A2:AU2"
-        ).execute()
+        ).execute(num_retries=0)
         raw_headers = hdr_result.get("values", [[]])[0]
         headers = [h.strip() for h in raw_headers]
         header_to_col = {h: i for i, h in enumerate(headers) if h}
@@ -1532,7 +1745,7 @@ def api_access_apply():
         value_updates = []
         for item in apply_modified:
             row_num = item.get("row_in_orig")
-            fields  = item.get("fields", {})
+            fields  = {f["field"]: f["new"] for f in item.get("changed_fields", [])}
             if not row_num or not fields:
                 continue
             for field_name, new_val in fields.items():
@@ -1545,20 +1758,23 @@ def api_access_apply():
                     "values": [[new_val]]
                 })
 
-        # ── 新增：找最大資料序號後追加 ──
+        # ── 新增：從 server cache 取完整資料，找最大序號後追加 ──
         added_count = 0
-        if apply_added:
+        added_full  = cache.get("added_full", [])
+        apply_added_indices = [item.get("idx") for item in apply_added if item.get("idx") is not None]
+
+        if apply_added_indices:
             orig_all = service.spreadsheets().values().get(
                 spreadsheetId=SHEET_ID,
                 range=f"{SHEET_NAME}!A1:AU9999"
-            ).execute().get("values", [])
+            ).execute(num_retries=0).get("values", [])
 
             orig_headers = [h.strip() for h in (orig_all[1] if len(orig_all) > 1 else headers)]
             seq_col_idx  = next((i for i, h in enumerate(orig_headers) if h == "資料序號"), -1)
 
             max_seq = 0
             if seq_col_idx >= 0:
-                for row in orig_all[3:]:
+                for row in orig_all[4:]:  # 第 5 列起為資料
                     if seq_col_idx < len(row):
                         try:
                             v = int(float(row[seq_col_idx].strip()))
@@ -1569,7 +1785,10 @@ def api_access_apply():
 
             new_seq = max_seq + 1
             new_rows = []
-            for new_item in apply_added:
+            for idx in apply_added_indices:
+                if idx >= len(added_full):
+                    continue
+                new_item = added_full[idx]
                 row_vals = []
                 for h in orig_headers:
                     if h == "資料序號":
@@ -1580,12 +1799,45 @@ def api_access_apply():
                 new_rows.append(row_vals)
 
             if new_rows:
-                service.spreadsheets().values().append(
+                # ── 取得分頁的 sheetId（數字 GID），插入列需要用到 ──
+                meta = service.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
+                target_sheet_gid = None
+                for s in meta.get("sheets", []):
+                    if s["properties"]["title"] == SHEET_NAME:
+                        target_sheet_gid = s["properties"]["sheetId"]
+                        break
+                if target_sheet_gid is None:
+                    return jsonify({"error": f"找不到分頁 {SHEET_NAME}"}), 400
+
+                # ── 在第 5 列前插入 N 列空白列（繼承下方資料列格式）──
+                INSERT_ROW_IDX = 4  # 0-based，= Sheets 第 5 列前
+                service.spreadsheets().batchUpdate(
                     spreadsheetId=SHEET_ID,
-                    range=f"{SHEET_NAME}!A1",
-                    valueInputOption="USER_ENTERED",
-                    insertDataOption="INSERT_ROWS",
-                    body={"values": new_rows}
+                    body={"requests": [{
+                        "insertDimension": {
+                            "range": {
+                                "sheetId":    target_sheet_gid,
+                                "dimension":  "ROWS",
+                                "startIndex": INSERT_ROW_IDX,
+                                "endIndex":   INSERT_ROW_IDX + len(new_rows)
+                            },
+                            "inheritFromBefore": False  # 繼承下方資料列格式
+                        }
+                    }]}
+                ).execute()
+
+                # ── 寫入資料到剛插入的空白列 ──
+                start_row = INSERT_ROW_IDX + 1  # 1-based
+                end_row   = INSERT_ROW_IDX + len(new_rows)
+                service.spreadsheets().values().batchUpdate(
+                    spreadsheetId=SHEET_ID,
+                    body={
+                        "valueInputOption": "USER_ENTERED",
+                        "data": [{
+                            "range":  f"{SHEET_NAME}!A{start_row}:AU{end_row}",
+                            "values": new_rows
+                        }]
+                    }
                 ).execute()
                 added_count = len(new_rows)
 
@@ -6535,8 +6787,10 @@ OBJECTS_APP_HTML = """
       <div style="padding:16px 22px 12px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px;flex-shrink:0;">
         <span style="font-size:15px;font-weight:700;color:var(--tx);">📋 ACCESS 比對更新</span>
         <span id="ac-subtitle" style="font-size:12px;color:var(--txs);"></span>
+        <button onclick="openAcIgnoreModal()"
+          style="margin-left:auto;font-size:12px;padding:4px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--bg-t);color:var(--txm);cursor:pointer;">🔒 忽略規則</button>
         <button onclick="document.getElementById('ac-modal').style.display='none'"
-          style="margin-left:auto;background:none;border:none;color:var(--txm);font-size:20px;cursor:pointer;line-height:1;">✕</button>
+          style="margin-left:8px;background:none;border:none;color:var(--txm);font-size:20px;cursor:pointer;line-height:1;">✕</button>
       </div>
 
       <!-- 輸入區 -->
@@ -6547,7 +6801,7 @@ OBJECTS_APP_HTML = """
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
           <div style="flex:1;min-width:220px;">
             <label style="font-size:11px;color:var(--txs);display:block;margin-bottom:4px;">新 Sheets ID（必填）</label>
-            <input id="ac-sheet-id" type="text" placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms"
+            <input id="ac-sheet-id" type="text" value="1_PE14LjVJ0M0Z2npklYHfmimfyVw98QLWK7cGq-oF7U"
               style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--bd);background:var(--bg-t);color:var(--tx);font-size:12px;box-sizing:border-box;">
           </div>
           <div style="width:160px;">
@@ -6587,10 +6841,14 @@ OBJECTS_APP_HTML = """
 
           <!-- 修改 Tab -->
           <div id="ac-pane-mod">
-            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;">
               <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--txs);cursor:pointer;">
                 <input type="checkbox" id="ac-mod-all" checked onchange="acToggleAll('mod',this)"> 全選
               </label>
+              <input id="ac-mod-filter" type="text" placeholder="🔍 搜尋案名…"
+                oninput="acFilterMod(this.value)"
+                style="flex:1;min-width:120px;max-width:220px;font-size:12px;padding:3px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--tx);">
+              <span id="ac-mod-filter-hint" style="font-size:11px;color:var(--txs);"></span>
               <span style="font-size:11px;color:var(--txs);">勾選要套用的修改項目</span>
             </div>
             <div id="ac-list-mod" style="display:flex;flex-direction:column;gap:8px;"></div>
@@ -6626,6 +6884,28 @@ OBJECTS_APP_HTML = """
             取消
           </button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ACCESS 忽略規則管理 Modal -->
+  <div id="ac-ignore-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:700;align-items:flex-start;justify-content:center;padding-top:40px;"
+    onclick="if(event.target===this)document.getElementById('ac-ignore-modal').style.display='none'">
+    <div style="background:var(--bg);border-radius:16px;width:min(680px,96vw);max-height:80vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,.3);">
+      <div style="padding:16px 22px 12px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px;flex-shrink:0;">
+        <span style="font-size:15px;font-weight:700;color:var(--tx);">🔒 ACCESS 忽略規則管理</span>
+        <button onclick="document.getElementById('ac-ignore-modal').style.display='none'"
+          style="margin-left:auto;background:none;border:none;color:var(--txm);font-size:20px;cursor:pointer;line-height:1;">✕</button>
+      </div>
+      <div style="padding:12px 22px;flex:1;overflow-y:auto;">
+        <p style="font-size:12px;color:var(--txs);margin:0 0 12px;">以下差異被標記為「忽略」，比對時會以 🔒 顯示、預設不套用。點「解鎖」可恢復正常比對。</p>
+        <div id="ac-ignore-list" style="display:flex;flex-direction:column;gap:8px;">
+          <p style="color:var(--txs);font-size:13px;">載入中…</p>
+        </div>
+      </div>
+      <div style="padding:12px 22px;border-top:1px solid var(--bd);flex-shrink:0;text-align:right;">
+        <button onclick="document.getElementById('ac-ignore-modal').style.display='none'"
+          style="padding:7px 18px;border-radius:8px;background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);font-size:12px;cursor:pointer;">關閉</button>
       </div>
     </div>
   </div>
@@ -9564,10 +9844,10 @@ OBJECTS_APP_HTML = """
     _acUpdateApplyCount();
   }
 
-  // 更新「套用 X 筆」計數
+  // 更新「套用 X 筆」計數（只算卡片層的 checkbox，不算欄位層）
   function _acUpdateApplyCount() {
-    var modCnt = document.querySelectorAll('#ac-list-mod input[type=checkbox]:checked').length;
-    var addCnt = document.querySelectorAll('#ac-list-add input[type=checkbox]:checked').length;
+    var modCnt = document.querySelectorAll('#ac-list-mod .ac-mod-cb:checked').length;
+    var addCnt = document.querySelectorAll('#ac-list-add .ac-add-cb:checked').length;
     var total  = modCnt + addCnt;
     var el = document.getElementById('ac-apply-count');
     if (el) el.textContent = '已勾選：修改 ' + modCnt + ' 筆、新增 ' + addCnt + ' 筆（共 ' + total + ' 筆）';
@@ -9585,12 +9865,16 @@ OBJECTS_APP_HTML = """
     document.getElementById('ac-loading').style.display = '';
     document.getElementById('ac-results').style.display = 'none';
 
+    var _acAbort = new AbortController();
+    var _acTimer = setTimeout(function() { _acAbort.abort(); }, 60000);  // 60 秒 timeout
+
     fetch('/api/access-compare', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ new_sheet_id: sheetId, new_sheet_name: sheetName })
+      body: JSON.stringify({ new_sheet_id: sheetId, new_sheet_name: sheetName }),
+      signal: _acAbort.signal
     })
-    .then(function(r) { return r.json(); })
+    .then(function(r) { clearTimeout(_acTimer); return r.json(); })
     .then(function(d) {
       btn.disabled = false;
       btn.textContent = '開始比對';
@@ -9603,61 +9887,200 @@ OBJECTS_APP_HTML = """
       _acRenderResults(d);
     })
     .catch(function(e) {
+      clearTimeout(_acTimer);
       btn.disabled = false;
       btn.textContent = '開始比對';
       document.getElementById('ac-loading').style.display = 'none';
-      toast('❌ 呼叫失敗：' + e, 'error');
+      var msg = e.name === 'AbortError' ? '比對逾時（60秒），請確認新 Sheets 已共用給服務帳戶，再重試' : ('呼叫失敗：' + e);
+      toast('❌ ' + msg, 'error');
     });
   }
 
   // 渲染比對結果
+  // 鎖定某個欄位差異（不套用，記住此選擇）
+  function acLockField(cardIdx, fieldIdx, btn) {
+    var item = _acData.modified[cardIdx];
+    if (!item) return;
+    var f = item.changed_fields[fieldIdx];
+    if (!f) return;
+    var obj_key = item._key || '';
+    fetch('/api/access-ignore-rules', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        object_key:    obj_key,
+        display_name:  item.display_name,
+        field:         f.field,
+        ignored_value: (f.new || '').trim(),
+      })
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      if (d.ok) {
+        toast('已鎖定「' + f.field + '」，下次比對自動忽略', 'ok');
+        f._locked  = true;
+        f._rule_id = d.id;
+        // 重新渲染整個修改列表
+        _acRenderResults(_acData);
+      } else {
+        toast('鎖定失敗：' + (d.error || ''), 'error');
+      }
+    }).catch(function(e) { toast('鎖定失敗：' + e.message, 'error'); });
+  }
+
+  // 解鎖某個忽略規則
+  function acUnlockRule(ruleId, btn) {
+    if (!ruleId) return;
+    fetch('/api/access-ignore-rules/' + encodeURIComponent(ruleId), { method: 'DELETE' })
+    .then(function(r) { return r.json(); }).then(function(d) {
+      if (d.ok) {
+        toast('已解鎖，重新比對後生效', 'ok');
+        // 從 _acData 中清除該規則標記，重新渲染
+        if (_acData && _acData.modified) {
+          _acData.modified.forEach(function(item) {
+            (item.changed_fields || []).forEach(function(f) {
+              if (f._rule_id === ruleId) { f._locked = false; f._rule_id = ''; }
+            });
+          });
+          _acRenderResults(_acData);
+        }
+        // 若管理 Modal 開著，重新載入列表
+        if (document.getElementById('ac-ignore-modal').style.display === 'flex') {
+          _acLoadIgnoreList();
+        }
+      } else {
+        toast('解鎖失敗：' + (d.error || ''), 'error');
+      }
+    }).catch(function(e) { toast('解鎖失敗：' + e.message, 'error'); });
+  }
+
+  // 開啟忽略規則管理 Modal
+  function openAcIgnoreModal() {
+    document.getElementById('ac-ignore-modal').style.display = 'flex';
+    _acLoadIgnoreList();
+  }
+
+  // 載入並渲染忽略規則列表
+  function _acLoadIgnoreList() {
+    var list = document.getElementById('ac-ignore-list');
+    list.innerHTML = '<p style="color:var(--txs);font-size:13px;">載入中…</p>';
+    fetch('/api/access-ignore-rules').then(function(r) { return r.json(); }).then(function(d) {
+      if (!d.ok) { list.innerHTML = '<p style="color:#f87171;">載入失敗</p>'; return; }
+      if (d.rules.length === 0) {
+        list.innerHTML = '<p style="color:var(--txs);font-size:13px;">目前沒有忽略規則。</p>';
+        return;
+      }
+      list.innerHTML = d.rules.map(function(r) {
+        return '<div style="border:1px solid var(--bd);border-radius:8px;padding:10px 14px;background:var(--bg-t);display:flex;align-items:center;gap:10px;flex-wrap:wrap;">' +
+          '<div style="flex:1;min-width:0;">' +
+          '<div style="font-size:13px;font-weight:600;color:var(--tx);">' + _escHtml(r.display_name || r.object_key) + '</div>' +
+          '<div style="font-size:11px;color:var(--txm);margin-top:3px;">欄位：<b>' + _escHtml(r.field) + '</b>　忽略的新值：<b>' + _escHtml(r.ignored_value || '（空）') + '</b></div>' +
+          '<div style="font-size:10px;color:var(--txs);margin-top:2px;">建立者：' + _escHtml(r.created_by || '') + (r.created_at ? '　' + r.created_at.substring(0,10) : '') + '</div>' +
+          '</div>' +
+          '<button onclick="acUnlockRule(' + JSON.stringify(r.id) + ',this);this.closest(\'[style]\').remove()" ' +
+          'style="padding:5px 12px;border-radius:6px;border:1px solid #f87171;color:#f87171;background:none;font-size:12px;cursor:pointer;flex-shrink:0;">解鎖</button>' +
+          '</div>';
+      }).join('');
+    }).catch(function() { list.innerHTML = '<p style="color:#f87171;">載入失敗</p>'; });
+  }
+
+  // 卡片勾選框切換：連帶勾/取消全部欄位
+  function _acModCbChange(cb, cardIdx) {
+    var checked = cb.checked;
+    document.querySelectorAll('#ac-list-mod .ac-field-cb[data-card-idx="' + cardIdx + '"]').forEach(function(fcb) {
+      fcb.checked = checked;
+    });
+  }
+
+  // 欄位勾選框切換：若全部欄位都取消，連帶取消卡片；若有任一欄位勾選，連帶勾卡片
+  function _acFieldCbChange(fcb, cardIdx) {
+    var allFields = document.querySelectorAll('#ac-list-mod .ac-field-cb[data-card-idx="' + cardIdx + '"]');
+    var anyChecked = Array.from(allFields).some(function(f) { return f.checked; });
+    var cardCb = document.querySelector('#ac-list-mod .ac-mod-cb[data-idx="' + cardIdx + '"]');
+    if (cardCb) cardCb.checked = anyChecked;
+    _acUpdateApplyCount();
+  }
+
+  // 即時搜尋過濾修改卡片（用 display:none 隱藏不符合的）
+  function acFilterMod(q) {
+    var kw = q.trim().toLowerCase();
+    var cards = document.querySelectorAll('#ac-list-mod [data-name]');
+    var shown = 0;
+    cards.forEach(function(card) {
+      var name = (card.getAttribute('data-name') || '').toLowerCase();
+      var match = !kw || name.indexOf(kw) !== -1;
+      card.style.display = match ? '' : 'none';
+      if (match) shown++;
+    });
+    var hint = document.getElementById('ac-mod-filter-hint');
+    if (hint) hint.textContent = kw ? ('顯示 ' + shown + ' 筆') : '';
+  }
+
   function _acRenderResults(d) {
-    // 更新 Tab 計數
-    document.getElementById('ac-cnt-mod').textContent = d.modified.length;
-    document.getElementById('ac-cnt-add').textContent = d.added.length;
-    document.getElementById('ac-cnt-rem').textContent = d.removed.length;
+    // 更新 Tab 計數（顯示實際總筆數）
+    var modTotal = d.modified_total || d.modified.length;
+    var addTotal = d.added_total   || d.added.length;
+    var remTotal = d.removed_total || d.removed.length;
+    document.getElementById('ac-cnt-mod').textContent = modTotal;
+    document.getElementById('ac-cnt-add').textContent = addTotal;
+    document.getElementById('ac-cnt-rem').textContent = remTotal;
 
-    var total = d.modified.length + d.added.length;
     document.getElementById('ac-subtitle').textContent =
-      '修改 ' + d.modified.length + ' ／ 新增 ' + d.added.length + ' ／ 可能下架 ' + d.removed.length;
+      '修改 ' + modTotal + ' ／ 新增 ' + addTotal + ' ／ 可能下架 ' + remTotal;
 
-    // ── 修改列表 ──
+    // ── 修改列表（一次性 innerHTML，避免 O(n²) 凍結）──
     var modList = document.getElementById('ac-list-mod');
-    modList.innerHTML = '';
     if (d.modified.length === 0) {
-      modList.innerHTML = '<p style="color:var(--txs);font-size:13px;">✅ 無修改差異</p>';
+      modList.innerHTML = '<p style="color:var(--txs);font-size:13px;">' + (modTotal === 0 ? '✅ 無修改差異' : '（套用時全部 ' + modTotal + ' 筆都會處理）') + '</p>';
     } else {
-      d.modified.forEach(function(item, idx) {
-        var fieldsHtml = item.changed_fields.map(function(f) {
-          return '<div style="display:flex;gap:6px;align-items:baseline;flex-wrap:wrap;margin-bottom:3px;">' +
-            '<span style="font-size:11px;color:var(--txm);min-width:80px;">' + _escHtml(f.field) + '</span>' +
+      var modHtml = d.modified.map(function(item, idx) {
+        // 每個欄位都有自己的勾選框；被鎖定的欄位顯示 🔒，不可勾選
+        var fieldsHtml = item.changed_fields.map(function(f, fi) {
+          if (f._locked) {
+            // 🔒 鎖定欄位：灰色顯示 + 解鎖按鈕
+            return '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:4px;opacity:0.5;">' +
+              '<span style="font-size:11px;color:var(--txm);min-width:100px;">🔒 ' + _escHtml(f.field) + '</span>' +
+              '<span style="font-size:12px;color:#f87171;text-decoration:line-through;">' + _escHtml(f.old || '（空）') + '</span>' +
+              '<span style="font-size:11px;color:var(--txs);">→</span>' +
+              '<span style="font-size:12px;color:var(--txm);">' + _escHtml(f.new || '（空）') + '</span>' +
+              '<button onclick="acUnlockRule(' + JSON.stringify(f._rule_id) + ',this)" ' +
+              'style="font-size:10px;padding:1px 6px;border:1px solid var(--bd);border-radius:4px;background:var(--bg);color:var(--txs);cursor:pointer;flex-shrink:0;">解鎖</button>' +
+              '</div>';
+          }
+          return '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:4px;">' +
+            '<label style="display:flex;align-items:center;gap:4px;cursor:pointer;min-width:100px;">' +
+            '<input type="checkbox" class="ac-field-cb" data-card-idx="' + idx + '" data-field-idx="' + fi + '" checked' +
+            ' onchange="_acFieldCbChange(this,' + idx + ')" style="flex-shrink:0;">' +
+            '<span style="font-size:11px;color:var(--txm);">' + _escHtml(f.field) + '</span>' +
+            '</label>' +
             '<span style="font-size:12px;color:#f87171;text-decoration:line-through;">' + _escHtml(f.old || '（空）') + '</span>' +
             '<span style="font-size:11px;color:var(--txs);">→</span>' +
             '<span style="font-size:12px;color:#4ade80;font-weight:600;">' + _escHtml(f.new || '（空）') + '</span>' +
+            '<button onclick="acLockField(' + idx + ',' + fi + ',this)" ' +
+            'title="鎖定此差異，下次比對自動忽略" ' +
+            'style="font-size:10px;padding:1px 6px;border:1px solid var(--bd);border-radius:4px;background:var(--bg);color:var(--txs);cursor:pointer;flex-shrink:0;">🔒鎖定</button>' +
             '</div>';
         }).join('');
-        var card = '<div style="border:1px solid var(--bd);border-radius:8px;padding:10px 12px;background:var(--bg-t);">' +
-          '<label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;">' +
-          '<input type="checkbox" class="ac-mod-cb" data-idx="' + idx + '" checked onchange="_acUpdateApplyCount()" style="margin-top:3px;flex-shrink:0;">' +
+        return '<div style="border:1px solid var(--bd);border-radius:8px;padding:10px 12px;background:var(--bg-t);" data-name="' + _escHtml(item.display_name) + '">' +
+          '<div style="display:flex;gap:8px;align-items:flex-start;">' +
+          '<input type="checkbox" class="ac-mod-cb" data-idx="' + idx + '" checked onchange="_acModCbChange(this,' + idx + ');_acUpdateApplyCount()" style="margin-top:3px;flex-shrink:0;">' +
           '<div style="flex:1;">' +
           '<div style="font-size:13px;font-weight:600;color:var(--tx);margin-bottom:6px;">' +
           _escHtml(item.display_name) +
           (item.seq ? '<span style="font-size:11px;color:var(--txs);font-weight:400;margin-left:6px;">序號 ' + _escHtml(item.seq) + '</span>' : '') +
-          '</div>' +
-          fieldsHtml +
-          '</div></label></div>';
-        modList.innerHTML += card;
-      });
+          '</div>' + fieldsHtml +
+          (item._key ? '<div style="font-size:10px;color:#888;margin-top:4px;word-break:break-all;">🔑 ' + _escHtml(item._key) + '</div>' : '') +
+          '</div></div></div>';
+      }).join('');
+      if (modTotal > d.modified.length) modHtml += '<p style="color:#f87171;font-size:12px;margin-top:8px;">⚠️ 筆數超過顯示上限，僅顯示前 ' + d.modified.length + ' 筆。請用搜尋框確認後再套用，套用時全部 ' + modTotal + ' 筆都會處理。</p>';
+      modList.innerHTML = modHtml;
     }
 
     // ── 新增列表 ──
     var addList = document.getElementById('ac-list-add');
-    addList.innerHTML = '';
     if (d.added.length === 0) {
-      addList.innerHTML = '<p style="color:var(--txs);font-size:13px;">✅ 無新增物件</p>';
+      addList.innerHTML = '<p style="color:var(--txs);font-size:13px;">' + (addTotal === 0 ? '✅ 無新增物件' : '（套用時全部 ' + addTotal + ' 筆都會處理）') + '</p>';
     } else {
-      d.added.forEach(function(item, idx) {
-        var card = '<div style="border:1px solid var(--bd);border-radius:8px;padding:10px 12px;background:var(--bg-t);">' +
+      addList.innerHTML = d.added.map(function(item, idx) {
+        return '<div style="border:1px solid var(--bd);border-radius:8px;padding:10px 12px;background:var(--bg-t);">' +
           '<label style="display:flex;gap:8px;align-items:center;cursor:pointer;">' +
           '<input type="checkbox" class="ac-add-cb" data-idx="' + idx + '" checked onchange="_acUpdateApplyCount()" style="flex-shrink:0;">' +
           '<div>' +
@@ -9665,24 +10088,23 @@ OBJECTS_APP_HTML = """
           (item.price ? '<span style="font-size:11px;color:var(--txs);margin-left:8px;">售價 ' + _escHtml(item.price) + ' 萬</span>' : '') +
           (item.agent ? '<span style="font-size:11px;color:var(--txs);margin-left:8px;">經紀人 ' + _escHtml(item.agent) + '</span>' : '') +
           (item.comm  ? '<span style="font-size:11px;color:var(--txs);margin-left:8px;">委託 ' + _escHtml(item.comm) + '</span>' : '') +
+          (item._key  ? '<div style="font-size:10px;color:#888;margin-top:3px;word-break:break-all;">🔑 ' + _escHtml(item._key) + '</div>' : '') +
           '</div></label></div>';
-        addList.innerHTML += card;
-      });
+      }).join('') + (addTotal > d.added.length ? '<p style="color:#f87171;font-size:12px;margin-top:8px;">⚠️ 筆數超過顯示上限，僅顯示前 ' + d.added.length + ' 筆。請用搜尋框確認後再套用，套用時全部 ' + addTotal + ' 筆都會處理。</p>' : '');
     }
 
     // ── 可能下架列表（只顯示，不勾選）──
     var remList = document.getElementById('ac-list-rem');
-    remList.innerHTML = '';
     if (d.removed.length === 0) {
-      remList.innerHTML = '<p style="color:var(--txs);font-size:13px;">✅ 無可能下架物件</p>';
+      remList.innerHTML = '<p style="color:var(--txs);font-size:13px;">' + (remTotal === 0 ? '✅ 無可能下架物件' : '（共 ' + remTotal + ' 筆，請人工確認）') + '</p>';
     } else {
-      d.removed.forEach(function(item) {
-        remList.innerHTML += '<div style="padding:7px 10px;border-radius:6px;background:var(--bg-t);border:1px solid var(--bd);font-size:12px;color:var(--txm);">' +
+      remList.innerHTML = d.removed.map(function(item) {
+        return '<div style="padding:7px 10px;border-radius:6px;background:var(--bg-t);border:1px solid var(--bd);font-size:12px;color:var(--txm);">' +
           _escHtml(item.display_name) +
           (item.comm ? '<span style="color:var(--txs);margin-left:6px;">委託 ' + _escHtml(item.comm) + '</span>' : '') +
           (item.seq  ? '<span style="color:var(--txs);margin-left:6px;">序號 ' + _escHtml(item.seq) + '</span>' : '') +
           '</div>';
-      });
+      }).join('') + (remTotal > d.removed.length ? '<p style="color:var(--txs);font-size:12px;margin-top:8px;">⚠️ 僅顯示前 ' + d.removed.length + ' 筆，共 ' + remTotal + ' 筆</p>' : '');
     }
 
     // 顯示結果區，預設顯示修改 tab
@@ -9699,18 +10121,25 @@ OBJECTS_APP_HTML = """
       var idx  = parseInt(cb.dataset.idx);
       var item = _acData.modified[idx];
       if (!item) return;
-      var fields = {};
-      item.changed_fields.forEach(function(f) { fields[f.field] = f.new; });
-      applyModified.push({ row_in_orig: item.row_in_orig, fields: fields });
+      // 只收集被勾選的欄位（使用者可能只勾部分欄位）
+      var checkedFields = [];
+      document.querySelectorAll('#ac-list-mod .ac-field-cb[data-card-idx="' + idx + '"]:checked').forEach(function(fcb) {
+        var fi = parseInt(fcb.dataset.fieldIdx);
+        if (item.changed_fields[fi]) checkedFields.push(item.changed_fields[fi]);
+      });
+      if (checkedFields.length === 0) return;  // 沒有任何欄位被勾選，跳過
+      applyModified.push({
+        idx: idx,
+        row_in_orig: item.row_in_orig,
+        changed_fields: checkedFields  // 只傳被勾選的欄位
+      });
     });
 
-    // ── 收集新增項目 ──
+    // ── 收集新增項目（只傳 idx，完整資料在 server cache）──
     var applyAdded = [];
     document.querySelectorAll('#ac-list-add .ac-add-cb:checked').forEach(function(cb) {
-      var idx  = parseInt(cb.dataset.idx);
-      var item = _acData.added[idx];
-      if (!item) return;
-      applyAdded.push(item.data);
+      var idx = parseInt(cb.dataset.idx);
+      applyAdded.push({ idx: idx });
     });
 
     if (applyModified.length === 0 && applyAdded.length === 0) {
