@@ -9913,7 +9913,10 @@ OBJECTS_APP_HTML = """
         field:         f.field,
         ignored_value: (f.new || '').trim(),
       })
-    }).then(function(r) { return r.json(); }).then(function(d) {
+    }).then(function(r) {
+      if (!r.ok) return r.text().then(function(t) { throw new Error('HTTP ' + r.status + ': ' + t.substring(0,200)); });
+      return r.json();
+    }).then(function(d) {
       if (d.ok) {
         toast('已鎖定「' + f.field + '」，下次比對自動忽略', 'ok');
         f._locked  = true;
@@ -9969,13 +9972,13 @@ OBJECTS_APP_HTML = """
         return;
       }
       list.innerHTML = d.rules.map(function(r) {
-        return '<div style="border:1px solid var(--bd);border-radius:8px;padding:10px 14px;background:var(--bg-t);display:flex;align-items:center;gap:10px;flex-wrap:wrap;">' +
+        return '<div class="ac-ignore-item" style="border:1px solid var(--bd);border-radius:8px;padding:10px 14px;background:var(--bg-t);display:flex;align-items:center;gap:10px;flex-wrap:wrap;">' +
           '<div style="flex:1;min-width:0;">' +
           '<div style="font-size:13px;font-weight:600;color:var(--tx);">' + _escHtml(r.display_name || r.object_key) + '</div>' +
           '<div style="font-size:11px;color:var(--txm);margin-top:3px;">欄位：<b>' + _escHtml(r.field) + '</b>　忽略的新值：<b>' + _escHtml(r.ignored_value || '（空）') + '</b></div>' +
           '<div style="font-size:10px;color:var(--txs);margin-top:2px;">建立者：' + _escHtml(r.created_by || '') + (r.created_at ? '　' + r.created_at.substring(0,10) : '') + '</div>' +
           '</div>' +
-          '<button onclick="acUnlockRule(' + JSON.stringify(r.id) + ',this);this.closest(\'[style]\').remove()" ' +
+          '<button data-rule-id="' + _escHtml(r.id) + '" onclick="acUnlockRule(this.dataset.ruleId,this);this.parentElement.remove()" ' +
           'style="padding:5px 12px;border-radius:6px;border:1px solid #f87171;color:#f87171;background:none;font-size:12px;cursor:pointer;flex-shrink:0;">解鎖</button>' +
           '</div>';
       }).join('');
@@ -10041,7 +10044,7 @@ OBJECTS_APP_HTML = """
               '<span style="font-size:12px;color:#f87171;text-decoration:line-through;">' + _escHtml(f.old || '（空）') + '</span>' +
               '<span style="font-size:11px;color:var(--txs);">→</span>' +
               '<span style="font-size:12px;color:var(--txm);">' + _escHtml(f.new || '（空）') + '</span>' +
-              '<button onclick="acUnlockRule(' + JSON.stringify(f._rule_id) + ',this)" ' +
+              '<button data-rule-id="' + _escHtml(f._rule_id || '') + '" onclick="acUnlockRule(this.dataset.ruleId,this)" ' +
               'style="font-size:10px;padding:1px 6px;border:1px solid var(--bd);border-radius:4px;background:var(--bg);color:var(--txs);cursor:pointer;flex-shrink:0;">解鎖</button>' +
               '</div>';
           }
