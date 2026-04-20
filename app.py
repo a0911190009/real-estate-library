@@ -6520,6 +6520,16 @@ OBJECTS_APP_HTML = """
               <p style="color:var(--txs);font-size:12px;margin:0;">上傳由本機工具 <code style="background:var(--bg-p);padding:1px 5px;border-radius:4px;color:var(--ac);">export_word_table.py</code> 產出的 CSV（公寓/房屋/農地/建地）及 <code style="background:var(--bg-p);padding:1px 5px;border-radius:4px;color:var(--ac);">word_meta.json</code>。系統分析與 Firestore 的配對結果，分為<strong style="color:var(--ok);">高信心</strong>、<strong style="color:var(--warn);">中信心</strong>、問題三組，讓你逐一確認後寫入。</p>
               <p style="color:var(--txm);font-size:11px;margin:6px 0 0;">💡 一次可選取 4 個 CSV + 1 個 word_meta.json，共 5 個檔案一起選取。</p>
             </div>
+            <div style="background:var(--bg-t);border:1px solid var(--bd);border-radius:10px;padding:12px 14px;">
+              <p style="font-weight:700;margin:0 0 4px;font-size:13px;color:#a78bfa;">📋 ACCESS 比對更新</p>
+              <p style="color:var(--txs);font-size:12px;margin:0;">把公司 Access 的最新資料（已整理到 Google Sheets）與主頁 Sheets 比對，找出差異後讓你選擇性套用。比對結果分三個 Tab：</p>
+              <div style="margin:8px 0 0;display:flex;flex-direction:column;gap:4px;font-size:12px;">
+                <div style="display:flex;gap:6px;"><span style="color:var(--warn);font-weight:700;white-space:nowrap;">✏️ 修改</span><span style="color:var(--txs);">兩邊都有、但欄位值不同的物件。每個差異欄位都可單獨勾選，只套用你想更新的欄位。</span></div>
+                <div style="display:flex;gap:6px;"><span style="color:var(--ok);font-weight:700;white-space:nowrap;">＋ 新增</span><span style="color:var(--txs);">Access 有、主頁 Sheets 沒有的物件，套用後自動插入第 5 列（最上方資料列）並分配序號。</span></div>
+                <div style="display:flex;gap:6px;"><span style="color:#f87171;font-weight:700;white-space:nowrap;">● 可能下架</span><span style="color:var(--txs);">主頁有、Access 沒有的物件，僅供參考，不會自動刪除，需人工判斷。</span></div>
+              </div>
+              <p style="color:var(--txm);font-size:11px;margin:8px 0 0;">💡 Access Sheets 的 ID 已預設填入，直接按「開始比對」即可。比對約需 30～60 秒。</p>
+            </div>
           </div>
         </div>
 
@@ -6583,6 +6593,28 @@ OBJECTS_APP_HTML = """
               <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--bg-h);color:var(--tx);border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">2</span><span style="color:var(--txs);font-size:12px;">回此頁按「<strong style="color:var(--ac);">🔍 比對審查</strong>」，選取 4 個 CSV（可一併選 word_meta.json）</span></div>
               <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--bg-h);color:var(--tx);border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">3</span><span style="color:var(--txs);font-size:12px;">審查介面顯示三組結果：✅ 高信心全選套用、⚠️ 中信心逐一確認、❓ 問題筆數供參考</span></div>
               <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--ok);color:#fff;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">✓</span><span style="color:var(--ok);font-size:12px;"><strong>按「套用確認的配對」→ 直接寫入 Firestore，完成！</strong></span></div>
+            </div>
+          </div>
+        </div>
+
+          <!-- 情境三 -->
+          <div style="background:var(--bg-t);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;margin-top:10px;">
+            <p style="color:#a78bfa;font-size:12px;font-weight:700;margin:0 0 10px;">📌 情境三：Access 資料有更新，想同步回主頁 Sheets</p>
+            <div style="display:flex;flex-direction:column;gap:7px;">
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--bg-h);color:var(--tx);border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">1</span><span style="color:var(--txs);font-size:12px;">在此頁按「<strong style="color:#a78bfa;">📋 ACCESS比對</strong>」，Sheets ID 已預設，直接按「開始比對」</span></div>
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--bg-h);color:var(--tx);border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">2</span><span style="color:var(--txs);font-size:12px;">比對完成後，在「修改」Tab 用搜尋框找到想確認的物件，逐一取消不想套用的欄位勾選</span></div>
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--bg-h);color:var(--tx);border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">3</span><span style="color:var(--txs);font-size:12px;">若某個差異已知是 Access 打錯的，按欄位旁的「🔒鎖定」，下次比對自動預設不套用</span></div>
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--ok);color:#fff;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">✓</span><span style="color:var(--ok);font-size:12px;"><strong>按「套用選取變更」→ 直接寫入主頁 Sheets，完成！</strong></span></div>
+            </div>
+          </div>
+
+          <!-- 鎖定功能說明 -->
+          <div style="background:var(--bg-t);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;margin-top:10px;">
+            <p style="color:var(--txm);font-size:12px;font-weight:700;margin:0 0 8px;">🔒 忽略規則（鎖定差異）</p>
+            <div style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--txs);">
+              <p style="margin:0;">若 Access 助理長期打錯某個欄位，你已知道不需要更新，可對該欄位按「🔒鎖定」。</p>
+              <p style="margin:0;">下次比對時，被鎖定的差異會以灰色 🔒 顯示，預設不勾選，不影響其他欄位的套用。</p>
+              <p style="margin:0;">鎖定規則是<strong style="color:var(--tx);">全公司共用</strong>，在 Modal 右上角按「🔒 忽略規則」可查看所有規則，並一鍵解鎖。</p>
             </div>
           </div>
         </div>
