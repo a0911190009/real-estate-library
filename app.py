@@ -23,6 +23,17 @@ from datetime import datetime, timezone, date, timedelta
 from flask import Flask, request, session, redirect, jsonify, render_template_string
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
 
+# 先載入 .env，確保後續取環境變數時已包含 .env 中的值
+try:
+    from dotenv import load_dotenv
+    _dir = os.path.dirname(os.path.abspath(__file__))
+    for p in (os.path.join(_dir, ".env"), os.path.join(_dir, "..", ".env")):
+        if os.path.isfile(p):
+            load_dotenv(p, override=False)
+            break
+except Exception:
+    pass
+
 # Gemini 圖片辨識（直接呼叫，不經由 Portal 代理）
 # 優先用新版 google.genai，fallback 到舊版 google.generativeai
 _GEMINI_KEY = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
@@ -44,16 +55,6 @@ except ImportError:
         _GEMINI_SDK = "old"
     except ImportError:
         _GEMINI_SDK = None
-
-try:
-    from dotenv import load_dotenv
-    _dir = os.path.dirname(os.path.abspath(__file__))
-    for p in (os.path.join(_dir, ".env"), os.path.join(_dir, "..", ".env")):
-        if os.path.isfile(p):
-            load_dotenv(p, override=False)
-            break
-except Exception:
-    pass
 
 # Firestore（有環境就啟用，否則 None）
 try:
