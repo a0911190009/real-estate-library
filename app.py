@@ -730,6 +730,10 @@ def api_objects_list():
                 "updated_at":   obj.get("updated_at", ""),
                 "owner_email":  obj.get("owner_email", target),
             })
+    # 有帶搜尋關鍵字才記錄 library_search
+    q = request.args.get("q", "").strip()
+    if q:
+        log_event("library_search", user_id=email, detail={"q": q[:50]})
     return jsonify({
         "items":       items,
         "target_user": target,
@@ -826,6 +830,8 @@ def api_objects_get(obj_id):
         obj = _load_org_object(org_id_param, obj_id)
         if not obj:
             return jsonify({"error": "物件不存在"}), 404
+        # 記錄查看組織庫物件
+        log_event("library_view", user_id=email, detail={"obj_id": obj_id, "mode": "org"})
         return jsonify(obj)
 
     # 一般個人庫邏輯
@@ -835,6 +841,8 @@ def api_objects_get(obj_id):
     obj = _load_object(target, obj_id)
     if not obj:
         return jsonify({"error": "物件不存在"}), 404
+    # 記錄查看個人庫物件
+    log_event("library_view", user_id=email, detail={"obj_id": obj_id, "mode": "personal"})
     return jsonify(obj)
 
 
