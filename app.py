@@ -534,6 +534,26 @@ def _verify_service_key():
 
 VALID_THEME_STYLES = ["navy", "forest", "amber", "minimal", "rose", "oled"]
 
+
+# ── LOG 工具函式 ──
+def log_event(event_type, user_id="", detail=None):
+    """記錄業務事件，輸出至 Cloud Logging（Cloud Run stdout 自動收集）。"""
+    print(json.dumps({
+        "time": datetime.now(timezone.utc).isoformat(),
+        "event": event_type,   # 事件名稱，例如 "library_search"
+        "user": user_id,
+        "detail": detail or {}
+    }, ensure_ascii=False), flush=True)
+
+
+@app.route("/api/client-log", methods=["POST"])
+def api_client_log():
+    """接收前端 JS 錯誤，記錄至 Cloud Logging。"""
+    data = request.get_json(silent=True) or {}
+    log_event("client_error", detail=data)
+    return jsonify({"ok": True})
+
+
 @app.route("/api/theme", methods=["GET"])
 def api_theme_get():
     """讀取主題（與 Portal 共用 Firestore system_settings/theme），供跨工具同步。"""
@@ -750,6 +770,7 @@ def api_objects_create():
     if err:
         return jsonify({"error": err[0]}), err[1]
     data = request.get_json() or {}
+    log_event("library_object_create", user_id=email, detail={"title": (data.get("custom_title") or data.get("project_name") or "")[:50]})
 
     # 判斷要存入個人庫還是組織庫
     mode = data.get("_mode", "").strip()  # "personal" 或 "org"
@@ -6120,6 +6141,15 @@ OBJECTS_APP_HTML = """
   <style>
     /* 地圖標記 label 樣式 */
   </style>
+<script>
+/* 前端錯誤自動回報至 Cloud Logging */
+window.onerror = function(msg, src, line, col, err) {
+    fetch('/api/client-log', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({type: 'js_error', msg: msg, src: src, line: line, viewport: window.innerWidth + 'x' + window.innerHeight})}).catch(function(){});
+};
+window.addEventListener('unhandledrejection', function(e) {
+    fetch('/api/client-log', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({type: 'promise_error', msg: String(e.reason), viewport: window.innerWidth + 'x' + window.innerHeight})}).catch(function(){});
+});
+</script>
 </head>
 <body data-theme="navy-dark" class="min-h-screen font-sans antialiased">
 
