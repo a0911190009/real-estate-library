@@ -81,6 +81,10 @@ def _get_db():
         return None
 
 app = Flask(__name__)
+
+# 跨工具回饋系統
+from feedback_endpoint import bp as _feedback_bp
+app.register_blueprint(_feedback_bp)
 _secret = os.environ.get("FLASK_SECRET_KEY", "")
 if not _secret and not os.environ.get("FLASK_DEBUG"):
     raise RuntimeError("FLASK_SECRET_KEY 未設定。生產環境必須設定此環境變數。")
@@ -11467,6 +11471,9 @@ function closeMoreMenu(){ toggleMoreMenu(); }
       <div class="gf-toast" id="gf-toast" style="display:none;"></div>
     </div>
   </div>
+  <link rel="stylesheet" href="https://real-estate-portal-334765337861.asia-east1.run.app/static/feedback-widget.css">
+  <script src="https://real-estate-portal-334765337861.asia-east1.run.app/static/feedback-widget.js"></script>
+  <script>FeedbackWidget.init({ tool: 'library' });</script>
 </body>
 </html>
 """
