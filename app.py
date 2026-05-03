@@ -7060,7 +7060,7 @@ window.addEventListener('unhandledrejection', function(e) {
     <div class="px-5 py-4">
       <!-- 頭像上傳（編輯模式才顯示） -->
       <div id="sl-avatar-section" style="display:none;" class="flex items-center gap-4 mb-4">
-        <div style="position:relative;width:64px;height:64px;flex-shrink:0;">
+        <div id="sl-avatar-wrap" style="position:relative;width:64px;height:64px;flex-shrink:0;">
           <img id="sl-avatar-img" src="" alt=""
             style="width:64px;height:64px;border-radius:50%;object-fit:cover;background:var(--bg-h);border:2px solid var(--bd);display:none;">
           <div id="sl-avatar-placeholder" style="width:64px;height:64px;border-radius:50%;background:var(--ac);display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;color:#fff;"></div>
@@ -7181,7 +7181,7 @@ window.addEventListener('unhandledrejection', function(e) {
         <div style="border-top:1px solid var(--bd);margin-bottom:12px;padding-top:16px;">
           <div class="flex items-center justify-between mb-3">
             <span class="text-sm font-semibold" style="color:var(--tx);">🖼️ 相關圖檔</span>
-            <label class="px-3 py-1 rounded-lg text-xs font-semibold cursor-pointer text-white" style="background:var(--ac);">
+            <label id="sl-files-upload-btn" class="px-3 py-1 rounded-lg text-xs font-semibold cursor-pointer text-white" style="background:var(--ac);">
               ＋ 上傳
               <input type="file" accept="image/*,.pdf" multiple style="display:none;" onchange="slFilesUpload(this)">
             </label>
@@ -11474,6 +11474,38 @@ function closeMoreMenu(){ toggleMoreMenu(); }
   <link rel="stylesheet" href="https://real-estate-portal-334765337861.asia-east1.run.app/static/feedback-widget.css">
   <script src="https://real-estate-portal-334765337861.asia-east1.run.app/static/feedback-widget.js"></script>
   <script>FeedbackWidget.init({ tool: 'library' });</script>
+  <link rel="stylesheet" href="https://real-estate-portal-334765337861.asia-east1.run.app/static/upload-menu.css">
+  <script src="https://real-estate-portal-334765337861.asia-east1.run.app/static/upload-menu.js"></script>
+  <script>
+    /* 右鍵 / 長按選單：賣方頭像 + 圖檔上傳 */
+    document.addEventListener('DOMContentLoaded', function() {
+      if (!window.UploadMenu) return;
+      var avatarWrap = document.getElementById('sl-avatar-wrap');
+      if (avatarWrap) {
+        window.UploadMenu.attach(avatarWrap, {
+          paste: true, file: true, camera: true,
+          accept: 'image/*', multiple: false,
+          onFiles: function(files) {
+            if (files[0] && typeof slAvatarUpload === 'function') {
+              slAvatarUpload({ files: [files[0]], value: '' });
+            }
+          },
+        });
+      }
+      var filesBtn = document.getElementById('sl-files-upload-btn');
+      if (filesBtn) {
+        window.UploadMenu.attach(filesBtn, {
+          paste: true, file: true, camera: true,
+          accept: 'image/*,.pdf', multiple: true,
+          onFiles: function(files) {
+            if (typeof slFilesUpload === 'function') {
+              slFilesUpload({ files: files, value: '' });
+            }
+          },
+        });
+      }
+    });
+  </script>
 </body>
 </html>
 """
