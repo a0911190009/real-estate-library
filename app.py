@@ -5732,34 +5732,43 @@ def api_seller_contact_delete(seller_id, contact_id):
 
 @app.route("/api/sellers/<seller_id>/avatar", methods=["POST"])
 def api_seller_avatar_upload(seller_id):
-    """上傳準賣方頭像（存入 GCS，URL 寫回 Firestore）。"""
+    """上傳準賣方頭像。前端應已縮成 160x160 JPEG 並 base64，
+    body: {avatar_b64: 'data:image/jpeg;base64,...'} 直接寫進 people.avatar_b64。"""
     email, err = _require_user()
     if err:
         return jsonify({"error": err[0]}), err[1]
     db = _get_db()
     if db is None:
         return jsonify({"error": "Firestore 未連線"}), 503
-    if "file" not in request.files:
-        return jsonify({"error": "請選擇圖片"}), 400
-    f = request.files["file"]
-    ext = os.path.splitext(f.filename.lower())[1]
-    if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
-        return jsonify({"error": "僅支援 jpg/png/webp/gif"}), 400
     try:
         person, err_resp = _verify_seller_owner(db, seller_id, email)
         if err_resp:
             return err_resp
 
-        raw = f.read()
-        mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
-                "webp": "image/webp", "gif": "image/gif"}.get(ext.lstrip("."), "image/jpeg")
-        # 統一用 base64 存 people.avatar_b64（與 PEOPLE/BUYER 一致）
-        avatar_b64 = "data:" + mime + ";base64," + base64.b64encode(raw).decode("ascii")
+        # 接受 JSON {avatar_b64: ...}（新版前端）或 multipart file（後備）
+        avatar_b64 = None
+        if request.is_json:
+            data = request.get_json(silent=True) or {}
+            avatar_b64 = data.get("avatar_b64")
+        elif "file" in request.files:
+            f = request.files["file"]
+            ext = os.path.splitext((f.filename or "").lower())[1]
+            mime_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+                        "webp": "image/webp", "gif": "image/gif"}
+            mime = mime_map.get(ext.lstrip("."), "image/jpeg")
+            raw = f.read()
+            # 1MB 上限保護（Firestore 文件欄位限制）
+            if len(raw) > 700 * 1024:
+                return jsonify({"error": "圖片太大，請改用較小檔案或重整頁面（前端會自動縮圖）"}), 400
+            avatar_b64 = "data:" + mime + ";base64," + base64.b64encode(raw).decode("ascii")
+
+        if not avatar_b64:
+            return jsonify({"error": "請提供 avatar_b64 或檔案"}), 400
+
         db.collection("people").document(seller_id).update({
             "avatar_b64": avatar_b64,
             "updated_at": _server_ts(),
         })
-        # 回傳 url 欄位讓前端顯示（前端可能用 url 或 b64 任一）
         return jsonify({"ok": True, "url": avatar_b64})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -10871,34 +10880,60 @@ window.addEventListener('unhandledrejection', function(e) {
   // 上傳頭像
   function slAvatarUpload(input) {
     if (!_slCurrent || !input.files || !input.files[0]) return;
-    var fd = new FormData();
-    fd.append('file', input.files[0]);
+    var file = input.files[0];
     input.value = '';
-    toast('⏳ 上傳頭像中…', 'info');
-    fetch('/api/sellers/' + _slCurrent + '/avatar', { method: 'POST', body: fd })
-      .then(function(r){ return r.json(); })
-      .then(function(d) {
-        if (d.error) { toast('❌ ' + d.error, 'error'); return; }
-        // 更新 Modal 頭像顯示
-        var imgEl = document.getElementById('sl-avatar-img');
-        var phEl  = document.getElementById('sl-avatar-placeholder');
-        imgEl.src = d.url + '?t=' + Date.now();
-        imgEl.style.display = 'block';
-        phEl.style.display  = 'none';
-        // 更新本地資料
-        var s = _slData.find(function(x){ return x.id === _slCurrent; });
-        if (s) s.avatar_url = d.url;
-        toast('✅ 頭像已更新', 'success');
-        slFilterRender();  // 重新渲染列表卡片
-      })
-      .catch(function(){ toast('❌ 上傳失敗', 'error'); });
+    toast('⏳ 處理頭像中…', 'info');
+    // 客戶端先縮成 160x160 JPEG，避免 base64 過大爆 Firestore 1MB 上限
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      var img = new Image();
+      img.onload = function() {
+        var size = 160;
+        var canvas = document.createElement('canvas');
+        canvas.width = size; canvas.height = size;
+        var ctx = canvas.getContext('2d');
+        var src = Math.min(img.width, img.height);
+        var sx = (img.width - src) / 2;
+        var sy = (img.height - src) / 2;
+        ctx.drawImage(img, sx, sy, src, src, 0, 0, size, size);
+        var b64 = canvas.toDataURL('image/jpeg', 0.85);
+        fetch('/api/sellers/' + _slCurrent + '/avatar', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ avatar_b64: b64 }),
+        })
+          .then(function(r){ return r.json(); })
+          .then(function(d) {
+            if (d.error) { toast('❌ ' + d.error, 'error'); return; }
+            var imgEl = document.getElementById('sl-avatar-img');
+            var phEl  = document.getElementById('sl-avatar-placeholder');
+            imgEl.src = d.url + '?t=' + Date.now();
+            imgEl.style.display = 'block';
+            phEl.style.display  = 'none';
+            var s = _slData.find(function(x){ return x.id === _slCurrent; });
+            if (s) s.avatar_url = d.url;
+            toast('✅ 頭像已更新', 'success');
+            slFilterRender();
+          })
+          .catch(function(){ toast('❌ 上傳失敗', 'error'); });
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
   }
 
-  // 載入相關圖檔（從已有的準賣方資料）
+  // 載入相關圖檔（僅顯示圖片/PDF，過濾掉音訊等其他檔案）
   function slFilesLoad(s) {
     var el = document.getElementById('sl-files-list');
     if (!el) return;
-    var files = s.files || [];
+    var allFiles = s.files || [];
+    // 只留下圖片或 PDF（讀 mime_type 或 副檔名）
+    var files = allFiles.filter(function(f) {
+      var name = (f.name || '').toLowerCase();
+      var mime = (f.mime_type || '').toLowerCase();
+      if (mime.startsWith('image/') || mime === 'application/pdf') return true;
+      return /\.(jpg|jpeg|png|webp|gif|pdf)$/i.test(name);
+    });
     if (!files.length) {
       el.innerHTML = '<p class="text-xs" style="color:var(--txm);">尚無圖檔</p>';
       return;
