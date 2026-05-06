@@ -10781,9 +10781,9 @@ window.addEventListener('unhandledrejection', function(e) {
     var item = _slData.find(function(x){ return x.id === targetId; });
     var name = item ? item.name : '';
     if (!confirm('確定要刪除「' + (name || '此準賣方') + '」？')) return;
-    var modeMsg = '請選擇刪除方式：\n\n'
-                + '1 = 只撕去賣方標籤（人脈管理仍保留此人）\n'
-                + '2 = 連人脈管理也一起刪（可從人脈垃圾桶救回）\n\n'
+    var modeMsg = '請選擇刪除方式：\\n\\n'
+                + '1 = 只撕去賣方標籤（人脈管理仍保留此人）\\n'
+                + '2 = 連人脈管理也一起刪（可從人脈垃圾桶救回）\\n\\n'
                 + '輸入 1 或 2：';
     var mode = prompt(modeMsg, '1');
     if (mode !== '1' && mode !== '2') return;
