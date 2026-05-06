@@ -64,6 +64,15 @@ except ImportError:
     _firestore = None
     _db = None
 
+# SELLER → PEOPLE 整合層：所有準賣方資料來自 people + roles/seller
+import seller_facade
+
+def _server_ts():
+    """回傳 Firestore SERVER_TIMESTAMP sentinel。"""
+    if _firestore is None:
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return _firestore.SERVER_TIMESTAMP
+
 
 def _get_db():
     """取得 Firestore client（延遲初始化）"""
@@ -5378,7 +5387,7 @@ def _recalc_seller_last_contact(db, seller_id):
 
 @app.route("/api/sellers/sort-order", methods=["GET"])
 def api_sellers_sort_order_get():
-    """取得準賣方卡片的自訂排列順序。"""
+    """取得準賣方卡片排列順序。從 people.sort_order 推。"""
     email, err = _require_user()
     if err:
         return jsonify({"error": err[0]}), err[1]
@@ -5386,17 +5395,16 @@ def api_sellers_sort_order_get():
     if db is None:
         return jsonify({"error": "Firestore 未連線"}), 503
     try:
-        doc = db.collection("user_settings").document(email).get()
-        if doc.exists:
-            return jsonify({"order": doc.to_dict().get("seller_sort_order", [])})
-        return jsonify({"order": []})
+        items = seller_facade.list_sellers(db, email, _is_admin(email))
+        order = [s["id"] for s in items if s.get("sort_order") is not None]
+        return jsonify({"order": order})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/sellers/sort-order", methods=["PUT"])
 def api_sellers_sort_order_put():
-    """儲存準賣方卡片的自訂排列順序。"""
+    """儲存準賣方卡片排列順序。寫到每筆 people.sort_order。"""
     email, err = _require_user()
     if err:
         return jsonify({"error": err[0]}), err[1]
@@ -5408,8 +5416,16 @@ def api_sellers_sort_order_put():
         order = data.get("order", [])
         if not isinstance(order, list):
             return jsonify({"error": "order 格式不正確"}), 400
-        db.collection("user_settings").document(email).set(
-            {"seller_sort_order": order}, merge=True)
+        for idx, pid in enumerate(order):
+            if not pid:
+                continue
+            try:
+                db.collection("people").document(pid).update({
+                    "sort_order": (idx + 1) * 10,
+                    "updated_at": _server_ts(),
+                })
+            except Exception:
+                pass
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -5417,7 +5433,7 @@ def api_sellers_sort_order_put():
 
 @app.route("/api/sellers", methods=["GET"])
 def api_sellers_list():
-    """取得目前登入者的所有準賣方（依最後追蹤時間排序）。"""
+    """取得準賣方清單。資料源：people（active_roles 含 'seller'）。"""
     email, err = _require_user()
     if err:
         return jsonify({"error": err[0]}), err[1]
@@ -5425,14 +5441,7 @@ def api_sellers_list():
     if db is None:
         return jsonify({"error": "Firestore 未連線"}), 503
     try:
-        docs = db.collection("seller_prospects").where("created_by", "==", email).stream()
-        items = []
-        for doc in docs:
-            d = doc.to_dict()
-            d["id"] = doc.id
-            items.append(d)
-        # 依最後追蹤時間降冪排序，未追蹤的排最後
-        items.sort(key=lambda x: x.get("last_contact_at") or "", reverse=True)
+        items = seller_facade.list_sellers(db, email, _is_admin(email))
         return jsonify({"items": items})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -5440,7 +5449,26 @@ def api_sellers_list():
 
 @app.route("/api/sellers", methods=["POST"])
 def api_sellers_create():
-    """新增準賣方。"""
+    """新增準賣方 = 建 person + 建 roles/seller。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    try:
+        data = request.get_json(silent=True) or {}
+        person_id = seller_facade.create_seller(db, email, data, _server_ts)
+        result = seller_facade.get_seller(db, person_id, email, _is_admin(email))
+        return jsonify({"ok": True, "id": person_id, **(result or {})})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ↓ 舊版 create 函式 body 不再使用 ↓
+def _api_sellers_create_legacy_unused():
     email, err = _require_user()
     if err:
         return jsonify({"error": err[0]}), err[1]
@@ -5478,7 +5506,7 @@ def api_sellers_create():
 
 @app.route("/api/sellers/<seller_id>", methods=["GET"])
 def api_seller_get(seller_id):
-    """取得單筆準賣方資料。"""
+    """取得單筆準賣方資料（從 people + roles/seller 拼）。"""
     email, err = _require_user()
     if err:
         return jsonify({"error": err[0]}), err[1]
@@ -5486,87 +5514,96 @@ def api_seller_get(seller_id):
     if db is None:
         return jsonify({"error": "Firestore 未連線"}), 503
     try:
-        doc = db.collection("seller_prospects").document(seller_id).get()
-        if not doc.exists:
+        result = seller_facade.get_seller(db, seller_id, email, _is_admin(email))
+        if result is None:
             return jsonify({"error": "找不到此準賣方"}), 404
-        d = doc.to_dict()
-        if d.get("created_by") != email and not _is_admin(email):
+        if result is False:
             return jsonify({"error": "無權限"}), 403
-        d["id"] = doc.id
-        return jsonify(d)
+        return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/sellers/<seller_id>", methods=["PUT"])
 def api_seller_update(seller_id):
-    """更新準賣方資料。"""
+    """更新準賣方資料：寫進 people 主檔 + roles/seller。"""
     email, err = _require_user()
     if err:
         return jsonify({"error": err[0]}), err[1]
     db = _get_db()
     if db is None:
         return jsonify({"error": "Firestore 未連線"}), 503
-    data = request.get_json(silent=True) or {}
     try:
-        ref = db.collection("seller_prospects").document(seller_id)
-        doc = ref.get()
-        if not doc.exists:
+        data = request.get_json(silent=True) or {}
+        result = seller_facade.update_seller(db, seller_id, email, _is_admin(email), data, _server_ts)
+        if result is None:
             return jsonify({"error": "找不到此準賣方"}), 404
-        item = doc.to_dict()
-        if item.get("created_by") != email and not _is_admin(email):
+        if result is False:
             return jsonify({"error": "無權限"}), 403
-        update = {
-            "name":          str(data.get("name", item.get("name", ""))).strip(),
-            "phone":         str(data.get("phone", item.get("phone", ""))).strip(),
-            "address":       str(data.get("address", item.get("address", ""))).strip(),
-            "land_number":   str(data.get("land_number", item.get("land_number", ""))).strip(),
-            "category":      str(data.get("category", item.get("category", ""))).strip(),
-            "owner_price":   data.get("owner_price", item.get("owner_price")),
-            "suggest_price": data.get("suggest_price", item.get("suggest_price")),
-            "source":        str(data.get("source", item.get("source", ""))).strip(),
-            "status":        data.get("status", item.get("status", "培養中")),
-            "note":          str(data.get("note", item.get("note", ""))).strip(),
-            "card_color":    str(data.get("card_color", item.get("card_color", ""))).strip(),
-            "updated_at":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        ref.update(update)
-        return jsonify({"ok": True, "id": seller_id, **update})
+        return jsonify({"ok": True, "id": seller_id, **(seller_facade.get_seller(db, seller_id, email, _is_admin(email)) or {})})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/sellers/<seller_id>", methods=["DELETE"])
 def api_seller_delete(seller_id):
-    """刪除準賣方（同時刪除其互動記事）。"""
+    """刪除準賣方。Query: mode=tag_only（撕標籤）或 mode=full（連人脈一起刪）。"""
     email, err = _require_user()
     if err:
         return jsonify({"error": err[0]}), err[1]
     db = _get_db()
     if db is None:
         return jsonify({"error": "Firestore 未連線"}), 503
+    mode = (request.args.get("mode") or "tag_only").strip()
     try:
-        ref = db.collection("seller_prospects").document(seller_id)
-        doc = ref.get()
-        if not doc.exists:
+        if mode == "full":
+            result = seller_facade.soft_delete_person(db, seller_id, email, _is_admin(email), _server_ts)
+        else:
+            result = seller_facade.archive_seller(db, seller_id, email, _is_admin(email), _server_ts)
+        if result is None:
             return jsonify({"error": "找不到此準賣方"}), 404
-        if doc.to_dict().get("created_by") != email and not _is_admin(email):
+        if result is False:
             return jsonify({"error": "無權限"}), 403
-        # 刪除互動記事
-        contacts = db.collection("seller_contacts").where("seller_id", "==", seller_id).stream()
-        for c in contacts:
-            c.reference.delete()
-        ref.delete()
-        return jsonify({"ok": True})
+        return jsonify({"ok": True, "mode": mode})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-# ── 準賣方互動記事 ──
+# ── 準賣方互動記事（讀寫 people/{pid}/contacts/）──
+
+def _verify_seller_owner(db, person_id, email):
+    """驗證 person 存在 + 權限。回傳 (person_dict, error_response)。"""
+    ref = db.collection("people").document(person_id)
+    snap = ref.get()
+    if not snap.exists:
+        return None, (jsonify({"error": "找不到此準賣方"}), 404)
+    person = snap.to_dict() or {}
+    if not _is_admin(email) and person.get("created_by") != email:
+        return None, (jsonify({"error": "無權限"}), 403)
+    return person, None
+
+
+def _recalc_person_last_contact(db, person_id):
+    """重新計算 last_contact_at（from people/{pid}/contacts）。"""
+    try:
+        contacts = list(db.collection("people").document(person_id).collection("contacts").stream())
+        if not contacts:
+            db.collection("people").document(person_id).update({"last_contact_at": None})
+            return None
+        def _ct(d):
+            v = (d.to_dict() or {}).get("contact_at")
+            return v.isoformat() if hasattr(v, "isoformat") else (v or "")
+        latest = max(contacts, key=_ct)
+        last = (latest.to_dict() or {}).get("contact_at")
+        db.collection("people").document(person_id).update({"last_contact_at": last})
+        return last
+    except Exception:
+        return None
+
 
 @app.route("/api/sellers/<seller_id>/contacts", methods=["GET"])
 def api_seller_contacts_list(seller_id):
-    """取得準賣方的所有互動記事（依時間降冪）。"""
+    """取得準賣方互動記事（從 people/{pid}/contacts/）。"""
     email, err = _require_user()
     if err:
         return jsonify({"error": err[0]}), err[1]
@@ -5574,13 +5611,21 @@ def api_seller_contacts_list(seller_id):
     if db is None:
         return jsonify({"error": "Firestore 未連線"}), 503
     try:
-        docs = db.collection("seller_contacts").where("seller_id", "==", seller_id).stream()
+        person, err_resp = _verify_seller_owner(db, seller_id, email)
+        if err_resp:
+            return err_resp
         items = []
-        for doc in docs:
-            d = doc.to_dict()
-            d["id"] = doc.id
-            items.append(d)
-        items.sort(key=lambda x: x.get("contact_at", ""), reverse=True)
+        for d in db.collection("people").document(seller_id).collection("contacts").stream():
+            data = d.to_dict() or {}
+            ca = data.get("contact_at")
+            items.append({
+                "id": d.id,
+                "seller_id": seller_id,
+                "content": data.get("content"),
+                "contact_at": ca.isoformat() if hasattr(ca, "isoformat") else ca,
+                "created_by": data.get("created_by"),
+            })
+        items.sort(key=lambda x: x.get("contact_at") or "", reverse=True)
         return jsonify({"items": items})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -5588,31 +5633,36 @@ def api_seller_contacts_list(seller_id):
 
 @app.route("/api/sellers/<seller_id>/contacts", methods=["POST"])
 def api_seller_contact_create(seller_id):
-    """新增互動記事。"""
+    """新增互動記事 → people/{pid}/contacts/。"""
     email, err = _require_user()
     if err:
         return jsonify({"error": err[0]}), err[1]
     db = _get_db()
     if db is None:
         return jsonify({"error": "Firestore 未連線"}), 503
-    data = request.get_json(silent=True) or {}
-    content = str(data.get("content", "")).strip()
-    if not content:
-        return jsonify({"error": "請填寫互動內容"}), 400
     try:
+        person, err_resp = _verify_seller_owner(db, seller_id, email)
+        if err_resp:
+            return err_resp
+        data = request.get_json(silent=True) or {}
+        content = str(data.get("content", "")).strip()
+        if not content:
+            return jsonify({"error": "請填寫互動內容"}), 400
         contact_at = (data.get("contact_at") or "").strip()
         if not contact_at:
             contact_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        doc = {
-            "seller_id":  seller_id,
-            "content":    content,
+        c_ref = db.collection("people").document(seller_id).collection("contacts").document()
+        c_ref.set({
+            "content": content,
             "contact_at": contact_at,
+            "via": "other",
             "created_by": email,
-        }
-        ref = db.collection("seller_contacts").document()
-        ref.set(doc)
-        _recalc_seller_last_contact(db, seller_id)
-        return jsonify({"ok": True, "id": ref.id, **doc})
+            "created_at": _server_ts(),
+        })
+        _recalc_person_last_contact(db, seller_id)
+        return jsonify({"ok": True, "id": c_ref.id, "seller_id": seller_id,
+                        "content": content, "contact_at": contact_at,
+                        "created_by": email})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -5626,21 +5676,26 @@ def api_seller_contact_update(seller_id, contact_id):
     db = _get_db()
     if db is None:
         return jsonify({"error": "Firestore 未連線"}), 503
-    data = request.get_json(silent=True) or {}
     try:
-        ref = db.collection("seller_contacts").document(contact_id)
-        doc = ref.get()
-        if not doc.exists:
+        person, err_resp = _verify_seller_owner(db, seller_id, email)
+        if err_resp:
+            return err_resp
+        c_ref = db.collection("people").document(seller_id).collection("contacts").document(contact_id)
+        csnap = c_ref.get()
+        if not csnap.exists:
             return jsonify({"error": "找不到此記事"}), 404
-        item = doc.to_dict()
-        if item.get("created_by") != email and not _is_admin(email):
+        cdata = csnap.to_dict() or {}
+        if cdata.get("created_by") != email and not _is_admin(email):
             return jsonify({"error": "無權限"}), 403
+        data = request.get_json(silent=True) or {}
         update = {
-            "content":    str(data.get("content", item.get("content", ""))).strip(),
-            "contact_at": (data.get("contact_at") or item.get("contact_at", "")).strip(),
+            "content": str(data.get("content", cdata.get("content", ""))).strip(),
+            "contact_at": (data.get("contact_at") or cdata.get("contact_at", "")),
         }
-        ref.update(update)
-        _recalc_seller_last_contact(db, seller_id)
+        if hasattr(update["contact_at"], "strip"):
+            update["contact_at"] = update["contact_at"].strip()
+        c_ref.update(update)
+        _recalc_person_last_contact(db, seller_id)
         return jsonify({"ok": True, "id": contact_id, **update})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -5656,14 +5711,18 @@ def api_seller_contact_delete(seller_id, contact_id):
     if db is None:
         return jsonify({"error": "Firestore 未連線"}), 503
     try:
-        ref = db.collection("seller_contacts").document(contact_id)
-        doc = ref.get()
-        if not doc.exists:
+        person, err_resp = _verify_seller_owner(db, seller_id, email)
+        if err_resp:
+            return err_resp
+        c_ref = db.collection("people").document(seller_id).collection("contacts").document(contact_id)
+        csnap = c_ref.get()
+        if not csnap.exists:
             return jsonify({"error": "找不到此記事"}), 404
-        if doc.to_dict().get("created_by") != email and not _is_admin(email):
+        cdata = csnap.to_dict() or {}
+        if cdata.get("created_by") != email and not _is_admin(email):
             return jsonify({"error": "無權限"}), 403
-        ref.delete()
-        _recalc_seller_last_contact(db, seller_id)
+        c_ref.delete()
+        _recalc_person_last_contact(db, seller_id)
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -5687,40 +5746,30 @@ def api_seller_avatar_upload(seller_id):
     if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
         return jsonify({"error": "僅支援 jpg/png/webp/gif"}), 400
     try:
-        # 確認有權限
-        doc = db.collection("seller_prospects").document(seller_id).get()
-        if not doc.exists:
-            return jsonify({"error": "找不到此準賣方"}), 404
-        if doc.to_dict().get("created_by") != email and not _is_admin(email):
-            return jsonify({"error": "無權限"}), 403
+        person, err_resp = _verify_seller_owner(db, seller_id, email)
+        if err_resp:
+            return err_resp
 
         raw = f.read()
-        b = _get_gcs_bucket()
-        if b is None:
-            return jsonify({"error": "GCS 未設定"}), 503
-        # 固定路徑：sellers/{seller_id}/avatar{ext}（覆蓋舊頭像）
-        gcs_path = f"sellers/{seller_id}/avatar{ext}"
-        blob = b.blob(gcs_path)
         mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
                 "webp": "image/webp", "gif": "image/gif"}.get(ext.lstrip("."), "image/jpeg")
-        blob.upload_from_string(raw, content_type=mime)
-        blob.make_public()
-        url = blob.public_url
-        # 寫回 Firestore
-        db.collection("seller_prospects").document(seller_id).update({
-            "avatar_url": url,
-            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        # 統一用 base64 存 people.avatar_b64（與 PEOPLE/BUYER 一致）
+        avatar_b64 = "data:" + mime + ";base64," + base64.b64encode(raw).decode("ascii")
+        db.collection("people").document(seller_id).update({
+            "avatar_b64": avatar_b64,
+            "updated_at": _server_ts(),
         })
-        return jsonify({"ok": True, "url": url})
+        # 回傳 url 欄位讓前端顯示（前端可能用 url 或 b64 任一）
+        return jsonify({"ok": True, "url": avatar_b64})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-# ── 準賣方相關圖檔 ──
+# ── 準賣方相關圖檔（讀寫 people/{pid}/files/）──
 
 @app.route("/api/sellers/<seller_id>/files", methods=["POST"])
 def api_seller_file_upload(seller_id):
-    """上傳相關圖檔（存入 GCS，清單寫回 Firestore）。"""
+    """上傳相關圖檔到 GCS，metadata 存入 people/{pid}/files/ 子集合。"""
     email, err = _require_user()
     if err:
         return jsonify({"error": err[0]}), err[1]
@@ -5734,21 +5783,17 @@ def api_seller_file_upload(seller_id):
     if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif", ".pdf"):
         return jsonify({"error": "僅支援 jpg/png/webp/gif/pdf"}), 400
     try:
-        doc_ref = db.collection("seller_prospects").document(seller_id)
-        doc = doc_ref.get()
-        if not doc.exists:
-            return jsonify({"error": "找不到此準賣方"}), 404
-        if doc.to_dict().get("created_by") != email and not _is_admin(email):
-            return jsonify({"error": "無權限"}), 403
+        person, err_resp = _verify_seller_owner(db, seller_id, email)
+        if err_resp:
+            return err_resp
 
         raw = f.read()
         b = _get_gcs_bucket()
         if b is None:
             return jsonify({"error": "GCS 未設定"}), 503
-        # 用 uuid 避免重名
         file_id = str(uuid.uuid4())[:8]
         safe_name = re.sub(r"[^\w.\-]", "_", f.filename)
-        gcs_path = f"sellers/{seller_id}/files/{file_id}_{safe_name}"
+        gcs_path = f"people-files/{email}/{seller_id}/{file_id}_{safe_name}"
         blob = b.blob(gcs_path)
         mime_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
                     "webp": "image/webp", "gif": "image/gif", "pdf": "application/pdf"}
@@ -5756,21 +5801,27 @@ def api_seller_file_upload(seller_id):
         blob.upload_from_string(raw, content_type=mime)
         blob.make_public()
         url = blob.public_url
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        # 把新檔案加到 Firestore files 陣列
-        item = {"file_id": file_id, "name": safe_name, "url": url,
-                "gcs_path": gcs_path, "uploaded_at": now}
-        existing = doc.to_dict().get("files", []) or []
-        existing.append(item)
-        doc_ref.update({"files": existing, "updated_at": now})
-        return jsonify({"ok": True, **item})
+        # 寫到 people/{pid}/files/{file_id}
+        db.collection("people").document(seller_id).collection("files").document(file_id).set({
+            "id": file_id,
+            "filename": safe_name,
+            "url": url,
+            "gcs_path": gcs_path,
+            "mime_type": mime,
+            "uploaded_at": _server_ts(),
+            "uploaded_by": email,
+        })
+        db.collection("people").document(seller_id).update({"updated_at": _server_ts()})
+        return jsonify({"ok": True, "file_id": file_id, "name": safe_name,
+                        "url": url, "gcs_path": gcs_path,
+                        "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/sellers/<seller_id>/files/<file_id>", methods=["DELETE"])
 def api_seller_file_delete(seller_id, file_id):
-    """刪除相關圖檔（從 GCS 和 Firestore 同時移除）。"""
+    """刪除相關圖檔（GCS + people/{pid}/files/{file_id}）。"""
     email, err = _require_user()
     if err:
         return jsonify({"error": err[0]}), err[1]
@@ -5778,27 +5829,23 @@ def api_seller_file_delete(seller_id, file_id):
     if db is None:
         return jsonify({"error": "Firestore 未連線"}), 503
     try:
-        doc_ref = db.collection("seller_prospects").document(seller_id)
-        doc = doc_ref.get()
-        if not doc.exists:
-            return jsonify({"error": "找不到此準賣方"}), 404
-        d = doc.to_dict()
-        if d.get("created_by") != email and not _is_admin(email):
-            return jsonify({"error": "無權限"}), 403
-        files = d.get("files", []) or []
-        target = next((x for x in files if x.get("file_id") == file_id), None)
-        if not target:
+        person, err_resp = _verify_seller_owner(db, seller_id, email)
+        if err_resp:
+            return err_resp
+        f_ref = db.collection("people").document(seller_id).collection("files").document(file_id)
+        fsnap = f_ref.get()
+        if not fsnap.exists:
             return jsonify({"error": "找不到此檔案"}), 404
-        # 從 GCS 刪除
-        b = _get_gcs_bucket()
-        if b:
-            try:
-                b.blob(target["gcs_path"]).delete()
-            except Exception:
-                pass
-        # 從 Firestore 移除
-        new_files = [x for x in files if x.get("file_id") != file_id]
-        doc_ref.update({"files": new_files, "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+        gcs_path = (fsnap.to_dict() or {}).get("gcs_path")
+        if gcs_path:
+            b = _get_gcs_bucket()
+            if b:
+                try:
+                    b.blob(gcs_path).delete()
+                except Exception:
+                    pass
+        f_ref.delete()
+        db.collection("people").document(seller_id).update({"updated_at": _server_ts()})
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -6638,7 +6685,6 @@ window.addEventListener('unhandledrejection', function(e) {
               <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--ok);color:#fff;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">✓</span><span style="color:var(--ok);font-size:12px;"><strong>按「套用確認的配對」→ 直接寫入 Firestore，完成！</strong></span></div>
             </div>
           </div>
-        </div>
 
           <!-- 情境三 -->
           <div style="background:var(--bg-t);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;margin-top:10px;">
@@ -10728,21 +10774,26 @@ window.addEventListener('unhandledrejection', function(e) {
       .catch(function(){ btn.disabled = false; btn.textContent = '儲存'; toast('❌ 儲存失敗', 'error'); });
   }
 
-  // 刪除準賣方
+  // 刪除準賣方（兩階段詢問：撕去賣方標籤 vs 連人脈一起刪）
   function slDelete(id) {
-    // 可從卡片按鈕直接呼叫（傳入 id），或從 Modal 內的刪除按鈕呼叫（無參數，用 _slCurrent）
     var targetId = id || _slCurrent;
     if (!targetId) return;
     var item = _slData.find(function(x){ return x.id === targetId; });
     var name = item ? item.name : '';
-    var msg = name ? ('確定要刪除「' + name + '」及所有互動記事？') : '確定要刪除此準賣方及所有互動記事？';
-    if (!confirm(msg)) return;
-    fetch('/api/sellers/' + targetId, { method: 'DELETE' })
+    if (!confirm('確定要刪除「' + (name || '此準賣方') + '」？')) return;
+    var modeMsg = '請選擇刪除方式：\n\n'
+                + '1 = 只撕去賣方標籤（人脈管理仍保留此人）\n'
+                + '2 = 連人脈管理也一起刪（可從人脈垃圾桶救回）\n\n'
+                + '輸入 1 或 2：';
+    var mode = prompt(modeMsg, '1');
+    if (mode !== '1' && mode !== '2') return;
+    var modeParam = (mode === '2') ? 'full' : 'tag_only';
+    fetch('/api/sellers/' + targetId + '?mode=' + modeParam, { method: 'DELETE' })
       .then(function(r){ return r.json(); })
       .then(function(d) {
         if (d.error) { toast('❌ ' + d.error, 'error'); return; }
-        toast('✅ 已刪除', 'success');
-        if (_slCurrent) slModalClose();  // 若從 Modal 刪才關 Modal
+        toast(modeParam === 'full' ? '✅ 已從人脈刪除' : '✅ 已撕去賣方標籤（人脈仍保留）', 'success');
+        if (_slCurrent) slModalClose();
         slLoad();
       })
       .catch(function(){ toast('❌ 刪除失敗', 'error'); });
