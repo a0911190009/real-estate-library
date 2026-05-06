@@ -10878,48 +10878,64 @@ window.addEventListener('unhandledrejection', function(e) {
       .catch(function(){ toast('❌ 刪除失敗', 'error'); });
   }
   // 上傳頭像
-  function slAvatarUpload(input) {
-    if (!_slCurrent || !input.files || !input.files[0]) return;
-    var file = input.files[0];
-    input.value = '';
-    toast('⏳ 處理頭像中…', 'info');
-    // 客戶端先縮成 160x160 JPEG，避免 base64 過大爆 Firestore 1MB 上限
-    var reader = new FileReader();
-    reader.onload = function(e) {
+  // 客戶端把圖片縮成 160x160 JPEG（仿 PEOPLE 工具寫法）
+  function _slProcessAvatar(file) {
+    return new Promise(function(resolve, reject) {
       var img = new Image();
+      var reader = new FileReader();
+      reader.onload = function() { img.src = reader.result; };
+      reader.onerror = function() { reject(new Error('讀檔失敗')); };
       img.onload = function() {
-        var size = 160;
-        var canvas = document.createElement('canvas');
-        canvas.width = size; canvas.height = size;
-        var ctx = canvas.getContext('2d');
-        var src = Math.min(img.width, img.height);
-        var sx = (img.width - src) / 2;
-        var sy = (img.height - src) / 2;
-        ctx.drawImage(img, sx, sy, src, src, 0, 0, size, size);
-        var b64 = canvas.toDataURL('image/jpeg', 0.85);
-        fetch('/api/sellers/' + _slCurrent + '/avatar', {
+        try {
+          var size = 160;
+          var canvas = document.createElement('canvas');
+          canvas.width = size; canvas.height = size;
+          var ctx = canvas.getContext('2d');
+          var minSide = Math.min(img.width, img.height);
+          var sx = (img.width - minSide) / 2;
+          var sy = (img.height - minSide) / 2;
+          ctx.drawImage(img, sx, sy, minSide, minSide, 0, 0, size, size);
+          resolve(canvas.toDataURL('image/jpeg', 0.85));
+        } catch (e) {
+          reject(new Error('縮圖失敗：' + (e.message || e)));
+        }
+      };
+      img.onerror = function() { reject(new Error('圖片解析失敗')); };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function slAvatarUpload(input) {
+    if (!_slCurrent) { toast('❌ 請先儲存準賣方', 'error'); return; }
+    if (!input || !input.files || !input.files[0]) return;
+    var file = input.files[0];
+    if (input.value !== undefined) input.value = '';
+    if (!file.type || file.type.indexOf('image/') !== 0) {
+      toast('❌ 請選圖片檔', 'error'); return;
+    }
+    toast('⏳ 處理頭像中…', 'info');
+    _slProcessAvatar(file)
+      .then(function(b64) {
+        return fetch('/api/sellers/' + _slCurrent + '/avatar', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ avatar_b64: b64 }),
-        })
-          .then(function(r){ return r.json(); })
-          .then(function(d) {
-            if (d.error) { toast('❌ ' + d.error, 'error'); return; }
-            var imgEl = document.getElementById('sl-avatar-img');
-            var phEl  = document.getElementById('sl-avatar-placeholder');
-            imgEl.src = d.url + '?t=' + Date.now();
-            imgEl.style.display = 'block';
-            phEl.style.display  = 'none';
-            var s = _slData.find(function(x){ return x.id === _slCurrent; });
-            if (s) s.avatar_url = d.url;
-            toast('✅ 頭像已更新', 'success');
-            slFilterRender();
-          })
-          .catch(function(){ toast('❌ 上傳失敗', 'error'); });
-      };
-      img.src = e.target.result;
-    };
-    reader.readAsDataURL(file);
+        }).then(function(r){ return r.json(); }).then(function(d) {
+          if (d.error) throw new Error(d.error);
+          var imgEl = document.getElementById('sl-avatar-img');
+          var phEl  = document.getElementById('sl-avatar-placeholder');
+          if (imgEl) { imgEl.src = b64; imgEl.style.display = 'block'; }
+          if (phEl)  { phEl.style.display = 'none'; }
+          var s = _slData.find(function(x){ return x.id === _slCurrent; });
+          if (s) s.avatar_url = b64;
+          toast('✅ 頭像已更新', 'success');
+          slFilterRender();
+        });
+      })
+      .catch(function(e) {
+        console.error('[avatar]', e);
+        toast('❌ 上傳失敗：' + (e.message || '未知錯誤'), 'error');
+      });
   }
 
   // 載入相關圖檔（僅顯示圖片/PDF，過濾掉音訊等其他檔案）
