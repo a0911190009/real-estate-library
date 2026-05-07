@@ -1475,10 +1475,14 @@ def api_access_compare():
     if not _is_admin(email): return jsonify({"error": "僅管理員可使用"}), 403
 
     data = request.get_json(silent=True) or {}
-    new_sheet_id   = (data.get("new_sheet_id") or "").strip()
+    raw_input      = (data.get("new_sheet_id") or "").strip()
     new_sheet_name = (data.get("new_sheet_name") or "").strip()
-    if not new_sheet_id:
-        return jsonify({"error": "請提供新 Sheets ID"}), 400
+    if not raw_input:
+        return jsonify({"error": "請提供新 Sheets 網址或 ID"}), 400
+
+    # 自動從網址抓出 Sheets ID（支援 /spreadsheets/d/{ID}/... 格式）
+    m = re.search(r'/spreadsheets/d/([a-zA-Z0-9_-]+)', raw_input)
+    new_sheet_id = m.group(1) if m else raw_input
 
     try:
         service = _get_sheets_service(timeout=30)
@@ -6930,8 +6934,9 @@ window.addEventListener('unhandledrejection', function(e) {
         </p>
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
           <div style="flex:1;min-width:220px;">
-            <label style="font-size:11px;color:var(--txs);display:block;margin-bottom:4px;">新 Sheets ID（必填）</label>
+            <label style="font-size:11px;color:var(--txs);display:block;margin-bottom:4px;">新 Sheets 網址或 ID（必填）</label>
             <input id="ac-sheet-id" type="text" value="1_PE14LjVJ0M0Z2npklYHfmimfyVw98QLWK7cGq-oF7U"
+              placeholder="貼上 Google Sheets 網址或 ID 都可以"
               style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--bd);background:var(--bg-t);color:var(--tx);font-size:12px;box-sizing:border-box;">
           </div>
           <div style="width:160px;">
@@ -9987,7 +9992,7 @@ window.addEventListener('unhandledrejection', function(e) {
   function accessRunCompare() {
     var sheetId   = (document.getElementById('ac-sheet-id').value || '').trim();
     var sheetName = (document.getElementById('ac-sheet-name').value || '').trim();
-    if (!sheetId) { toast('請輸入新 Sheets ID', 'error'); return; }
+    if (!sheetId) { toast('請輸入新 Sheets 網址或 ID', 'error'); return; }
 
     var btn = document.getElementById('ac-compare-btn');
     btn.disabled = true;
