@@ -7086,7 +7086,15 @@ window.addEventListener('unhandledrejection', function(e) {
           </div>
           <!-- 中信心 -->
           <div id="rv-pane-medium" style="display:none;">
-            <p style="font-size:12px;color:var(--txs);margin:0 0 10px;">以下物件配對有些不確定，請逐一確認。✅ 確認配對，❌ 跳過此筆。</p>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+              <p style="font-size:12px;color:var(--txs);margin:0;flex:1;min-width:240px;">以下物件配對有些不確定，請逐一確認。✅ 確認配對，❌ 跳過此筆。</p>
+              <button id="rv-ai-medium-btn" onclick="rvRunAiMatchMedium()"
+                style="padding:6px 12px;border-radius:8px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border:none;font-size:12px;font-weight:700;cursor:pointer;"
+                title="用 Gemini 驗證規則找到的中信心配對：AI 同意 → 強化信心；AI 不同意 → 提示重新檢視；AI 找到更好的 → 顯示替代配對">
+                🤖 AI 驗證
+              </button>
+            </div>
+            <div id="rv-ai-medium-result" style="display:none;margin-bottom:14px;padding:12px;background:linear-gradient(135deg,rgba(99,102,241,.08),rgba(139,92,246,.08));border:1px solid rgba(139,92,246,.3);border-radius:10px;"></div>
             <div id="rv-medium-list" style="display:flex;flex-direction:column;gap:8px;"></div>
           </div>
           <!-- 問題（衝突 + 未配對） -->
@@ -9438,6 +9446,115 @@ window.addEventListener('unhandledrejection', function(e) {
   }
 
   var _rvAiResults = [];
+  var _rvAiMediumResults = [];
+
+  // 🤖 用 Gemini 驗證中信心組（規則找到的配對是否正確）
+  function rvRunAiMatchMedium() {
+    var items = _rvData.medium || [];
+    if (!items.length) { toast('沒有中信心項目需要 AI 驗證', 'info'); return; }
+    if (items.length > 100) { toast('中信心項目超過 100 筆，請先處理一部分', 'error'); return; }
+
+    var btn = document.getElementById('rv-ai-medium-btn');
+    var resultDiv = document.getElementById('rv-ai-medium-result');
+    btn.disabled = true;
+    btn.textContent = '🤖 AI 驗證中…';
+    resultDiv.style.display = 'block';
+    resultDiv.innerHTML = '<p style="margin:0;font-size:12px;color:var(--txs);">⏳ Gemini 處理中（每筆約 1-2 秒），共 ' + items.length + ' 筆…</p>';
+
+    fetch('/api/word-review/ai-match', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: items })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      btn.disabled = false;
+      btn.textContent = '🤖 重新驗證';
+      if (d.error) {
+        resultDiv.innerHTML = '<p style="margin:0;font-size:12px;color:#f87171;">❌ ' + d.error + '</p>';
+        return;
+      }
+      _rvAiMediumResults = d.results || [];
+      rvRenderAiMediumResults(items, _rvAiMediumResults);
+    })
+    .catch(function(e) {
+      btn.disabled = false;
+      btn.textContent = '🤖 重新驗證';
+      resultDiv.innerHTML = '<p style="margin:0;font-size:12px;color:#f87171;">❌ 失敗：' + e.message + '</p>';
+    });
+  }
+
+  // 渲染中信心 AI 驗證結果（對比規則 vs AI）
+  function rvRenderAiMediumResults(items, results) {
+    var div = document.getElementById('rv-ai-medium-result');
+    var agree = [], disagree = [], aiNoMatch = [];
+    results.forEach(function(r, i) {
+      var item = items[i] || {};
+      r._item = item;
+      var ruleId = item.doc_id || '';
+      // 規則的配對 = item.doc_id；AI 的配對 = r.matched_doc_id
+      if (!r.matched_doc_id || r.confidence < 0.4) {
+        aiNoMatch.push(r);
+      } else if (r.matched_doc_id === ruleId) {
+        agree.push(r);
+      } else {
+        disagree.push(r);
+      }
+    });
+
+    var html = '<div style="display:flex;align-items:center;gap:14px;margin-bottom:10px;flex-wrap:wrap;">';
+    html += '<span style="font-size:13px;font-weight:700;color:#a78bfa;">🤖 Gemini 驗證結果</span>';
+    html += '<span style="font-size:11px;color:var(--txs);">共 ' + results.length + ' 筆 ｜ ✅ AI 同意 ' + agree.length + ' ｜ ⚠️ AI 不同意 ' + disagree.length + ' ｜ ❌ AI 也不確定 ' + aiNoMatch.length + '</span>';
+    html += '</div>';
+
+    function _ruleVsAiCard(r, label, labelColor) {
+      var item = r._item;
+      var pct = Math.round((r.confidence || 0) * 100);
+      var s = '<div style="background:var(--bg-s);border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin-bottom:6px;">';
+      s += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;">';
+      s += '<span style="background:' + labelColor + ';color:#fff;padding:1px 7px;border-radius:5px;font-size:10px;font-weight:700;">' + label + ' ' + pct + '%</span>';
+      s += '<strong style="color:var(--tx);">' + (item.csv_name || '(無案名)') + '</strong>';
+      if (item.csv_price) s += '<span style="color:var(--txm);font-size:11px;">' + item.csv_price + '萬</span>';
+      s += '</div>';
+      // 規則建議
+      s += '<div style="margin-top:6px;padding-left:10px;border-left:2px solid var(--warn);font-size:11px;color:var(--txs);">';
+      s += '📐 規則建議：<strong style="color:var(--tx);">' + (item.db_name || '(空)') + '</strong>';
+      if (item.match_by) s += '　<span style="color:var(--txm);">[' + item.match_by + '，分數 ' + (item.score != null ? item.score : '?') + ']</span>';
+      s += '</div>';
+      // AI 建議
+      if (r.matched_doc_id) {
+        s += '<div style="margin-top:4px;padding-left:10px;border-left:2px solid #a78bfa;font-size:11px;color:var(--txs);">';
+        s += '🤖 AI 建議：<strong style="color:var(--tx);">' + (r.matched_db_name || '') + '</strong>';
+        if (r.matched_db_addr) s += '　/ ' + r.matched_db_addr;
+        s += '</div>';
+      } else {
+        s += '<div style="margin-top:4px;padding-left:10px;border-left:2px solid #6b7280;font-size:11px;color:var(--txs);">';
+        s += '🤖 AI 建議：<em style="color:var(--txm);">不配對</em>';
+        s += '</div>';
+      }
+      if (r.reason) s += '<div style="margin-top:4px;font-size:11px;color:var(--txm);">💬 ' + r.reason + '</div>';
+      s += '</div>';
+      return s;
+    }
+
+    if (agree.length) {
+      html += '<div style="margin-top:8px;"><p style="font-size:11px;font-weight:700;color:var(--ok);margin:0 0 4px;">✅ AI 同意規則的配對（信心強化，可放心套用）</p>';
+      agree.forEach(function(r) { html += _ruleVsAiCard(r, 'AI ✓', '#16a34a'); });
+      html += '</div>';
+    }
+    if (disagree.length) {
+      html += '<div style="margin-top:8px;"><p style="font-size:11px;font-weight:700;color:var(--warn);margin:0 0 4px;">⚠️ AI 不同意（規則找的可能不對，請特別檢視這幾筆）</p>';
+      disagree.forEach(function(r) { html += _ruleVsAiCard(r, 'AI ≠', '#d97706'); });
+      html += '</div>';
+    }
+    if (aiNoMatch.length) {
+      html += '<div style="margin-top:8px;"><p style="font-size:11px;font-weight:700;color:#f87171;margin:0 0 4px;">❌ AI 也找不到合適的配對（可能規則錯配，建議跳過此筆）</p>';
+      aiNoMatch.forEach(function(r) { html += _ruleVsAiCard(r, 'AI ✗', '#6b7280'); });
+      html += '</div>';
+    }
+    html += '<p style="margin:10px 0 0;font-size:10px;color:var(--txm);">💡 V1：AI 結果僅供參考。✅ AI 同意組可放心勾選；⚠️ AI 不同意組請對比兩邊建議再決定要不要套用；❌ 建議跳過。</p>';
+    div.innerHTML = html;
+  }
 
   function rvRenderAiResults(items, results) {
     var div = document.getElementById('rv-ai-result');
