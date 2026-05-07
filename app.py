@@ -6631,7 +6631,7 @@ window.addEventListener('unhandledrejection', function(e) {
                 <div style="display:flex;gap:6px;"><span style="color:var(--ok);font-weight:700;white-space:nowrap;">＋ 新增</span><span style="color:var(--txs);">Access 有、主頁 Sheets 沒有的物件，套用後自動插入第 5 列（最上方資料列）並分配序號。</span></div>
                 <div style="display:flex;gap:6px;"><span style="color:#f87171;font-weight:700;white-space:nowrap;">● 可能下架</span><span style="color:var(--txs);">主頁有、Access 沒有的物件，僅供參考，不會自動刪除，需人工判斷。</span></div>
               </div>
-              <p style="color:var(--txm);font-size:11px;margin:8px 0 0;">💡 Access Sheets 的 ID 已預設填入，直接按「開始比對」即可。比對約需 30～60 秒。</p>
+              <p style="color:var(--txm);font-size:11px;margin:8px 0 0;">💡 Access Sheets 已預設填入。換新表時可<strong>直接貼整段網址</strong>（系統會自動抓 ID），不必再手動剪 ID。比對約需 30～60 秒。</p>
             </div>
           </div>
         </div>
@@ -6703,7 +6703,7 @@ window.addEventListener('unhandledrejection', function(e) {
           <div style="background:var(--bg-t);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;margin-top:10px;">
             <p style="color:#a78bfa;font-size:12px;font-weight:700;margin:0 0 10px;">📌 情境三：Access 資料有更新，想同步回主頁 Sheets</p>
             <div style="display:flex;flex-direction:column;gap:7px;">
-              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--bg-h);color:var(--tx);border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">1</span><span style="color:var(--txs);font-size:12px;">在此頁按「<strong style="color:#a78bfa;">📋 ACCESS比對</strong>」，Sheets ID 已預設，直接按「開始比對」</span></div>
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--bg-h);color:var(--tx);border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">1</span><span style="color:var(--txs);font-size:12px;">在此頁按「<strong style="color:#a78bfa;">📋 ACCESS比對</strong>」，預設已填入 Sheets，直接按「開始比對」；換新表時把整段<strong>網址</strong>貼上即可（也接受純 ID）</span></div>
               <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--bg-h);color:var(--tx);border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">2</span><span style="color:var(--txs);font-size:12px;">比對完成後，在「修改」Tab 用搜尋框找到想確認的物件，逐一取消不想套用的欄位勾選</span></div>
               <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--bg-h);color:var(--tx);border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">3</span><span style="color:var(--txs);font-size:12px;">若某個差異已知是 Access 打錯的，按欄位旁的「🔒鎖定」，下次比對自動預設不套用</span></div>
               <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--ok);color:#fff;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px;">✓</span><span style="color:var(--ok);font-size:12px;"><strong>按「套用選取變更」→ 直接寫入主頁 Sheets，完成！</strong></span></div>
@@ -6930,7 +6930,7 @@ window.addEventListener('unhandledrejection', function(e) {
       <!-- 輸入區 -->
       <div id="ac-input-section" style="padding:16px 22px;border-bottom:1px solid var(--bd);flex-shrink:0;">
         <p style="font-size:12px;color:var(--txs);margin:0 0 12px;">
-          把公司最新 Access 資料（欄位與主頁相同的 A~AU 欄）貼到一張全新的 Google Sheets，再把 Sheets ID 貼到下方開始比對。
+          把公司最新 Access 資料（欄位與主頁相同的 A~AU 欄）貼到一張全新的 Google Sheets，再把該 Sheets 的<strong>網址或 ID</strong>貼到下方開始比對。
         </p>
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
           <div style="flex:1;min-width:220px;">
