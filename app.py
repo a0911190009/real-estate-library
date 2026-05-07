@@ -6679,6 +6679,30 @@ window.addEventListener('unhandledrejection', function(e) {
         <div style="margin-bottom:20px;">
           <p style="color:var(--txm);font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin:0 0 10px;">操作流程</p>
 
+          <!-- 按鈕順序總覽 -->
+          <div style="background:linear-gradient(135deg,rgba(167,139,250,.12),rgba(96,165,250,.12));border:1px solid var(--bd);border-radius:10px;padding:14px 16px;margin-bottom:10px;">
+            <p style="color:var(--tx);font-size:12px;font-weight:700;margin:0 0 10px;">🧭 四個按鈕的標準順序（全部都要做時）</p>
+            <div style="display:flex;flex-direction:column;gap:6px;font-size:12px;">
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:#a78bfa;color:#000;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;">1</span><span style="color:var(--txs);"><strong style="color:#a78bfa;">📋 ACCESS比對</strong>　→　把 Access 新資料寫入主頁 Sheets（補新增物件、改欄位）</span></div>
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--warn);color:#000;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;">2</span><span style="color:var(--txs);"><strong style="color:var(--warn);">🔄 同步 Sheets</strong>　→　Sheets 最新內容寫入 Firestore（網頁才查得到）</span></div>
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--ac);color:#fff;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;">3</span><span style="color:var(--txs);"><strong style="color:var(--ac);">🔍 比對審查</strong>　→　上傳 Word CSV，把<em>銷售中／到期日／售價</em>寫入 Firestore</span></div>
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--ok);color:#fff;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;">4</span><span style="color:var(--txs);"><strong style="color:var(--ok);">📤 回寫銷售中</strong>　→　Firestore 銷售中狀態回寫 Sheets（兩邊一致）</span></div>
+            </div>
+            <p style="color:var(--txm);font-size:11px;margin:10px 0 6px;font-weight:700;">為什麼是這個順序？</p>
+            <ul style="color:var(--txs);font-size:11px;margin:0;padding-left:18px;line-height:1.7;">
+              <li>1→2：ACCESS 改完 Sheets 後要再同步，否則網頁看到的還是舊資料</li>
+              <li>2→3：先同步好基本資料，比對審查才有正確的物件可比對</li>
+              <li>3→4：Word 的銷售中進 Firestore 後要回寫 Sheets，否則下次同步 Sheets 又會把銷售中打回舊狀態</li>
+            </ul>
+            <p style="color:var(--txm);font-size:11px;margin:10px 0 6px;font-weight:700;">不一定四個都要按：</p>
+            <ul style="color:var(--txs);font-size:11px;margin:0;padding-left:18px;line-height:1.7;">
+              <li>只有 Access 更新　→　只跑 <strong>1+2</strong></li>
+              <li>只有 Word 物件總表更新　→　只跑 <strong>3+4</strong></li>
+              <li>單純 Sheets 改了東西　→　只跑 <strong>2</strong></li>
+            </ul>
+            <p style="color:var(--warn);font-size:11px;margin:10px 0 0;">⚠️ <strong>重點</strong>：步驟 2「同步 Sheets」會用 Sheets 內容覆蓋 Firestore，所以一定要在步驟 3「比對審查」之前做，不然 Word 寫進 Firestore 的銷售中狀態會被舊 Sheets 蓋掉。</p>
+          </div>
+
           <!-- 情境一 -->
           <div style="background:var(--bg-t);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;margin-bottom:10px;">
             <p style="color:var(--warn);font-size:12px;font-weight:700;margin:0 0 10px;">📌 情境一：Sheets 有新增或修改物件</p>
