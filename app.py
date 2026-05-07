@@ -6562,25 +6562,26 @@ window.addEventListener('unhandledrejection', function(e) {
   <div id="cp-sync-bar" class="hidden mb-3 flex flex-wrap items-center gap-3 rounded-xl px-4 py-2" style="background:var(--bg-t);border:1px solid var(--bd);">
     <span class="flex-1" style="font-size:0.75rem;color:var(--txs);">上次同步：<span id="cp-last-sync" style="color:var(--tx);">讀取中…</span></span>
     <button id="cp-sync-btn" onclick="cpTriggerSync()"
-      class="px-4 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold transition">
+      class="px-4 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold transition"
+      title="【步驟 2】Google Sheets → Firestore 全量同步，網頁才查得到最新資料。完整流程順序：1.ACCESS比對 → 2.同步Sheets → 3.比對審查 → 4.回寫銷售中。⚠️ 必須在「比對審查」之前做，否則 Word 寫的銷售中會被舊 Sheets 覆蓋。">
       🔄 同步 Sheets
     </button>
-    <!-- 比對審查：上傳 CSV → 審查配對 → 確認後寫入（僅日盛房屋管理員） -->
+    <!-- 比對審查：上傳 .doc/.docx 或 CSV → 審查配對 → 確認後寫入（僅日盛房屋管理員） -->
     <label class="flex items-center gap-1 px-4 py-1.5 rounded-lg bg-teal-700 hover:bg-teal-600 text-white text-xs font-semibold transition cursor-pointer"
-      title="上傳 export_word_table.py 產出的 CSV，審查高/中信心配對後寫入 Firestore">
+      title="【步驟 3】上傳物件總表 Word（.doc / .docx 雲端解析）或本機 export_word_table.py 產出的 4 個 CSV + word_meta.json，把銷售中／到期日／售價寫入 Firestore。完整流程順序：1.ACCESS比對 → 2.同步Sheets → 3.比對審查 → 4.回寫銷售中">
       🔍 比對審查
       <input type="file" accept=".csv,.json,.doc,.docx" multiple class="hidden" onchange="cpOpenReview(this)">
     </label>
     <!-- 回寫銷售中 → Sheets -->
     <button id="cp-writeback-btn" onclick="cpWritebackSelling()"
       class="px-4 py-1.5 rounded-lg bg-indigo-700 hover:bg-indigo-600 text-white text-xs font-semibold transition"
-      title="把 Firestore 目前所有物件的「銷售中」狀態，一次回寫到 Google Sheets（只動銷售中欄）">
+      title="【步驟 4】把 Firestore 目前所有物件的「銷售中」狀態，一次回寫到 Google Sheets（只動銷售中欄，不碰其他欄位）。完整流程順序：1.ACCESS比對 → 2.同步Sheets → 3.比對審查 → 4.回寫銷售中。不做這步的話，下次「同步 Sheets」會把 Word 寫的銷售中又打回舊狀態。">
       📤 回寫銷售中
     </button>
     <!-- ACCESS 比對更新 -->
     <button onclick="openAccessCompareModal()"
       class="px-4 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold transition"
-      title="把最新 Access 資料貼到新 Sheets，比對與我的物件庫有何差異，選擇要套用哪些變更">
+      title="【步驟 1】把公司 Access 新資料貼到一張新 Google Sheets（接受網址或 ID），比對與主頁 Sheets 的差異（修改／新增／可能下架），選擇套用哪些變更回主頁 Sheets。完整流程順序：1.ACCESS比對 → 2.同步Sheets → 3.比對審查 → 4.回寫銷售中">
       📋 ACCESS比對
     </button>
     <!-- 說明按鈕 -->
