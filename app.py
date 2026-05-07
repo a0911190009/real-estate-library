@@ -6561,28 +6561,29 @@ window.addEventListener('unhandledrejection', function(e) {
   <!-- 管理員工具列（只有管理員看得到） -->
   <div id="cp-sync-bar" class="hidden mb-3 flex flex-wrap items-center gap-3 rounded-xl px-4 py-2" style="background:var(--bg-t);border:1px solid var(--bd);">
     <span class="flex-1" style="font-size:0.75rem;color:var(--txs);">上次同步：<span id="cp-last-sync" style="color:var(--tx);">讀取中…</span></span>
+    <!-- 步驟 1：ACCESS 比對更新（紅 = 流程起點） -->
+    <button onclick="openAccessCompareModal()"
+      class="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold transition"
+      title="【步驟 1】把公司 Access 新資料貼到一張新 Google Sheets（接受網址或 ID），比對與主頁 Sheets 的差異（修改／新增／可能下架），選擇套用哪些變更回主頁 Sheets。完整流程順序：1.ACCESS比對 → 2.同步Sheets → 3.比對審查 → 4.回寫銷售中">
+      📋 ACCESS比對
+    </button>
+    <!-- 步驟 2：同步 Sheets（橘） -->
     <button id="cp-sync-btn" onclick="cpTriggerSync()"
       class="px-4 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold transition"
       title="【步驟 2】Google Sheets → Firestore 全量同步，網頁才查得到最新資料。完整流程順序：1.ACCESS比對 → 2.同步Sheets → 3.比對審查 → 4.回寫銷售中。⚠️ 必須在「比對審查」之前做，否則 Word 寫的銷售中會被舊 Sheets 覆蓋。">
       🔄 同步 Sheets
     </button>
-    <!-- 比對審查：上傳 .doc/.docx 或 CSV → 審查配對 → 確認後寫入（僅日盛房屋管理員） -->
+    <!-- 步驟 3：比對審查（青綠）- 上傳 .doc/.docx 或 CSV → 審查配對 → 確認後寫入 -->
     <label class="flex items-center gap-1 px-4 py-1.5 rounded-lg bg-teal-700 hover:bg-teal-600 text-white text-xs font-semibold transition cursor-pointer"
       title="【步驟 3】上傳物件總表 Word（.doc / .docx 雲端解析）或本機 export_word_table.py 產出的 4 個 CSV + word_meta.json，把銷售中／到期日／售價寫入 Firestore。完整流程順序：1.ACCESS比對 → 2.同步Sheets → 3.比對審查 → 4.回寫銷售中">
       🔍 比對審查
       <input type="file" accept=".csv,.json,.doc,.docx" multiple class="hidden" onchange="cpOpenReview(this)">
     </label>
-    <!-- 回寫銷售中 → Sheets -->
+    <!-- 步驟 4：回寫銷售中 → Sheets（靛藍 = 流程終點） -->
     <button id="cp-writeback-btn" onclick="cpWritebackSelling()"
       class="px-4 py-1.5 rounded-lg bg-indigo-700 hover:bg-indigo-600 text-white text-xs font-semibold transition"
       title="【步驟 4】把 Firestore 目前所有物件的「銷售中」狀態，一次回寫到 Google Sheets（只動銷售中欄，不碰其他欄位）。完整流程順序：1.ACCESS比對 → 2.同步Sheets → 3.比對審查 → 4.回寫銷售中。不做這步的話，下次「同步 Sheets」會把 Word 寫的銷售中又打回舊狀態。">
       📤 回寫銷售中
-    </button>
-    <!-- ACCESS 比對更新 -->
-    <button onclick="openAccessCompareModal()"
-      class="px-4 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold transition"
-      title="【步驟 1】把公司 Access 新資料貼到一張新 Google Sheets（接受網址或 ID），比對與主頁 Sheets 的差異（修改／新增／可能下架），選擇套用哪些變更回主頁 Sheets。完整流程順序：1.ACCESS比對 → 2.同步Sheets → 3.比對審查 → 4.回寫銷售中">
-      📋 ACCESS比對
     </button>
     <!-- 說明按鈕 -->
     <button onclick="document.getElementById('cp-sync-help-modal').style.display='flex'"
@@ -6684,10 +6685,10 @@ window.addEventListener('unhandledrejection', function(e) {
           <div style="background:linear-gradient(135deg,rgba(167,139,250,.12),rgba(96,165,250,.12));border:1px solid var(--bd);border-radius:10px;padding:14px 16px;margin-bottom:10px;">
             <p style="color:var(--tx);font-size:12px;font-weight:700;margin:0 0 10px;">🧭 四個按鈕的標準順序（全部都要做時）</p>
             <div style="display:flex;flex-direction:column;gap:6px;font-size:12px;">
-              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:#a78bfa;color:#000;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;">1</span><span style="color:var(--txs);"><strong style="color:#a78bfa;">📋 ACCESS比對</strong>　→　把 Access 新資料寫入主頁 Sheets（補新增物件、改欄位）</span></div>
-              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--warn);color:#000;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;">2</span><span style="color:var(--txs);"><strong style="color:var(--warn);">🔄 同步 Sheets</strong>　→　Sheets 最新內容寫入 Firestore（網頁才查得到）</span></div>
-              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--ac);color:#fff;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;">3</span><span style="color:var(--txs);"><strong style="color:var(--ac);">🔍 比對審查</strong>　→　上傳 Word CSV，把<em>銷售中／到期日／售價</em>寫入 Firestore</span></div>
-              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:var(--ok);color:#fff;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;">4</span><span style="color:var(--txs);"><strong style="color:var(--ok);">📤 回寫銷售中</strong>　→　Firestore 銷售中狀態回寫 Sheets（兩邊一致）</span></div>
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:#e11d48;color:#fff;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;">1</span><span style="color:var(--txs);"><strong style="color:#e11d48;">📋 ACCESS比對</strong>　→　把 Access 新資料寫入主頁 Sheets（補新增物件、改欄位）</span></div>
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:#d97706;color:#fff;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;">2</span><span style="color:var(--txs);"><strong style="color:#d97706;">🔄 同步 Sheets</strong>　→　Sheets 最新內容寫入 Firestore（網頁才查得到）</span></div>
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:#0f766e;color:#fff;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;">3</span><span style="color:var(--txs);"><strong style="color:#0f766e;">🔍 比對審查</strong>　→　上傳 Word（.doc/.docx）或 CSV，把<em>銷售中／到期日／售價</em>寫入 Firestore</span></div>
+              <div style="display:flex;align-items:flex-start;gap:10px;"><span style="background:#4338ca;color:#fff;border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;">4</span><span style="color:var(--txs);"><strong style="color:#4338ca;">📤 回寫銷售中</strong>　→　Firestore 銷售中狀態回寫 Sheets（兩邊一致）</span></div>
             </div>
             <p style="color:var(--txm);font-size:11px;margin:10px 0 6px;font-weight:700;">為什麼是這個順序？</p>
             <ul style="color:var(--txs);font-size:11px;margin:0;padding-left:18px;line-height:1.7;">
