@@ -3601,6 +3601,156 @@ def api_word_review_apply():
                     "message": f"已更新 {updated} 筆物件（銷售中、售價、到期日）"})
 
 
+# ── AI（Gemini）重新配對問題組 ─────────────────────────────────────────────
+
+@app.route("/api/word-review/ai-match", methods=["POST"])
+def api_word_review_ai_match():
+    """
+    用 Gemini 對問題組（conflict + unmatched）重新配對。
+    Input: { items: [{csv_name, csv_price, csv_agent, csv_comm, csv_expiry, ...}] }
+    Output: { ok, results: [{idx, matched_doc_id, matched_db_name, matched_db_addr, confidence, reason}] }
+    每筆 item 取候選物件 → 丟 Gemini → 拿配對建議。前端展示後由人工確認。
+    """
+    import difflib
+    email, err = _require_user()
+    if err: return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email): return jsonify({"error": "僅管理員可使用"}), 403
+    if not _GEMINI_OK or not _genai:
+        return jsonify({"error": "未設定 GOOGLE_API_KEY，無法使用 AI 配對"}), 503
+
+    data = request.get_json(silent=True) or {}
+    items = data.get("items", []) or []
+    if not items:
+        return jsonify({"ok": True, "results": []})
+    if len(items) > 100:
+        return jsonify({"error": "一次最多處理 100 筆，請分批"}), 400
+
+    db = _get_db()
+    if db is None: return jsonify({"error": "Firestore 未連線"}), 503
+
+    # 載入所有銷售中物件（一次，避免 N 次查詢）
+    all_props = []
+    for d in db.collection("company_properties").stream():
+        rd = d.to_dict()
+        if not _is_selling(rd):
+            continue
+        all_props.append({
+            "doc_id":   d.id,
+            "案名":     str(rd.get("案名", "") or ""),
+            "物件地址": str(rd.get("物件地址", "") or ""),
+            "物件類別": str(rd.get("物件類別", "") or ""),
+            "經紀人":   str(rd.get("經紀人", "") or ""),
+            "售價":     rd.get("售價(萬)") if rd.get("售價(萬)") is not None else rd.get("售價萬", ""),
+            "委託編號": str(rd.get("委託編號", "") or ""),
+        })
+
+    def _split_agents(s):
+        return set(x.strip() for x in re.split(r"[,/／、，\s]+", str(s or "")) if x.strip())
+
+    def _name_similarity(a, b):
+        """案名相似度 0-1（去空白後比較）"""
+        a = re.sub(r"\s+", "", str(a or ""))
+        b = re.sub(r"\s+", "", str(b or ""))
+        if not a or not b: return 0.0
+        return difflib.SequenceMatcher(None, a, b).ratio()
+
+    results = []
+    client = _genai.Client(api_key=_GEMINI_KEY)
+
+    for idx, item in enumerate(items):
+        csv_name  = str(item.get("csv_name", "") or "")
+        csv_price = item.get("csv_price", "")
+        csv_agent = item.get("csv_agent", "")
+        csv_comm  = str(item.get("csv_comm", "") or "")
+        csv_expiry= item.get("csv_expiry", "")
+
+        # 候選篩選（兩階段）：
+        # 1. 經紀人有交集 → 加入候選池
+        # 2. 若上一步 < 3 筆，補入案名相似度 > 0.4 的物件
+        item_agents = _split_agents(csv_agent)
+        cands = []
+        for p in all_props:
+            db_agents = _split_agents(p.get("經紀人", ""))
+            if item_agents and db_agents and (item_agents & db_agents):
+                cands.append((p, _name_similarity(csv_name, p["案名"])))
+        if len(cands) < 3:
+            for p in all_props:
+                if p in [c[0] for c in cands]: continue
+                sim = _name_similarity(csv_name, p["案名"])
+                if sim >= 0.4:
+                    cands.append((p, sim))
+        # 依案名相似度排序，取前 10
+        cands.sort(key=lambda x: x[1], reverse=True)
+        cands = cands[:10]
+
+        if not cands:
+            results.append({
+                "idx": idx,
+                "matched_doc_id": None,
+                "confidence": 0.0,
+                "reason": "找不到任何候選物件（經紀人不重疊且案名差異過大）",
+                "candidates_count": 0,
+            })
+            continue
+
+        # 建 prompt
+        cand_list = "\n".join([
+            f"  [{i+1}] doc_id={c[0]['doc_id']} | 案名：{c[0]['案名']} | 地址：{c[0]['物件地址']} | 類別：{c[0]['物件類別']} | 經紀人：{c[0]['經紀人']} | 售價：{c[0]['售價']} | 委託編號：{c[0]['委託編號']}"
+            for i, c in enumerate(cands)
+        ])
+        prompt = (
+            "你是房仲資料比對助理。請判斷以下「Word 物件」是否對應到「候選物件清單」中的某一筆。\n\n"
+            "【Word 物件】\n"
+            f"  案名：{csv_name}\n"
+            f"  售價：{csv_price}萬\n"
+            f"  經紀人：{csv_agent}\n"
+            f"  委託編號：{csv_comm}\n"
+            f"  委託到期日：{csv_expiry}\n\n"
+            "【候選物件清單】\n"
+            f"{cand_list}\n\n"
+            "請輸出 JSON（嚴格符合此格式，不要多餘文字）：\n"
+            '{ "matched_doc_id": "若找到對應的 doc_id 字串；找不到則填 null", '
+            '"confidence": 0.0 到 1.0 的數字, '
+            '"reason": "30字內的判斷理由（中文）" }\n\n'
+            "判斷原則：\n"
+            "1. 案名去空白後字面相似 + 經紀人有交集 + 售價接近（差<10%） → 高信心 0.8-1.0\n"
+            "2. 案名相似但其他不一致，或經紀人差異大 → 中信心 0.4-0.7\n"
+            "3. 任何明顯不一致（例如售價差很多、案名語意完全不同） → 不配對 null + 低信心\n"
+            "4. 寧可不配對（null）也不要錯配。"
+        )
+
+        try:
+            resp = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt,
+                config=_genai.types.GenerateContentConfig(response_mime_type="application/json"),
+            )
+            parsed = json.loads(resp.text)
+            matched_id = parsed.get("matched_doc_id")
+            matched_p = next((c[0] for c in cands if c[0]["doc_id"] == matched_id), None) if matched_id else None
+            results.append({
+                "idx": idx,
+                "matched_doc_id": matched_id if matched_p else None,
+                "matched_db_name": matched_p["案名"] if matched_p else "",
+                "matched_db_addr": matched_p["物件地址"] if matched_p else "",
+                "matched_db_agent": matched_p["經紀人"] if matched_p else "",
+                "matched_db_price": matched_p["售價"] if matched_p else "",
+                "confidence": float(parsed.get("confidence", 0) or 0),
+                "reason": str(parsed.get("reason", "") or "")[:60],
+                "candidates_count": len(cands),
+            })
+        except Exception as e:
+            results.append({
+                "idx": idx,
+                "matched_doc_id": None,
+                "confidence": 0.0,
+                "reason": f"AI 失敗：{str(e)[:50]}",
+                "candidates_count": len(cands),
+            })
+
+    return jsonify({"ok": True, "results": results, "model": "gemini-2.0-flash"})
+
+
 # ── 強行配對記憶 API ─────────────────────────────────────────────────────────
 
 @app.route("/api/word-match-memory", methods=["GET"])
@@ -6941,7 +7091,15 @@ window.addEventListener('unhandledrejection', function(e) {
           </div>
           <!-- 問題（衝突 + 未配對） -->
           <div id="rv-pane-issues" style="display:none;">
-            <p style="font-size:12px;color:var(--txs);margin:0 0 10px;">以下 Word 條目在 Firestore 找不到對應（新物件尚未匯入），或同名但特徵衝突。僅供參考，不會自動套用。</p>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+              <p style="font-size:12px;color:var(--txs);margin:0;flex:1;min-width:240px;">以下 Word 條目在 Firestore 找不到對應或特徵衝突。可按右側按鈕讓 Gemini 嘗試配對。</p>
+              <button id="rv-ai-match-btn" onclick="rvRunAiMatch()"
+                style="padding:6px 12px;border-radius:8px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border:none;font-size:12px;font-weight:700;cursor:pointer;"
+                title="把問題組丟給 Gemini 2.0 Flash 重新配對，AI 會給出建議與信心分數，最終由你確認">
+                🤖 用 Gemini 重新配對
+              </button>
+            </div>
+            <div id="rv-ai-result" style="display:none;margin-bottom:14px;padding:12px;background:linear-gradient(135deg,rgba(99,102,241,.08),rgba(139,92,246,.08));border:1px solid rgba(139,92,246,.3);border-radius:10px;"></div>
             <div id="rv-issues-list" style="display:flex;flex-direction:column;gap:8px;"></div>
           </div>
         </div>
@@ -9241,6 +9399,100 @@ window.addEventListener('unhandledrejection', function(e) {
         btn.style.color = 'var(--txm)';
       }
     });
+  }
+
+  // 🤖 用 Gemini 對問題組重新配對
+  function rvRunAiMatch() {
+    var items = (_rvData.conflict || []).concat(_rvData.unmatched || []);
+    if (!items.length) { toast('沒有問題項目需要 AI 重新配對', 'info'); return; }
+    if (items.length > 100) { toast('問題項目超過 100 筆，請先處理一部分', 'error'); return; }
+
+    var btn = document.getElementById('rv-ai-match-btn');
+    var resultDiv = document.getElementById('rv-ai-result');
+    btn.disabled = true;
+    btn.textContent = '🤖 AI 比對中…';
+    resultDiv.style.display = 'block';
+    resultDiv.innerHTML = '<p style="margin:0;font-size:12px;color:var(--txs);">⏳ Gemini 處理中（每筆約 1-2 秒），共 ' + items.length + ' 筆…</p>';
+
+    fetch('/api/word-review/ai-match', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: items })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      btn.disabled = false;
+      btn.textContent = '🤖 重新跑一次';
+      if (d.error) {
+        resultDiv.innerHTML = '<p style="margin:0;font-size:12px;color:#f87171;">❌ ' + d.error + '</p>';
+        return;
+      }
+      _rvAiResults = d.results || [];
+      rvRenderAiResults(items, _rvAiResults);
+    })
+    .catch(function(e) {
+      btn.disabled = false;
+      btn.textContent = '🤖 重新跑一次';
+      resultDiv.innerHTML = '<p style="margin:0;font-size:12px;color:#f87171;">❌ 失敗：' + e.message + '</p>';
+    });
+  }
+
+  var _rvAiResults = [];
+
+  function rvRenderAiResults(items, results) {
+    var div = document.getElementById('rv-ai-result');
+    var hi = [], mid = [], no = [];
+    results.forEach(function(r, i) {
+      r._item = items[i] || {};
+      if (r.matched_doc_id && r.confidence >= 0.7) hi.push(r);
+      else if (r.matched_doc_id && r.confidence >= 0.4) mid.push(r);
+      else no.push(r);
+    });
+
+    var html = '<div style="display:flex;align-items:center;gap:14px;margin-bottom:10px;flex-wrap:wrap;">';
+    html += '<span style="font-size:13px;font-weight:700;color:#a78bfa;">🤖 Gemini 配對結果</span>';
+    html += '<span style="font-size:11px;color:var(--txs);">共 ' + results.length + ' 筆 ｜ ✅ 高信心 ' + hi.length + ' ｜ ⚠️ 不確定 ' + mid.length + ' ｜ ❌ 找不到 ' + no.length + '</span>';
+    html += '</div>';
+
+    function _card(r, label, labelColor) {
+      var item = r._item;
+      var pct = Math.round((r.confidence || 0) * 100);
+      var s = '<div style="background:var(--bg-s);border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin-bottom:6px;">';
+      s += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;">';
+      s += '<span style="background:' + labelColor + ';color:#fff;padding:1px 7px;border-radius:5px;font-size:10px;font-weight:700;">' + label + ' ' + pct + '%</span>';
+      s += '<strong style="color:var(--tx);">' + (item.csv_name || '(無案名)') + '</strong>';
+      if (item.csv_price) s += '<span style="color:var(--txm);font-size:11px;">' + item.csv_price + '萬</span>';
+      if (item.csv_agent) s += '<span style="color:var(--txm);font-size:11px;">經紀人：' + item.csv_agent + '</span>';
+      s += '</div>';
+      if (r.matched_doc_id) {
+        s += '<div style="margin-top:6px;padding-left:10px;border-left:2px solid #a78bfa;font-size:11px;color:var(--txs);">';
+        s += '↳ AI 建議配對：<strong style="color:var(--tx);">' + (r.matched_db_name || '') + '</strong>';
+        if (r.matched_db_addr) s += '　/ ' + r.matched_db_addr;
+        if (r.matched_db_price) s += '　/ ' + r.matched_db_price + '萬';
+        s += '</div>';
+      }
+      if (r.reason) s += '<div style="margin-top:4px;font-size:11px;color:var(--txm);">💬 ' + r.reason + '</div>';
+      s += '</div>';
+      return s;
+    }
+
+    if (hi.length) {
+      html += '<div style="margin-top:8px;"><p style="font-size:11px;font-weight:700;color:var(--ok);margin:0 0 4px;">✅ AI 高信心配對（建議採用，仍請人工確認）</p>';
+      hi.forEach(function(r) { html += _card(r, 'AI', '#16a34a'); });
+      html += '</div>';
+    }
+    if (mid.length) {
+      html += '<div style="margin-top:8px;"><p style="font-size:11px;font-weight:700;color:var(--warn);margin:0 0 4px;">⚠️ AI 不確定（請特別檢視）</p>';
+      mid.forEach(function(r) { html += _card(r, 'AI', '#d97706'); });
+      html += '</div>';
+    }
+    if (no.length) {
+      html += '<div style="margin-top:8px;"><p style="font-size:11px;font-weight:700;color:#f87171;margin:0 0 4px;">❌ AI 也找不到對應</p>';
+      no.forEach(function(r) { html += _card(r, 'AI', '#6b7280'); });
+      html += '</div>';
+    }
+    html += '<p style="margin:10px 0 0;font-size:10px;color:var(--txm);">💡 V1 版本：AI 結果僅供參考，不會自動套用。請依建議手動處理（如修正 Word 案名、或補配對記憶）。模型：' + (results.length ? 'gemini-2.0-flash' : '') + '</p>';
+    div.innerHTML = html;
   }
 
   // 勾選/取消全選（高信心）
