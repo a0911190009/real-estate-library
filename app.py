@@ -6558,48 +6558,61 @@ window.addEventListener('unhandledrejection', function(e) {
     </div>
   </div>
 
-  <!-- 管理員工具列（只有管理員看得到） -->
-  <div id="cp-sync-bar" class="hidden mb-3 flex flex-wrap items-center gap-3 rounded-xl px-4 py-2" style="background:var(--bg-t);border:1px solid var(--bd);">
-    <span class="flex-1" style="font-size:0.75rem;color:var(--txs);">上次同步：<span id="cp-last-sync" style="color:var(--tx);">讀取中…</span></span>
-    <!-- 步驟 1：ACCESS 比對更新（紅 = 流程起點） -->
-    <button onclick="openAccessCompareModal()"
-      class="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold transition"
-      title="【步驟 1】把公司 Access 新資料貼到一張新 Google Sheets（接受網址或 ID），比對與主頁 Sheets 的差異（修改／新增／可能下架），選擇套用哪些變更回主頁 Sheets。完整流程順序：1.ACCESS比對 → 2.同步Sheets → 3.比對審查 → 4.回寫銷售中">
-      📋 ACCESS比對
-    </button>
-    <!-- 步驟 2：同步 Sheets（橘） -->
-    <button id="cp-sync-btn" onclick="cpTriggerSync()"
-      class="px-4 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold transition"
-      title="【步驟 2】Google Sheets → Firestore 全量同步，網頁才查得到最新資料。完整流程順序：1.ACCESS比對 → 2.同步Sheets → 3.比對審查 → 4.回寫銷售中。⚠️ 必須在「比對審查」之前做，否則 Word 寫的銷售中會被舊 Sheets 覆蓋。">
-      🔄 同步 Sheets
-    </button>
-    <!-- 步驟 3：比對審查（青綠）- 上傳 .doc/.docx 或 CSV → 審查配對 → 確認後寫入 -->
-    <label class="flex items-center gap-1 px-4 py-1.5 rounded-lg bg-teal-700 hover:bg-teal-600 text-white text-xs font-semibold transition cursor-pointer"
-      title="【步驟 3】上傳物件總表 Word（.doc / .docx 雲端解析）或本機 export_word_table.py 產出的 4 個 CSV + word_meta.json，把銷售中／到期日／售價寫入 Firestore。完整流程順序：1.ACCESS比對 → 2.同步Sheets → 3.比對審查 → 4.回寫銷售中">
-      🔍 比對審查
-      <input type="file" accept=".csv,.json,.doc,.docx" multiple class="hidden" onchange="cpOpenReview(this)">
-    </label>
-    <!-- 步驟 4：回寫銷售中 → Sheets（靛藍 = 流程終點） -->
-    <button id="cp-writeback-btn" onclick="cpWritebackSelling()"
-      class="px-4 py-1.5 rounded-lg bg-indigo-700 hover:bg-indigo-600 text-white text-xs font-semibold transition"
-      title="【步驟 4】把 Firestore 目前所有物件的「銷售中」狀態，一次回寫到 Google Sheets（只動銷售中欄，不碰其他欄位）。完整流程順序：1.ACCESS比對 → 2.同步Sheets → 3.比對審查 → 4.回寫銷售中。不做這步的話，下次「同步 Sheets」會把 Word 寫的銷售中又打回舊狀態。">
-      📤 回寫銷售中
-    </button>
-    <!-- 說明按鈕 -->
-    <button onclick="document.getElementById('cp-sync-help-modal').style.display='flex'"
-      class="px-3 py-1.5 rounded-lg text-xs font-semibold transition" style="background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);"
-      title="查看按鈕說明與操作流程">
-      ❓ 說明
-    </button>
-    <!-- 設定按鈕（管理員限定，開啟設定 Modal） -->
-    <button onclick="openSettingsModal()"
-      class="px-3 py-1.5 rounded-lg text-xs font-semibold transition" style="background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);"
-      title="系統設定">
-      ⚙️ 設定
-    </button>
-    <span id="cp-word-status" style="font-size:0.75rem;color:var(--txs);"></span>
-    <!-- 物件總表日期標籤 -->
-    <span id="cp-doc-date" style="font-size:0.75rem;color:var(--txm);margin-left:0.25rem;" title="物件總表更新日期"></span>
+  <!-- 管理員工具列（只有管理員看得到，預設收合） -->
+  <div id="cp-sync-bar" class="hidden mb-3 rounded-xl px-4 py-2" style="background:var(--bg-t);border:1px solid var(--bd);">
+    <!-- 摺疊標題列（永遠顯示） -->
+    <div class="flex flex-wrap items-center gap-3">
+      <button onclick="cpToggleSyncBar()" id="cp-sync-bar-toggle"
+        class="px-3 py-1 rounded-lg text-xs font-semibold transition flex items-center gap-2"
+        style="background:var(--bg-h);color:var(--tx);border:1px solid var(--bd);cursor:pointer;"
+        title="展開／收合同步工具列（更新資料時才需要展開）">
+        🛠️ 同步工具 <span id="cp-sync-bar-arrow" style="font-size:0.65rem;color:var(--txm);transition:transform 0.2s;">▶</span>
+      </button>
+      <span class="flex-1" style="font-size:0.75rem;color:var(--txs);">上次同步：<span id="cp-last-sync" style="color:var(--tx);">讀取中…</span></span>
+    </div>
+
+    <!-- 摺疊內容（預設隱藏，按 cpToggleSyncBar 切換） -->
+    <div id="cp-sync-bar-content" class="hidden flex flex-wrap items-center gap-3" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--bd);">
+      <!-- 步驟 1：ACCESS 比對更新（紅 = 流程起點） -->
+      <button onclick="openAccessCompareModal()"
+        class="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold transition"
+        title="【步驟 1】把公司 Access 新資料貼到一張新 Google Sheets（接受網址或 ID），比對與主頁 Sheets 的差異（修改／新增／可能下架），選擇套用哪些變更回主頁 Sheets。完整流程順序：1.ACCESS比對 → 2.同步Sheets → 3.比對審查 → 4.回寫銷售中">
+        📋 ACCESS比對
+      </button>
+      <!-- 步驟 2：同步 Sheets（橘） -->
+      <button id="cp-sync-btn" onclick="cpTriggerSync()"
+        class="px-4 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold transition"
+        title="【步驟 2】Google Sheets → Firestore 全量同步，網頁才查得到最新資料。完整流程順序：1.ACCESS比對 → 2.同步Sheets → 3.比對審查 → 4.回寫銷售中。⚠️ 必須在「比對審查」之前做，否則 Word 寫的銷售中會被舊 Sheets 覆蓋。">
+        🔄 同步 Sheets
+      </button>
+      <!-- 步驟 3：比對審查（青綠）- 上傳 .doc/.docx 或 CSV → 審查配對 → 確認後寫入 -->
+      <label class="flex items-center gap-1 px-4 py-1.5 rounded-lg bg-teal-700 hover:bg-teal-600 text-white text-xs font-semibold transition cursor-pointer"
+        title="【步驟 3】上傳物件總表 Word（.doc / .docx 雲端解析）或本機 export_word_table.py 產出的 4 個 CSV + word_meta.json，把銷售中／到期日／售價寫入 Firestore。完整流程順序：1.ACCESS比對 → 2.同步Sheets → 3.比對審查 → 4.回寫銷售中">
+        🔍 比對審查
+        <input type="file" accept=".csv,.json,.doc,.docx" multiple class="hidden" onchange="cpOpenReview(this)">
+      </label>
+      <!-- 步驟 4：回寫銷售中 → Sheets（靛藍 = 流程終點） -->
+      <button id="cp-writeback-btn" onclick="cpWritebackSelling()"
+        class="px-4 py-1.5 rounded-lg bg-indigo-700 hover:bg-indigo-600 text-white text-xs font-semibold transition"
+        title="【步驟 4】把 Firestore 目前所有物件的「銷售中」狀態，一次回寫到 Google Sheets（只動銷售中欄，不碰其他欄位）。完整流程順序：1.ACCESS比對 → 2.同步Sheets → 3.比對審查 → 4.回寫銷售中。不做這步的話，下次「同步 Sheets」會把 Word 寫的銷售中又打回舊狀態。">
+        📤 回寫銷售中
+      </button>
+      <!-- 說明按鈕 -->
+      <button onclick="document.getElementById('cp-sync-help-modal').style.display='flex'"
+        class="px-3 py-1.5 rounded-lg text-xs font-semibold transition" style="background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);"
+        title="查看按鈕說明與操作流程">
+        ❓ 說明
+      </button>
+      <!-- 設定按鈕（管理員限定，開啟設定 Modal） -->
+      <button onclick="openSettingsModal()"
+        class="px-3 py-1.5 rounded-lg text-xs font-semibold transition" style="background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);"
+        title="系統設定">
+        ⚙️ 設定
+      </button>
+      <span id="cp-word-status" style="font-size:0.75rem;color:var(--txs);"></span>
+      <!-- 物件總表日期標籤 -->
+      <span id="cp-doc-date" style="font-size:0.75rem;color:var(--txm);margin-left:0.25rem;" title="物件總表更新日期"></span>
+    </div>
   </div>
 
   <!-- 同步說明 Modal -->
@@ -9921,6 +9934,31 @@ window.addEventListener('unhandledrejection', function(e) {
       }
     }).catch(function(){});
   }
+
+  // 同步工具列展開／收合（使用者只在更新資料時才需要展開，預設收合）
+  function cpToggleSyncBar() {
+    var content = document.getElementById('cp-sync-bar-content');
+    var arrow = document.getElementById('cp-sync-bar-arrow');
+    if (!content || !arrow) return;
+    var willExpand = content.classList.contains('hidden');
+    if (willExpand) {
+      content.classList.remove('hidden');
+      arrow.textContent = '▼';
+      try { localStorage.setItem('cp-sync-bar-expanded', '1'); } catch(e) {}
+    } else {
+      content.classList.add('hidden');
+      arrow.textContent = '▶';
+      try { localStorage.setItem('cp-sync-bar-expanded', '0'); } catch(e) {}
+    }
+  }
+  // 載入時還原上次摺疊狀態（預設收合）
+  document.addEventListener('DOMContentLoaded', function(){
+    try {
+      if (localStorage.getItem('cp-sync-bar-expanded') === '1') {
+        cpToggleSyncBar();
+      }
+    } catch(e) {}
+  });
 
   function cpTriggerSync() {
     var btn = document.getElementById('cp-sync-btn');
