@@ -9681,49 +9681,99 @@ window.addEventListener('unhandledrejection', function(e) {
     _rvUpdateCount();
   }
 
-  // 中信心：確認一筆
+  // 中信心：確認一筆（再按一次取消，可回復）
   function rvAcceptMedium(btn) {
     var docId = btn.dataset.docid;
+    if (btn.dataset.state === 'confirmed') {
+      // 已確認 → 取消（回復原狀）
+      delete _rvConfirmed[docId];
+      btn.textContent = '✅ 確認配對';
+      btn.dataset.state = '';
+      btn.style.opacity = '';
+      btn.style.background = 'var(--ok)';
+      if (btn.nextElementSibling) btn.nextElementSibling.style.display = '';
+      _rvUpdateCount();
+      return;
+    }
+    // 確認
     try {
       var data = JSON.parse(btn.dataset.item);
       _rvConfirmed[docId] = data;
     } catch(e) {
       _rvConfirmed[docId] = {doc_id: docId};
     }
-    btn.textContent = '✅ 已確認';
-    btn.disabled = true;
-    btn.style.opacity = '0.6';
-    btn.nextElementSibling.style.display = 'none';
+    btn.textContent = '↩️ 取消確認';
+    btn.dataset.state = 'confirmed';
+    btn.style.opacity = '0.85';
+    btn.style.background = 'var(--bg-h)';
+    btn.style.color = 'var(--ok)';
+    if (btn.nextElementSibling) btn.nextElementSibling.style.display = 'none';
     _rvUpdateCount();
   }
 
-  // 中信心：跳過一筆
+  // 中信心：跳過一筆（再按一次取消，可回復）
   function rvSkipMedium(btn) {
-    btn.textContent = '跳過';
-    btn.disabled = true;
-    btn.style.opacity = '0.5';
-    btn.previousElementSibling.style.display = 'none';
+    if (btn.dataset.state === 'skipped') {
+      btn.textContent = '❌ 跳過';
+      btn.dataset.state = '';
+      btn.style.opacity = '';
+      if (btn.previousElementSibling) btn.previousElementSibling.style.display = '';
+      return;
+    }
+    btn.textContent = '↩️ 取消跳過';
+    btn.dataset.state = 'skipped';
+    btn.style.opacity = '0.7';
+    if (btn.previousElementSibling) btn.previousElementSibling.style.display = 'none';
   }
 
-  // 問題：確認近似候選是同一物件
+  // 問題：確認近似候選是同一物件（再按一次取消，可回復）
   function rvAcceptUnmatched(btn) {
     var cardId = btn.getAttribute('data-cardid');
+    var card = cardId ? document.getElementById(cardId) : null;
+    if (btn.dataset.state === 'confirmed') {
+      // 取消確認
+      try {
+        var raw0 = btn.getAttribute('data-item').replace(/&quot;/g, '"');
+        var it0 = JSON.parse(raw0);
+        delete _rvConfirmed[it0.doc_id];
+      } catch(e) {}
+      btn.textContent = '✅ 是同一物件';
+      btn.dataset.state = '';
+      btn.style.opacity = '';
+      if (card) { card.style.opacity = ''; card.style.borderColor = ''; }
+      if (btn.nextElementSibling) btn.nextElementSibling.style.display = '';
+      _rvUpdateCount();
+      return;
+    }
+    // 確認
     var raw = btn.getAttribute('data-item').replace(/&quot;/g, '"');
     var item = JSON.parse(raw);
     _rvConfirmed[item.doc_id] = item;
     _rvUpdateCount();
-    var card = document.getElementById(cardId);
     if (card) { card.style.opacity = '0.5'; card.style.borderColor = 'var(--ok)'; }
-    btn.disabled = true; btn.textContent = '✅ 已確認';
-    btn.nextElementSibling.style.display = 'none';
+    btn.textContent = '↩️ 取消確認';
+    btn.dataset.state = 'confirmed';
+    btn.style.opacity = '0.85';
+    if (btn.nextElementSibling) btn.nextElementSibling.style.display = 'none';
   }
-  // 問題：略過此筆
+
+  // 問題：略過此筆（再按一次取消，可回復）
   function rvSkipUnmatched(btn) {
     var cardId = btn.getAttribute('data-cardid');
-    var card = document.getElementById(cardId);
+    var card = cardId ? document.getElementById(cardId) : null;
+    if (btn.dataset.state === 'skipped') {
+      btn.textContent = '— 略過';
+      btn.dataset.state = '';
+      btn.style.opacity = '';
+      if (card) card.style.opacity = '';
+      if (btn.previousElementSibling) btn.previousElementSibling.style.display = '';
+      return;
+    }
     if (card) card.style.opacity = '0.4';
-    btn.disabled = true; btn.textContent = '略過';
-    btn.previousElementSibling.style.display = 'none';
+    btn.textContent = '↩️ 取消跳過';
+    btn.dataset.state = 'skipped';
+    btn.style.opacity = '0.7';
+    if (btn.previousElementSibling) btn.previousElementSibling.style.display = 'none';
   }
 
   // 更新底部「已選 N 筆」
