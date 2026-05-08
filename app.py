@@ -10321,6 +10321,21 @@ window.addEventListener('unhandledrejection', function(e) {
           return '<a href="' + escapeHtml(valStr) + '" target="_blank" class="text-blue-400 underline hover:text-blue-300 break-all">開啟連結</a>';
         if (PHONE_KEYS.has(key))
           return '<a href="tel:' + escapeHtml(valStr.replace(/[^0-9+]/g,'')) + '" class="text-green-400 underline hover:text-green-300">' + escapeHtml(valStr) + '</a>';
+        // 所有權人 → 點連結到人脈管理（沒有就建立）
+        if (key === '所有權人') {
+          var params = new URLSearchParams({
+            name: valStr,
+            prop: data['id'] || '',
+            phone: data['行動電話1'] || '',
+            contact: data['連絡人姓名'] || '',
+            address: data['物件地址'] || '',
+            category: data['物件類別'] || '',
+            price: data['售價(萬)'] || '',
+            case: data['案名'] || '',
+          });
+          var url = 'https://real-estate-people-334765337861.asia-east1.run.app/find-or-create?' + params.toString();
+          return '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener" class="text-blue-400 underline hover:text-blue-300 break-all" title="跳到人脈管理（沒有的話可建立）">👤 ' + escapeHtml(valStr) + ' ↗</a>';
+        }
         return '<span class="break-all">' + escapeHtml(valStr) + '</span>';
       }
 
