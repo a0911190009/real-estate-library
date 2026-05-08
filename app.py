@@ -9526,131 +9526,102 @@ window.addEventListener('unhandledrejection', function(e) {
   }
 
   // 渲染中信心 AI 驗證結果（對比規則 vs AI）
+  // 中信心：渲染 AI 驗證結果（注入到各卡片，頂端只放計數）
   function rvRenderAiMediumResults(items, results) {
     var div = document.getElementById('rv-ai-medium-result');
-    var agree = [], disagree = [], aiNoMatch = [];
+    var agree = 0, disagree = 0, no = 0;
     results.forEach(function(r, i) {
       var item = items[i] || {};
-      r._item = item;
       var ruleId = item.doc_id || '';
-      // 規則的配對 = item.doc_id；AI 的配對 = r.matched_doc_id
-      if (!r.matched_doc_id || r.confidence < 0.4) {
-        aiNoMatch.push(r);
-      } else if (r.matched_doc_id === ruleId) {
-        agree.push(r);
-      } else {
-        disagree.push(r);
-      }
+      _rvInjectAiBadge('med-' + i, r, item, 'medium');
+      if (!r.matched_doc_id || r.confidence < 0.4) no++;
+      else if (r.matched_doc_id === ruleId) agree++;
+      else disagree++;
     });
 
-    var html = '<div style="display:flex;align-items:center;gap:14px;margin-bottom:10px;flex-wrap:wrap;">';
-    html += '<span style="font-size:13px;font-weight:700;color:#a78bfa;">🤖 Gemini 驗證結果</span>';
-    html += '<span style="font-size:11px;color:var(--txs);">共 ' + results.length + ' 筆 ｜ ✅ AI 同意 ' + agree.length + ' ｜ ⚠️ AI 不同意 ' + disagree.length + ' ｜ ❌ AI 也不確定 ' + aiNoMatch.length + '</span>';
-    html += '</div>';
-
-    function _ruleVsAiCard(r, label, labelColor) {
-      var item = r._item;
-      var pct = Math.round((r.confidence || 0) * 100);
-      var s = '<div style="background:var(--bg-s);border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin-bottom:6px;">';
-      s += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;">';
-      s += '<span style="background:' + labelColor + ';color:#fff;padding:1px 7px;border-radius:5px;font-size:10px;font-weight:700;">' + label + ' ' + pct + '%</span>';
-      s += '<strong style="color:var(--tx);">' + (item.csv_name || '(無案名)') + '</strong>';
-      if (item.csv_price) s += '<span style="color:var(--txm);font-size:11px;">' + item.csv_price + '萬</span>';
-      s += '</div>';
-      // 規則建議
-      s += '<div style="margin-top:6px;padding-left:10px;border-left:2px solid var(--warn);font-size:11px;color:var(--txs);">';
-      s += '📐 規則建議：<strong style="color:var(--tx);">' + (item.db_name || '(空)') + '</strong>';
-      if (item.match_by) s += '　<span style="color:var(--txm);">[' + item.match_by + '，分數 ' + (item.score != null ? item.score : '?') + ']</span>';
-      s += '</div>';
-      // AI 建議
-      if (r.matched_doc_id) {
-        s += '<div style="margin-top:4px;padding-left:10px;border-left:2px solid #a78bfa;font-size:11px;color:var(--txs);">';
-        s += '🤖 AI 建議：<strong style="color:var(--tx);">' + (r.matched_db_name || '') + '</strong>';
-        if (r.matched_db_addr) s += '　/ ' + r.matched_db_addr;
-        s += '</div>';
-      } else {
-        s += '<div style="margin-top:4px;padding-left:10px;border-left:2px solid #6b7280;font-size:11px;color:var(--txs);">';
-        s += '🤖 AI 建議：<em style="color:var(--txm);">不配對</em>';
-        s += '</div>';
-      }
-      if (r.reason) s += '<div style="margin-top:4px;font-size:11px;color:var(--txm);">💬 ' + r.reason + '</div>';
-      s += '</div>';
-      return s;
-    }
-
-    if (agree.length) {
-      html += '<div style="margin-top:8px;"><p style="font-size:11px;font-weight:700;color:var(--ok);margin:0 0 4px;">✅ AI 同意規則的配對（信心強化，可放心套用）</p>';
-      agree.forEach(function(r) { html += _ruleVsAiCard(r, 'AI ✓', '#16a34a'); });
-      html += '</div>';
-    }
-    if (disagree.length) {
-      html += '<div style="margin-top:8px;"><p style="font-size:11px;font-weight:700;color:var(--warn);margin:0 0 4px;">⚠️ AI 不同意（規則找的可能不對，請特別檢視這幾筆）</p>';
-      disagree.forEach(function(r) { html += _ruleVsAiCard(r, 'AI ≠', '#d97706'); });
-      html += '</div>';
-    }
-    if (aiNoMatch.length) {
-      html += '<div style="margin-top:8px;"><p style="font-size:11px;font-weight:700;color:#f87171;margin:0 0 4px;">❌ AI 也找不到合適的配對（可能規則錯配，建議跳過此筆）</p>';
-      aiNoMatch.forEach(function(r) { html += _ruleVsAiCard(r, 'AI ✗', '#6b7280'); });
-      html += '</div>';
-    }
-    html += '<p style="margin:10px 0 0;font-size:10px;color:var(--txm);">💡 V1：AI 結果僅供參考。✅ AI 同意組可放心勾選；⚠️ AI 不同意組請對比兩邊建議再決定要不要套用；❌ 建議跳過。</p>';
-    div.innerHTML = html;
+    div.innerHTML = '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:12px;">'
+      + '<span style="font-weight:700;color:#a78bfa;">🤖 Gemini 已標到各卡片</span>'
+      + '<span style="color:var(--txs);">共 ' + results.length + ' 筆 ｜ ✅ AI 同意 ' + agree
+      + ' ｜ ⚠️ AI 不同意 ' + disagree + ' ｜ ❌ AI 也找不到 ' + no + '</span>'
+      + '<span style="color:var(--txm);font-size:10px;margin-left:auto;">模型：gemini-2.0-flash</span>'
+      + '</div>';
   }
 
+  // 把 AI 結果注入到對應卡片底部（badge 樣式）
+  function _rvInjectAiBadge(cardId, r, item, mode) {
+    var card = document.getElementById(cardId);
+    if (!card) return;
+    // 移除舊 badge（重新跑時更新）
+    var old = card.querySelector('.rv-ai-badge');
+    if (old) old.remove();
+
+    var pct = Math.round((r.confidence || 0) * 100);
+    var bg, color, label;
+
+    if (mode === 'medium') {
+      // 驗證模式：和規則建議比對
+      var ruleId = item.doc_id;
+      if (!r.matched_doc_id || r.confidence < 0.4) {
+        bg = 'rgba(107,114,128,0.12)'; color = '#9ca3af';
+        label = '🤖 AI 也找不到合適配對 — 建議跳過此筆';
+      } else if (r.matched_doc_id === ruleId) {
+        bg = 'rgba(34,197,94,0.12)'; color = '#16a34a';
+        label = '🤖 AI 同意此配對（信心 ' + pct + '%）— 可放心套用';
+      } else {
+        bg = 'rgba(217,119,6,0.12)'; color = '#d97706';
+        label = '🤖 AI 不同意 — 建議改配對：「' + (r.matched_db_name || '') + '」（信心 ' + pct + '%）';
+      }
+    } else {
+      // 找配對模式：規則找不到，AI 嘗試
+      if (!r.matched_doc_id || r.confidence < 0.4) {
+        bg = 'rgba(107,114,128,0.12)'; color = '#9ca3af';
+        label = '🤖 AI 找不到對應 — 可能是新物件';
+      } else if (r.confidence >= 0.7) {
+        bg = 'rgba(34,197,94,0.12)'; color = '#16a34a';
+        label = '🤖 AI 建議配對：「' + (r.matched_db_name || '') + '」（信心 ' + pct + '%）';
+      } else {
+        bg = 'rgba(217,119,6,0.12)'; color = '#d97706';
+        label = '🤖 AI 不太確定，可能是：「' + (r.matched_db_name || '') + '」（信心 ' + pct + '%）';
+      }
+    }
+
+    var badge = document.createElement('div');
+    badge.className = 'rv-ai-badge';
+    badge.style.cssText = 'margin-top:8px;padding:7px 10px;border-radius:6px;background:' + bg + ';border-left:3px solid ' + color + ';font-size:11px;line-height:1.5;';
+    var inner = '<div style="font-weight:700;color:' + color + ';">' + label + '</div>';
+    if (r.matched_doc_id && r.matched_db_addr) {
+      inner += '<div style="color:var(--txs);margin-top:2px;">📍 ' + r.matched_db_addr;
+      if (r.matched_db_agent) inner += '　／ 經紀人：' + r.matched_db_agent;
+      if (r.matched_db_price) inner += '　／ ' + r.matched_db_price + '萬';
+      inner += '</div>';
+    }
+    if (r.reason) inner += '<div style="color:var(--txm);margin-top:2px;font-style:italic;">💬 ' + r.reason + '</div>';
+    badge.innerHTML = inner;
+    card.appendChild(badge);
+  }
+
+  // 問題組：渲染 AI 配對結果（注入到各卡片，頂端只放計數）
   function rvRenderAiResults(items, results) {
     var div = document.getElementById('rv-ai-result');
-    var hi = [], mid = [], no = [];
+    var hi = 0, mid = 0, no = 0;
+    var conflictLen = (_rvData.conflict || []).length;
+
     results.forEach(function(r, i) {
-      r._item = items[i] || {};
-      if (r.matched_doc_id && r.confidence >= 0.7) hi.push(r);
-      else if (r.matched_doc_id && r.confidence >= 0.4) mid.push(r);
-      else no.push(r);
+      var item = items[i] || {};
+      // 決定卡片 id：前 conflictLen 筆是 conflict（id=conf-i），後面是 unmatched（id=unm-(i-conflictLen)）
+      var cardId = (i < conflictLen) ? ('conf-' + i) : ('unm-' + (i - conflictLen));
+      _rvInjectAiBadge(cardId, r, item, 'issues');
+      if (r.matched_doc_id && r.confidence >= 0.7) hi++;
+      else if (r.matched_doc_id && r.confidence >= 0.4) mid++;
+      else no++;
     });
 
-    var html = '<div style="display:flex;align-items:center;gap:14px;margin-bottom:10px;flex-wrap:wrap;">';
-    html += '<span style="font-size:13px;font-weight:700;color:#a78bfa;">🤖 Gemini 配對結果</span>';
-    html += '<span style="font-size:11px;color:var(--txs);">共 ' + results.length + ' 筆 ｜ ✅ 高信心 ' + hi.length + ' ｜ ⚠️ 不確定 ' + mid.length + ' ｜ ❌ 找不到 ' + no.length + '</span>';
-    html += '</div>';
-
-    function _card(r, label, labelColor) {
-      var item = r._item;
-      var pct = Math.round((r.confidence || 0) * 100);
-      var s = '<div style="background:var(--bg-s);border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin-bottom:6px;">';
-      s += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;">';
-      s += '<span style="background:' + labelColor + ';color:#fff;padding:1px 7px;border-radius:5px;font-size:10px;font-weight:700;">' + label + ' ' + pct + '%</span>';
-      s += '<strong style="color:var(--tx);">' + (item.csv_name || '(無案名)') + '</strong>';
-      if (item.csv_price) s += '<span style="color:var(--txm);font-size:11px;">' + item.csv_price + '萬</span>';
-      if (item.csv_agent) s += '<span style="color:var(--txm);font-size:11px;">經紀人：' + item.csv_agent + '</span>';
-      s += '</div>';
-      if (r.matched_doc_id) {
-        s += '<div style="margin-top:6px;padding-left:10px;border-left:2px solid #a78bfa;font-size:11px;color:var(--txs);">';
-        s += '↳ AI 建議配對：<strong style="color:var(--tx);">' + (r.matched_db_name || '') + '</strong>';
-        if (r.matched_db_addr) s += '　/ ' + r.matched_db_addr;
-        if (r.matched_db_price) s += '　/ ' + r.matched_db_price + '萬';
-        s += '</div>';
-      }
-      if (r.reason) s += '<div style="margin-top:4px;font-size:11px;color:var(--txm);">💬 ' + r.reason + '</div>';
-      s += '</div>';
-      return s;
-    }
-
-    if (hi.length) {
-      html += '<div style="margin-top:8px;"><p style="font-size:11px;font-weight:700;color:var(--ok);margin:0 0 4px;">✅ AI 高信心配對（建議採用，仍請人工確認）</p>';
-      hi.forEach(function(r) { html += _card(r, 'AI', '#16a34a'); });
-      html += '</div>';
-    }
-    if (mid.length) {
-      html += '<div style="margin-top:8px;"><p style="font-size:11px;font-weight:700;color:var(--warn);margin:0 0 4px;">⚠️ AI 不確定（請特別檢視）</p>';
-      mid.forEach(function(r) { html += _card(r, 'AI', '#d97706'); });
-      html += '</div>';
-    }
-    if (no.length) {
-      html += '<div style="margin-top:8px;"><p style="font-size:11px;font-weight:700;color:#f87171;margin:0 0 4px;">❌ AI 也找不到對應</p>';
-      no.forEach(function(r) { html += _card(r, 'AI', '#6b7280'); });
-      html += '</div>';
-    }
-    html += '<p style="margin:10px 0 0;font-size:10px;color:var(--txm);">💡 V1 版本：AI 結果僅供參考，不會自動套用。請依建議手動處理（如修正 Word 案名、或補配對記憶）。模型：' + (results.length ? 'gemini-2.0-flash' : '') + '</p>';
-    div.innerHTML = html;
+    div.innerHTML = '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:12px;">'
+      + '<span style="font-weight:700;color:#a78bfa;">🤖 Gemini 已標到各卡片</span>'
+      + '<span style="color:var(--txs);">共 ' + results.length + ' 筆 ｜ ✅ 高信心 ' + hi
+      + ' ｜ ⚠️ 不確定 ' + mid + ' ｜ ❌ 找不到 ' + no + '</span>'
+      + '<span style="color:var(--txm);font-size:10px;margin-left:auto;">模型：gemini-2.0-flash</span>'
+      + '</div>';
   }
 
   // 勾選/取消全選（高信心）
