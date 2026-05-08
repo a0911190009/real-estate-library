@@ -8793,8 +8793,13 @@ window.addEventListener('unhandledrejection', function(e) {
       if (data.status === 'none' || data.status === 'no_db') {
         el.textContent = '尚無物件總表';
       } else if (data.status === 'ok') {
-        var dt = data.uploaded_at ? new Date(data.uploaded_at).toLocaleDateString('zh-TW') : '';
-        el.textContent = '總表：' + (data.filename || '') + '（' + dt + '，' + (data.count||0) + '筆）';
+        // 只存 doc_date 沒實際 snapshot 時，filename/count 是空的 → 不顯示空殼
+        if (!data.filename && !data.count) {
+          el.textContent = '';
+        } else {
+          var dt = data.uploaded_at ? new Date(data.uploaded_at).toLocaleDateString('zh-TW') : '';
+          el.textContent = '總表：' + (data.filename || '(未命名)') + '（' + dt + '，' + (data.count||0) + '筆）';
+        }
       }
     }).catch(function() {});
 
@@ -8933,10 +8938,13 @@ window.addEventListener('unhandledrejection', function(e) {
             input.value = '';
             return;
           }
-          // 更新總表日期顯示
+          // 更新總表日期顯示（doc_date 是物件 {minguo, western, ...}，取 minguo）
           if (d.doc_date) {
             var el = document.getElementById('cp-doc-date');
-            if (el) el.textContent = '📄 總表：' + d.doc_date;
+            if (el) {
+              var minguo = (typeof d.doc_date === 'string') ? d.doc_date : (d.doc_date.minguo || '');
+              if (minguo) el.textContent = '📄 總表：' + minguo;
+            }
           }
           // 合併分析結果
           _rvData.high      = d.high      || [];
