@@ -7127,6 +7127,37 @@ window.addEventListener('unhandledrejection', function(e) {
     </div>
   </div>
 
+  <!-- 配對記憶確認 Modal（套用成功後若有手動確認的配對才彈出） -->
+  <div id="rv-memory-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:700;align-items:center;justify-content:center;">
+    <div style="background:var(--bg-s);border:1px solid var(--bd);border-radius:16px;width:96%;max-width:680px;max-height:88vh;display:flex;flex-direction:column;box-shadow:var(--sh);">
+      <div style="padding:18px 22px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px;">
+        <span style="font-size:18px;">🧠</span>
+        <span style="font-size:15px;font-weight:700;color:var(--tx);">記住這些配對嗎？</span>
+        <span style="margin-left:auto;font-size:11px;color:var(--txm);">下次同案名／同委託號的 Word 條目會自動配對到相同物件</span>
+      </div>
+      <div style="padding:12px 22px;flex:1;overflow-y:auto;">
+        <p style="font-size:12px;color:var(--txs);margin:0 0 12px;">您剛剛<strong style="color:var(--tx);">手動確認</strong>了以下配對。勾選要記住的項目，下次跑「比對審查」時會自動配對，省去重複確認的時間。</p>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--txs);cursor:pointer;">
+            <input type="checkbox" id="rv-mem-all" checked onchange="rvMemToggleAll(this)"> 全選／全消
+          </label>
+          <span id="rv-mem-count" style="font-size:11px;color:var(--txm);">已選 0 筆</span>
+        </div>
+        <div id="rv-mem-list" style="display:flex;flex-direction:column;gap:6px;"></div>
+      </div>
+      <div style="padding:14px 22px;border-top:1px solid var(--bd);display:flex;align-items:center;gap:10px;background:var(--bg-t);">
+        <button onclick="rvMemSkip()"
+          style="padding:8px 16px;border-radius:8px;background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);font-size:12px;cursor:pointer;">
+          ❌ 不記住，直接關閉
+        </button>
+        <button onclick="rvMemSave()"
+          style="margin-left:auto;padding:8px 18px;border-radius:8px;background:var(--ok);color:#fff;border:none;font-size:13px;font-weight:700;cursor:pointer;">
+          🧠 記住勾選的配對
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- ACCESS 比對更新 Modal（管理員限定） -->
   <div id="ac-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:650;align-items:flex-start;justify-content:center;padding-top:28px;"
     onclick="if(event.target===this)document.getElementById('ac-modal').style.display='none'">
@@ -9134,7 +9165,12 @@ window.addEventListener('unhandledrejection', function(e) {
       var itemJson = JSON.stringify({
         doc_id: item.doc_id, price: item.csv_price, old_price: item.db_price,
         expiry: item.csv_expiry,
-        name_changed: item.name_changed, old_name: item.db_name, new_name: item.csv_name
+        name_changed: item.name_changed, old_name: item.db_name, new_name: item.csv_name,
+        // 記憶用：套用成功後問使用者要不要記住這個 word→db 的配對，下次自動套用
+        _mem_source: 'medium',
+        _mem_word_name: item.csv_name || '',
+        _mem_word_comm: item.csv_comm || '',
+        _mem_db_seq: item.db_seq || ''
       }).replace(/"/g, '&quot;');
       var div = document.createElement('div');
       div.id = medId;
@@ -9216,7 +9252,12 @@ window.addEventListener('unhandledrejection', function(e) {
           doc_id: item.nm_doc_id,
           price: item.csv_price, expiry: item.csv_expiry,
           name_changed: (item.nm_name !== item.csv_name),
-          old_name: item.nm_name, new_name: item.csv_name
+          old_name: item.nm_name, new_name: item.csv_name,
+          // 記憶用：套用成功後問使用者要不要記住此配對
+          _mem_source: 'unmatched',
+          _mem_word_name: item.csv_name || '',
+          _mem_word_comm: item.csv_comm || '',
+          _mem_db_seq: item.nm_seq || ''
         }).replace(/"/g, '&quot;');
         // 比對說明：逐欄檢視吻合狀況，幫助判斷是否為同一物件
         var reasonLines = [];
@@ -9698,6 +9739,92 @@ window.addEventListener('unhandledrejection', function(e) {
     document.getElementById('cp-review-modal').style.display = 'none';
   }
 
+  // 🧠 配對記憶：套用成功後若有手動確認項目，跳 Modal 問是否記住
+  var _rvMemCandidates = [];
+  function rvShowMemoryModal(items) {
+    _rvMemCandidates = items;
+    var listEl = document.getElementById('rv-mem-list');
+    var html = '';
+    items.forEach(function(it, i) {
+      var srcLabel = it._mem_source === 'medium' ? '⚠️ 中信心' : '❓ 問題';
+      var srcColor = it._mem_source === 'medium' ? 'var(--warn)' : '#a78bfa';
+      html += '<label style="display:flex;align-items:flex-start;gap:8px;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--bg-t);cursor:pointer;">';
+      html += '<input type="checkbox" class="rv-mem-cb" data-idx="' + i + '" checked onchange="_rvMemUpdateCount()" style="margin-top:3px;">';
+      html += '<div style="flex:1;font-size:12px;">';
+      html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">';
+      html += '<span style="background:' + srcColor + ';color:#fff;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700;">' + srcLabel + '</span>';
+      html += '<strong style="color:var(--tx);">' + (it._mem_word_name || '(無案名)') + '</strong>';
+      if (it._mem_word_comm) html += '<span style="color:var(--txm);font-size:11px;">委託：' + it._mem_word_comm + '</span>';
+      html += '</div>';
+      html += '<div style="color:var(--txs);font-size:11px;padding-left:2px;">↳ Firestore 序號：<strong>' + it._mem_db_seq + '</strong>';
+      if (it.old_name && it.old_name !== it._mem_word_name) {
+        html += '　/ 物件原案名：' + it.old_name;
+      }
+      html += '</div></div></label>';
+    });
+    listEl.innerHTML = html;
+    _rvMemUpdateCount();
+    document.getElementById('rv-memory-modal').style.display = 'flex';
+  }
+
+  function _rvMemUpdateCount() {
+    var n = document.querySelectorAll('#rv-mem-list .rv-mem-cb:checked').length;
+    document.getElementById('rv-mem-count').textContent = '已選 ' + n + ' 筆';
+  }
+
+  function rvMemToggleAll(master) {
+    document.querySelectorAll('#rv-mem-list .rv-mem-cb').forEach(function(cb){ cb.checked = master.checked; });
+    _rvMemUpdateCount();
+  }
+
+  function rvMemSkip() {
+    document.getElementById('rv-memory-modal').style.display = 'none';
+    document.getElementById('cp-review-modal').style.display = 'none';
+    _rvMemCandidates = [];
+    setTimeout(function(){ cpFetch(); }, 600);
+  }
+
+  function rvMemSave() {
+    var checkedIdx = Array.from(document.querySelectorAll('#rv-mem-list .rv-mem-cb:checked'))
+      .map(function(cb){ return parseInt(cb.dataset.idx, 10); });
+    if (!checkedIdx.length) {
+      toast('未勾選任何項目，未記住任何配對', 'info');
+      rvMemSkip();
+      return;
+    }
+    var saveBtn = document.querySelector('#rv-memory-modal button[onclick="rvMemSave()"]');
+    if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '寫入中…'; }
+
+    // 平行 POST 各筆配對到 /api/word-match-memory
+    var promises = checkedIdx.map(function(i) {
+      var it = _rvMemCandidates[i];
+      return fetch('/api/word-match-memory', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          word_name: it._mem_word_name,
+          word_comm: it._mem_word_comm,
+          db_seq:    it._mem_db_seq,
+          db_doc_id: it.doc_id || '',
+          memo:      '從比對審查 ' + (it._mem_source === 'medium' ? '中信心' : '問題') + ' 確認',
+        }),
+      }).then(function(r){ return r.json(); });
+    });
+    Promise.all(promises).then(function(results) {
+      var ok = results.filter(function(r){ return r.ok; }).length;
+      var fail = results.length - ok;
+      if (fail === 0) {
+        toast('🧠 已記住 ' + ok + ' 筆配對，下次自動套用', 'success');
+      } else {
+        toast('🧠 記住 ' + ok + ' 筆，' + fail + ' 筆失敗', 'warn');
+      }
+      rvMemSkip();
+    }).catch(function(){
+      toast('❌ 記憶寫入失敗，請稍後再試', 'error');
+      if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '🧠 記住勾選的配對'; }
+    });
+  }
+
   // 套用確認的配對，寫入 Firestore
   function cpApplyReview() {
     var items = Object.values(_rvConfirmed);
@@ -9720,12 +9847,20 @@ window.addEventListener('unhandledrejection', function(e) {
         return;
       }
       toast('✅ 已更新 ' + d.updated + ' 筆物件（銷售中、售價、到期日）', 'success');
-      document.getElementById('cp-review-modal').style.display = 'none';
       // 上傳 word_meta.json（若有的話）
       _rvMetaFiles.forEach(function(jf){ _rvUploadMeta(jf); });
       _rvMetaFiles = [];
-      // 重新整理物件列表
-      setTimeout(function(){ cpFetch(); }, 600);
+      // 收集手動確認的配對（中信心 + 問題組）→ 詢問是否記住
+      var memCandidates = items.filter(function(it){
+        return it && it._mem_source && it._mem_word_name && it._mem_db_seq;
+      });
+      if (memCandidates.length > 0) {
+        // 顯示記憶確認 modal，使用者選完才關閉審查 modal
+        rvShowMemoryModal(memCandidates);
+      } else {
+        document.getElementById('cp-review-modal').style.display = 'none';
+        setTimeout(function(){ cpFetch(); }, 600);
+      }
     })
     .catch(function(){ toast('❌ 套用失敗，請稍後再試', 'error'); });
   }
