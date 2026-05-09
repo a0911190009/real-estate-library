@@ -1341,6 +1341,16 @@ def _access_norm_val(field, val):
     if field in ("行動電話1", "行動電話2", "室內電話1", "室內電話2", "電話"):
         digits = re.sub(r'\D', '', v)
         return digits.lstrip('0')
+    # 竣工日期：兩邊常常一邊是「年/月」一邊是「年/月/日」造成假差異，只比對到「月」
+    if field == "竣工日期":
+        s = re.sub(r'[/\-\.\s]+$', '', v).strip()  # 去尾巴 /
+        m = re.match(r'^(\d{2,4})[/\-\.](\d{1,2})', s)
+        if m:
+            y, mo = int(m.group(1)), int(m.group(2))
+            if y < 1000:
+                y += 1911
+            return f"{y}/{mo:02d}"
+        return v
     # 委託編號 / 委託號碼：去 .0、空白；單一編號補零到 6 位（91839 vs 091839 視為相同）
     if field in ("委託編號", "委託號碼"):
         cleaned = re.sub(r'\.0$', '', v).strip()
