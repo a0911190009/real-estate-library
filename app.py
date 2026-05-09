@@ -1844,6 +1844,15 @@ def api_access_compare():
                 matched_kind  = nd_main_key[0]
                 matched_orig_k = nd_main_key
 
+            # 檢查：此 orig entry 是否已被前面的 ACCESS row 配過
+            # 若是 → 本筆當作「無法配對」走 added 流程
+            # 場景：主頁一筆物件地號「695 699」，ACCESS 拆成 A(695) B(699) 兩筆
+            #       第一筆配上主頁那 entry，第二筆同 entry 已被配過 → 列入新增
+            if matched_entry is not None and matched_entry["_id"] in matched_entry_ids:
+                matched_entry = None
+                matched_kind  = None
+                matched_orig_k = None
+
             if matched_entry is None:
                 # 第一輪沒命中 → 暫進新增（可能會被二次配對救回）
                 added_display.append({
