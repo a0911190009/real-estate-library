@@ -7676,9 +7676,14 @@ window.addEventListener('unhandledrejection', function(e) {
           style="margin-left:auto;background:none;border:none;color:var(--txm);font-size:20px;cursor:pointer;line-height:1;">✕</button>
       </div>
       <div style="padding:14px 22px;border-bottom:1px solid var(--bd);background:var(--bg-t);">
-        <p style="margin:0 0 8px;font-size:12px;color:var(--txs);line-height:1.6;">缺<strong style="color:var(--tx);">鄉/市/鎮、段別、地號（土地）或建號（建物）</strong>的物件，比對時無法用「硬資料指紋」精準配對，會 fallback 到案名+地址（精準度低，容易誤配）。</p>
-        <p style="margin:0 0 6px;font-size:11px;color:var(--txm);">補齊這些欄位後比對會更準。請按下方清單去 Sheets 補資料。</p>
-        <p style="margin:0;font-size:11px;color:var(--ac);line-height:1.6;">💡 若是<strong>預售屋、老屋未保存登記</strong>等本來就沒有建號的物件，請在建號欄填「<code style="background:var(--bg-p);padding:1px 4px;border-radius:3px;">無</code>」、「<code style="background:var(--bg-p);padding:1px 4px;border-radius:3px;">預售</code>」、「<code style="background:var(--bg-p);padding:1px 4px;border-radius:3px;">N/A</code>」或「<code style="background:var(--bg-p);padding:1px 4px;border-radius:3px;">未保存</code>」即可，系統會視為已處理，不再提示。</p>
+        <p style="margin:0 0 8px;font-size:12px;color:var(--txs);line-height:1.6;">缺<strong style="color:var(--tx);">鄉/市/鎮、段別、地號（土地）或建號（建物）</strong>的物件，ACCESS 比對時無法用「硬資料指紋」精準配對，會 fallback 到案名+地址（精準度低，容易誤配）。</p>
+        <p style="margin:0 0 6px;font-size:11px;color:var(--txm);">處理方式三選一（依你方便）：</p>
+        <ul style="margin:0 0 6px;padding-left:18px;font-size:11px;color:var(--txs);line-height:1.7;">
+          <li><strong style="color:var(--ok);">直接按欄位旁 ✓</strong>（最快，記在 Firestore，下次體檢自動隱藏）</li>
+          <li>到主頁 Sheets 補真實的硬資料（例如查謄本後填上正確建號）</li>
+          <li>到主頁 Sheets 該欄填「<code style="background:var(--bg-p);padding:1px 4px;border-radius:3px;">無</code>」、「<code style="background:var(--bg-p);padding:1px 4px;border-radius:3px;">預售</code>」、「<code style="background:var(--bg-p);padding:1px 4px;border-radius:3px;">N/A</code>」、「<code style="background:var(--bg-p);padding:1px 4px;border-radius:3px;">未保存</code>」（適合預售屋、老屋未保存登記）</li>
+        </ul>
+        <p style="margin:0;font-size:11px;color:var(--ac);">💡 已檢查的清單可從頂端「管理」連結維護或解除。</p>
       </div>
       <div style="padding:12px 22px;flex:1;overflow-y:auto;">
         <div id="ac-audit-stats" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;font-size:11px;"></div>
