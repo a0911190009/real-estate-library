@@ -2395,6 +2395,108 @@ def api_access_data_audit_acks_delete(ack_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/access-data-audit/duplicates", methods=["GET"])
+def api_access_data_audit_duplicates():
+    """主頁 Sheets 重複物件偵測：
+    - exact_dup_groups: 同 hard_key + 同委託編號 + 同委託日（一定要刪一份）
+    - history_groups:   同 hard_key 但委託編號或委託日不同（同物件多次委託歷史，使用者決定）
+    每筆提供 Sheets 行號連結，方便直接跳到 Sheets 編輯。
+    """
+    email, err = _require_user()
+    if err: return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email): return jsonify({"error": "僅管理員可使用"}), 403
+
+    try:
+        service = _get_sheets_service(timeout=30)
+        # 取主頁 sheet 的數字 gid（用於組行號連結 URL）
+        meta = service.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
+        sheet_gid = 0
+        for s in meta.get("sheets", []):
+            if s["properties"]["title"] == SHEET_NAME:
+                sheet_gid = s["properties"]["sheetId"]
+                break
+
+        # 讀主頁全部資料
+        result = service.spreadsheets().values().get(
+            spreadsheetId=SHEET_ID,
+            range=f"{SHEET_NAME}!A1:AU9999"
+        ).execute()
+        all_rows = result.get("values", [])
+        if len(all_rows) < 5:
+            return jsonify({"error": "主頁資料不足"}), 400
+
+        headers = all_rows[1]  # header 在第 2 列
+        # 從第 5 列起為資料
+        data_rows = []
+        for i, row in enumerate(all_rows[4:]):
+            if any(c.strip() for c in row):
+                data_rows.append((5 + i, row))
+
+        # 對每筆物件計算 hard_keys，用代表性 key 歸群
+        from collections import defaultdict
+        key_groups = defaultdict(list)  # primary_key tuple → [item info]
+        for rn, row in data_rows:
+            d = _access_row_to_dict(headers, row)
+            hks = _access_hard_keys(d)
+            if not hks:
+                continue
+            # 代表性 key：hard_bldg 優先，否則 hard_land 第一個
+            bldg_keys = [k for k in hks if k[0] == "hard_bldg"]
+            land_keys = [k for k in hks if k[0] == "hard_land"]
+            primary = bldg_keys[0] if bldg_keys else land_keys[0]
+            key_groups[primary].append({
+                "row":         rn,
+                "name":        d.get("案名", ""),
+                "comm":        str(d.get("委託編號", "") or "").strip(),
+                "commit_date": str(d.get("委託日", "") or "").strip(),
+                "seq":         str(d.get("資料序號", "") or "").strip(),
+                "agent":       d.get("經紀人", ""),
+                "category":    d.get("物件類別", ""),
+                "price":       d.get("售價(萬)", ""),
+                "expiry":      d.get("委託到期日", ""),
+            })
+
+        exact_dup_groups = []
+        history_groups   = []
+        for k, items in key_groups.items():
+            if len(items) < 2:
+                continue
+            # 完全重複條件：同委託編號 AND 同委託日（含都為空的也算）
+            comm_set = set(it["comm"] for it in items)
+            date_set = set(it["commit_date"] for it in items)
+            if len(comm_set) == 1 and len(date_set) == 1:
+                exact_dup_groups.append({
+                    "key":   str(k),
+                    "items": items,
+                })
+            else:
+                # 歷史版本：按委託日排序，最新者標 is_latest=True
+                sorted_items = sorted(
+                    items,
+                    key=lambda x: _parse_date_for_compare(x["commit_date"]),
+                    reverse=True
+                )
+                for i, it in enumerate(sorted_items):
+                    it["is_latest"] = (i == 0)
+                history_groups.append({
+                    "key":   str(k),
+                    "items": sorted_items,
+                })
+
+        return jsonify({
+            "ok":               True,
+            "sheet_id":         SHEET_ID,
+            "sheet_gid":        sheet_gid,
+            "exact_dup_groups": exact_dup_groups,
+            "exact_dup_count":  sum(len(g["items"]) for g in exact_dup_groups),
+            "history_groups":   history_groups,
+            "history_count":    sum(len(g["items"]) for g in history_groups),
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "detail": traceback.format_exc()[:500]}), 500
+
+
 def _parse_price_num(val):
     if val is None:
         return None
@@ -7648,6 +7750,9 @@ window.addEventListener('unhandledrejection', function(e) {
         <button onclick="openAuditModal()"
           style="margin-left:auto;font-size:12px;padding:4px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--bg-t);color:var(--txm);cursor:pointer;"
           title="掃描銷售中物件，列出缺鄉/市/鎮、段別、地號、建號（建物）的物件。這些物件比對精準度低，建議補齊。">🩺 資料體檢</button>
+        <button onclick="openDupModal()"
+          style="margin-left:8px;font-size:12px;padding:4px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--bg-t);color:var(--txm);cursor:pointer;"
+          title="掃描主頁 Sheets 找重複物件：完全重複（同硬資料+同委託）一定要刪、歷史版本（同硬資料但委託不同）你決定">🧹 重複清理</button>
         <button onclick="openAcIgnoreModal()"
           style="margin-left:8px;font-size:12px;padding:4px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--bg-t);color:var(--txm);cursor:pointer;">🔒 忽略規則</button>
         <button onclick="document.getElementById('ac-modal').style.display='none'"
@@ -7816,6 +7921,43 @@ window.addEventListener('unhandledrejection', function(e) {
         <span id="ac-audit-summary" style="font-size:11px;color:var(--txm);"></span>
         <button onclick="document.getElementById('ac-audit-modal').style.display='none'"
           style="margin-left:auto;padding:7px 18px;border-radius:8px;background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);font-size:12px;cursor:pointer;">關閉</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 🧹 重複清理 Modal（管理員限定） -->
+  <div id="ac-dup-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:705;align-items:center;justify-content:center;"
+    onclick="if(event.target===this)document.getElementById('ac-dup-modal').style.display='none'">
+    <div style="background:var(--bg-s);border:1px solid var(--bd);border-radius:16px;width:96%;max-width:880px;max-height:88vh;display:flex;flex-direction:column;box-shadow:var(--sh);">
+      <div style="padding:18px 22px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px;">
+        <span style="font-size:18px;">🧹</span>
+        <span style="font-size:15px;font-weight:700;color:var(--tx);">主頁重複物件清理</span>
+        <span id="ac-dup-subtitle" style="font-size:11px;color:var(--txm);">掃描中…</span>
+        <button onclick="document.getElementById('ac-dup-modal').style.display='none'"
+          style="margin-left:auto;background:none;border:none;color:var(--txm);font-size:20px;cursor:pointer;line-height:1;">✕</button>
+      </div>
+      <!-- Tab 切換 -->
+      <div style="display:flex;border-bottom:1px solid var(--bd);background:var(--bg-t);">
+        <button id="ac-dup-tab-exact-btn" onclick="dupSwitchTab('exact')"
+          style="flex:1;padding:12px 16px;font-size:13px;font-weight:700;border:none;background:none;border-bottom:3px solid var(--ac);color:var(--ac);cursor:pointer;">
+          🔴 完全重複 <span id="ac-dup-cnt-exact" style="background:var(--bg-h);color:var(--txs);border-radius:9px;padding:1px 7px;margin-left:4px;font-size:11px;">0</span>
+        </button>
+        <button id="ac-dup-tab-history-btn" onclick="dupSwitchTab('history')"
+          style="flex:1;padding:12px 16px;font-size:13px;font-weight:700;border:none;background:none;border-bottom:3px solid transparent;color:var(--txm);cursor:pointer;">
+          🕓 歷史版本 <span id="ac-dup-cnt-history" style="background:var(--bg-h);color:var(--txs);border-radius:9px;padding:1px 7px;margin-left:4px;font-size:11px;">0</span>
+        </button>
+      </div>
+      <!-- 提示文字 -->
+      <div id="ac-dup-tab-hint" style="padding:10px 22px;background:rgba(239,68,68,0.06);border-bottom:1px solid var(--bd);font-size:11px;color:var(--txs);line-height:1.6;">
+        <strong style="color:#dc2626;">完全重複</strong>：同物件被貼了兩次（同硬資料 + 同委託編號 + 同委託日）。<strong>一定要刪一份</strong>，不會有業務影響。
+      </div>
+      <div style="flex:1;overflow-y:auto;padding:14px 22px;" id="ac-dup-list-wrap">
+        <p style="margin:0;font-size:12px;color:var(--txs);">⏳ 讀取中…</p>
+      </div>
+      <div style="padding:12px 22px;border-top:1px solid var(--bd);background:var(--bg-t);">
+        <span id="ac-dup-summary" style="font-size:11px;color:var(--txm);"></span>
+        <button onclick="document.getElementById('ac-dup-modal').style.display='none'"
+          style="margin-left:8px;float:right;padding:7px 18px;border-radius:8px;background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);font-size:12px;cursor:pointer;">關閉</button>
       </div>
     </div>
   </div>
@@ -11350,6 +11492,99 @@ window.addEventListener('unhandledrejection', function(e) {
       }
     })
     .catch(function(e){ toast('❌ ' + e.message, 'error'); });
+  }
+
+  // 🧹 開啟主頁重複清理 Modal
+  var _dupData = null;  // 緩存 API 結果，切 Tab 不重打 API
+  function openDupModal() {
+    document.getElementById('ac-dup-modal').style.display = 'flex';
+    document.getElementById('ac-dup-subtitle').textContent = '掃描中（5000+ 筆需 5-15 秒）…';
+    document.getElementById('ac-dup-list-wrap').innerHTML = '<p style="margin:0;font-size:12px;color:var(--txs);">⏳ 讀取主頁 Sheets…</p>';
+    document.getElementById('ac-dup-cnt-exact').textContent = '…';
+    document.getElementById('ac-dup-cnt-history').textContent = '…';
+    document.getElementById('ac-dup-summary').textContent = '';
+    fetch('/api/access-data-audit/duplicates')
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if (d.error) {
+          document.getElementById('ac-dup-list-wrap').innerHTML = '<p style="margin:0;font-size:12px;color:#f87171;">❌ ' + d.error + '</p>';
+          document.getElementById('ac-dup-subtitle').textContent = '失敗';
+          return;
+        }
+        _dupData = d;
+        document.getElementById('ac-dup-subtitle').textContent =
+          '完全重複 ' + d.exact_dup_groups.length + ' 組（' + d.exact_dup_count + ' 列）｜歷史版本 ' + d.history_groups.length + ' 組（' + d.history_count + ' 列）';
+        document.getElementById('ac-dup-cnt-exact').textContent = d.exact_dup_count;
+        document.getElementById('ac-dup-cnt-history').textContent = d.history_count;
+        dupSwitchTab('exact');
+      })
+      .catch(function(e){
+        document.getElementById('ac-dup-list-wrap').innerHTML = '<p style="margin:0;font-size:12px;color:#f87171;">❌ ' + e.message + '</p>';
+        document.getElementById('ac-dup-subtitle').textContent = '失敗';
+      });
+  }
+
+  function dupSwitchTab(tab) {
+    var btnE = document.getElementById('ac-dup-tab-exact-btn');
+    var btnH = document.getElementById('ac-dup-tab-history-btn');
+    if (tab === 'exact') {
+      btnE.style.borderBottomColor = 'var(--ac)'; btnE.style.color = 'var(--ac)';
+      btnH.style.borderBottomColor = 'transparent'; btnH.style.color = 'var(--txm)';
+      document.getElementById('ac-dup-tab-hint').innerHTML =
+        '<strong style="color:#dc2626;">完全重複</strong>：同物件被貼了兩次（同硬資料 + 同委託編號 + 同委託日）。<strong>一定要刪一份</strong>，不會有業務影響。';
+    } else {
+      btnH.style.borderBottomColor = 'var(--ac)'; btnH.style.color = 'var(--ac)';
+      btnE.style.borderBottomColor = 'transparent'; btnE.style.color = 'var(--txm)';
+      document.getElementById('ac-dup-tab-hint').innerHTML =
+        '<strong style="color:#d97706;">歷史版本</strong>：同物件多次委託紀錄（委託編號或委託日不同）。<strong>由你決定</strong>是否刪除舊版（✅ 標記為最新的會建議保留，🕓 是歷史可考慮刪除）。';
+    }
+    _dupRender(tab);
+  }
+
+  function _dupRender(tab) {
+    if (!_dupData) return;
+    var wrap = document.getElementById('ac-dup-list-wrap');
+    var groups = (tab === 'exact') ? _dupData.exact_dup_groups : _dupData.history_groups;
+    if (!groups.length) {
+      var msg = (tab === 'exact') ? '✅ 沒有完全重複的物件，主頁很乾淨！' : '✅ 沒有同物件多版本，主頁很乾淨！';
+      wrap.innerHTML = '<p style="margin:0;padding:30px;text-align:center;font-size:13px;color:var(--ok);">' + msg + '</p>';
+      document.getElementById('ac-dup-summary').textContent = '';
+      return;
+    }
+    var sid = _dupData.sheet_id;
+    var gid = _dupData.sheet_gid;
+    var html = '';
+    groups.forEach(function(g, gi){
+      html += '<div style="border:1px solid var(--bd);border-radius:10px;padding:10px 12px;margin-bottom:10px;background:var(--bg-s);">';
+      html += '<div style="font-size:11px;color:var(--txm);margin-bottom:6px;font-family:monospace;">🔑 ' + g.key + '</div>';
+      g.items.forEach(function(it){
+        var rowUrl = 'https://docs.google.com/spreadsheets/d/' + sid + '/edit#gid=' + gid + '&range=A' + it.row;
+        var badge = '';
+        if (tab === 'history') {
+          if (it.is_latest) {
+            badge = '<span style="background:rgba(34,197,94,0.2);color:#16a34a;padding:1px 7px;border-radius:5px;font-size:10px;font-weight:700;margin-right:6px;">✅ 最新（建議保留）</span>';
+          } else {
+            badge = '<span style="background:rgba(217,119,6,0.15);color:#d97706;padding:1px 7px;border-radius:5px;font-size:10px;font-weight:700;margin-right:6px;">🕓 歷史</span>';
+          }
+        } else {
+          badge = '<span style="background:rgba(239,68,68,0.15);color:#dc2626;padding:1px 7px;border-radius:5px;font-size:10px;font-weight:700;margin-right:6px;">🔴 重複</span>';
+        }
+        html += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;padding:5px 0;border-top:1px dashed var(--bd);">';
+        html += badge;
+        html += '<a href="' + rowUrl + '" target="_blank" style="color:var(--ac);text-decoration:none;font-weight:700;" title="開啟主頁 Sheets 跳到此列">📍 列 ' + it.row + '</a>';
+        html += '<strong style="color:var(--tx);">' + (it.name || '(無案名)') + '</strong>';
+        if (it.category) html += '<span style="color:var(--txm);font-size:11px;">[' + it.category + ']</span>';
+        if (it.seq) html += '<span style="color:var(--txm);font-size:11px;">序號 ' + it.seq + '</span>';
+        if (it.comm) html += '<span style="color:var(--txm);font-size:11px;">委託 ' + it.comm + '</span>';
+        if (it.commit_date) html += '<span style="color:var(--txm);font-size:11px;">委託日 ' + it.commit_date + '</span>';
+        if (it.agent) html += '<span style="color:var(--txm);font-size:11px;">' + it.agent + '</span>';
+        html += '</div>';
+      });
+      html += '</div>';
+    });
+    wrap.innerHTML = html;
+    var totalRows = groups.reduce(function(a, g){ return a + g.items.length; }, 0);
+    document.getElementById('ac-dup-summary').textContent = '本 Tab 共 ' + groups.length + ' 組、' + totalRows + ' 列。點「📍 列 N」連結會開啟 Sheets 並跳到該列。';
   }
 
   // 開啟「已檢查清單」管理 Modal
