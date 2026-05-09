@@ -1333,13 +1333,33 @@ _ACCESS_NUM_FIELDS  = {"地坪", "建坪", "室內坪", "管理費(元)",
                        "委託價(萬)", "售價(萬)", "現有貸款(萬)", "成交金額(萬)"}
 
 def _access_norm_val(field, val):
-    """正規化欄位值供 ACCESS 比對（去單位、統一日期格式）"""
+    """正規化欄位值供 ACCESS 比對（去單位、統一日期/編號/布林格式）"""
     v = str(val).strip() if val is not None else ""
     if not v:
         return ""
+    # 委託編號 / 委託號碼：去 .0、空白；單一編號補零到 6 位（91839 vs 091839 視為相同）
+    if field in ("委託編號", "委託號碼"):
+        cleaned = re.sub(r'\.0$', '', v).strip()
+        # 多編號用空白拆 → 各自補零 → 排序去重後組回
+        tokens = [t for t in re.split(r'\s+', cleaned) if t]
+        norm_tokens = []
+        for t in tokens:
+            if t.isdigit():
+                norm_tokens.append(t.zfill(6))
+            else:
+                norm_tokens.append(t)
+        return " ".join(sorted(set(norm_tokens)))
+    # 銷售中：統一布林格式（True/False/銷售中/已下架/已成交/Yes/No）
+    if field == "銷售中":
+        s = v.lower()
+        if s in ("true", "1", "yes", "y", "銷售中"):
+            return "true"
+        if s in ("false", "0", "no", "n", "已下架", "已成交"):
+            return "false"
+        return s
     if field in _ACCESS_NUM_FIELDS:
         # 去萬、坪、元、逗號等後轉 float 字串
-        cleaned = re.sub(r'[萬坪元,，\s]', '', v)
+        cleaned = re.sub(r'[萬坪元,,\s]', '', v)
         try:
             return str(round(float(cleaned), 2))
         except Exception:
@@ -1466,15 +1486,15 @@ def _access_hard_keys(d):
         has_bldg = True
 
     keys = []
-    # 土地 key：對每個地號各產一個（不需建號）
-    if has_land:
-        for ln in landnos:
-            keys.append(("hard_land", f"{area}|{sect}|{ln}"))
-    # 建物 key：對每個 (地號, 建號) 配對各產一個（必須有建號才有意義）
+    # 建物 key 優先（最精確：地號+建號）
     if has_bldg and bldgnos:
         for ln in landnos:
             for bn in bldgnos:
                 keys.append(("hard_bldg", f"{area}|{sect}|{ln}|{bn}"))
+    # 土地 key：對每個地號各產一個（不需建號）
+    if has_land:
+        for ln in landnos:
+            keys.append(("hard_land", f"{area}|{sect}|{ln}"))
     return keys
 
 
@@ -1697,9 +1717,16 @@ def api_access_compare():
             if not hard_keys:
                 orig_no_hard_key_count += 1
             entry["_key"] = str(main_key)
-            # 去重後索引
+            # 索引策略：有 hard_bldg 就不索引 hard_land
+            # 原因：兩戶地號相同建號不同（同棟大樓不同戶）若都索引 hard_land 會跨戶誤配
+            bldg_keys = [k for k in hard_keys if k[0] == "hard_bldg"]
+            land_keys = [k for k in hard_keys if k[0] == "hard_land"]
+            keys_for_index = bldg_keys if bldg_keys else land_keys
+            if main_key not in keys_for_index:
+                keys_for_index = keys_for_index + [main_key]
+            # 去重索引
             seen_for_this_entry = set()
-            for k in hard_keys + [main_key]:
+            for k in keys_for_index:
                 if k in seen_for_this_entry:
                     continue
                 seen_for_this_entry.add(k)
@@ -1731,11 +1758,17 @@ def api_access_compare():
             nd_hard_keys = _access_hard_keys(nd)
             nd_main_key  = _access_make_key(nd)
 
+            # 比對策略：有 hard_bldg 就只試 hard_bldg（不 fallback 到 hard_land 避免跨戶誤配）
+            # 兩戶同地號不同建號的情況下，hard_land 一致會誤配到別戶
+            nd_bldg_keys = [k for k in nd_hard_keys if k[0] == "hard_bldg"]
+            nd_land_keys = [k for k in nd_hard_keys if k[0] == "hard_land"]
+            nd_keys_to_try = nd_bldg_keys if nd_bldg_keys else nd_land_keys
+
             # 按優先序試 key：先 hard，再 main
             matched_entry = None
             matched_kind  = None
             matched_orig_k = None
-            for k in nd_hard_keys:
+            for k in nd_keys_to_try:
                 if k in orig_index:
                     matched_entry = orig_index[k]
                     matched_kind  = k[0]  # "hard_land" / "hard_bldg"
