@@ -1707,11 +1707,16 @@ def api_access_compare():
         # ── 決定比較欄位（取兩邊 header 的交集，排除資料序號）──
         orig_hdr_set = set(h for h in orig_headers if h)
         new_hdr_set  = set(h for h in new_headers  if h)
-        _IMPORTANT = ["案名", "售價(萬)", "委託到期日", "銷售中", "物件地址",
+        _IMPORTANT = ["案名", "售價(萬)", "委託到期日", "物件地址",
                       "經紀人", "委託編號", "物件類別", "地坪", "建坪", "室內坪"]
-        all_common = [h for h in orig_headers if h and h in new_hdr_set and h != "資料序號"]
-        # 重要欄位前置，其餘依原始順序
-        compare_fields = [f for f in _IMPORTANT if f in orig_hdr_set and f in new_hdr_set] + \
+        # 永遠免比對的欄位（噪音欄位，每次比對顯示但無實質業務意義）
+        # - 格局：被 Sheets 格式化成日期（如 "2003/2/2" 實為 "3/2/2"），純格式噪音
+        # - 銷售中：兩邊各自維護（主頁有「📤 回寫銷售中」專門同步），ACCESS 比對不該插一腳
+        _SKIP_FIELDS = {"格局", "銷售中"}
+        all_common = [h for h in orig_headers
+                      if h and h in new_hdr_set and h != "資料序號" and h not in _SKIP_FIELDS]
+        # 重要欄位前置，其餘依原始順序（_IMPORTANT 也過濾掉 _SKIP_FIELDS，雙重保險）
+        compare_fields = [f for f in _IMPORTANT if f in orig_hdr_set and f in new_hdr_set and f not in _SKIP_FIELDS] + \
                          [f for f in all_common if f not in _IMPORTANT]
 
         # ── 建立原始 Sheets 多 key 索引 ──
