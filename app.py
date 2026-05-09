@@ -2400,6 +2400,77 @@ def api_access_data_audit_acks_delete(ack_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/access-data-audit/delete-rows", methods=["POST"])
+def api_access_data_audit_delete_rows():
+    """從主頁 Sheets 批次刪除指定行（用於完全重複的清理）。
+    Body: { row_numbers: [int, ...], confirm_token: "CONFIRM_DELETE_DUPLICATES" }
+    安全限制：
+    - 僅管理員
+    - 一次最多 1000 列
+    - 必須帶確認 token（前端 confirm 後才送出）
+    - 從大到小刪除（避免 row 編號偏移）
+    """
+    email, err = _require_user()
+    if err: return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email): return jsonify({"error": "僅管理員可使用"}), 403
+
+    data = request.get_json(silent=True) or {}
+    rows_to_delete = data.get("row_numbers", [])
+    if data.get("confirm_token") != "CONFIRM_DELETE_DUPLICATES":
+        return jsonify({"error": "缺確認 token（前端應先彈窗確認）"}), 400
+    if not rows_to_delete:
+        return jsonify({"error": "row_numbers 為空"}), 400
+    if len(rows_to_delete) > 1000:
+        return jsonify({"error": "一次最多 1000 列，請分批"}), 400
+
+    try:
+        service = _get_sheets_service(timeout=60)
+        # 取主頁分頁的數字 sheetId
+        meta = service.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
+        sheet_gid = None
+        for s in meta.get("sheets", []):
+            if s["properties"]["title"] == SHEET_NAME:
+                sheet_gid = s["properties"]["sheetId"]
+                break
+        if sheet_gid is None:
+            return jsonify({"error": f"找不到分頁 {SHEET_NAME}"}), 500
+
+        # 從大到小排序，避免刪除後 row 編號偏移影響後續刪除
+        sorted_rows = sorted(set(int(r) for r in rows_to_delete), reverse=True)
+        # 排除 row < 5（前 4 列是表頭/輔助列，不該刪）
+        sorted_rows = [r for r in sorted_rows if r >= 5]
+        if not sorted_rows:
+            return jsonify({"error": "row_numbers 都小於 5（保護表頭區域）"}), 400
+
+        # 一個 batchUpdate 處理多個 deleteDimension
+        requests_body = []
+        for r in sorted_rows:
+            requests_body.append({
+                "deleteDimension": {
+                    "range": {
+                        "sheetId":     sheet_gid,
+                        "dimension":   "ROWS",
+                        "startIndex":  r - 1,  # 0-based
+                        "endIndex":    r,
+                    }
+                }
+            })
+
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=SHEET_ID,
+            body={"requests": requests_body}
+        ).execute()
+
+        return jsonify({
+            "ok":            True,
+            "deleted_count": len(sorted_rows),
+            "deleted_rows":  sorted_rows[:50],  # 回傳前 50 筆做日誌
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "detail": traceback.format_exc()[:500]}), 500
+
+
 @app.route("/api/access-data-audit/duplicates", methods=["GET"])
 def api_access_data_audit_duplicates():
     """主頁 Sheets 重複物件偵測：
@@ -11619,6 +11690,60 @@ window.addEventListener('unhandledrejection', function(e) {
       });
   }
 
+  // 🗑️ 一鍵批次刪除完全重複（每組保留第一筆）
+  function dupBulkDelete() {
+    if (!_dupData || !_dupData.exact_dup_groups || !_dupData.exact_dup_groups.length) {
+      toast('沒有完全重複的群組可刪除', 'info');
+      return;
+    }
+    // 收集要刪的列：每組除了第一筆外其他都刪
+    var rowsToDelete = [];
+    _dupData.exact_dup_groups.forEach(function(g){
+      g.items.slice(1).forEach(function(it){
+        rowsToDelete.push(it.row);
+      });
+    });
+    if (!rowsToDelete.length) {
+      toast('沒有列需要刪除', 'info');
+      return;
+    }
+    // 強制確認 dialog
+    var msg = '確定要從主頁 Sheets 刪除 ' + rowsToDelete.length + ' 列嗎？\n\n'
+            + '這些都是「完全重複」的列（同硬資料 + 同委託編號 + 同委託日），'
+            + '系統會每組保留第一筆，刪除其餘。\n\n'
+            + '⚠️ 操作會直接寫入 Google Sheets。\n'
+            + '✅ 仍可在 Sheets 用「檔案 → 版本記錄」找回。\n\n'
+            + '繼續？';
+    if (!confirm(msg)) return;
+
+    var btn = document.getElementById('dup-bulk-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '刪除中…'; }
+
+    fetch('/api/access-data-audit/delete-rows', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        row_numbers:    rowsToDelete,
+        confirm_token:  'CONFIRM_DELETE_DUPLICATES'
+      })
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (d.error) {
+        toast('❌ ' + d.error, 'error');
+        if (btn) { btn.disabled = false; btn.textContent = '🗑️ 一鍵清理 ' + rowsToDelete.length + ' 列'; }
+        return;
+      }
+      toast('✅ 已從主頁 Sheets 刪除 ' + d.deleted_count + ' 列。重新掃描中…', 'success');
+      // 重新跑 duplicates API 看新狀況
+      setTimeout(function(){ openDupModal(); }, 800);
+    })
+    .catch(function(e){
+      toast('❌ 失敗：' + e.message, 'error');
+      if (btn) { btn.disabled = false; btn.textContent = '🗑️ 一鍵清理 ' + rowsToDelete.length + ' 列'; }
+    });
+  }
+
   function dupSwitchTab(tab) {
     var btnE = document.getElementById('ac-dup-tab-exact-btn');
     var btnH = document.getElementById('ac-dup-tab-history-btn');
@@ -11649,6 +11774,17 @@ window.addEventListener('unhandledrejection', function(e) {
     var sid = _dupData.sheet_id;
     var gid = _dupData.sheet_gid;
     var html = '';
+    // 「完全重複」Tab：頂部加「一鍵清理」按鈕（每組保留第一筆，刪除其餘）
+    if (tab === 'exact') {
+      // 計算總共可刪除的列數（每組 N 筆 → 刪 N-1）
+      var totalDeletable = groups.reduce(function(a, g){ return a + (g.items.length - 1); }, 0);
+      html += '<div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.3);border-radius:10px;padding:12px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">';
+      html += '<span style="font-size:13px;font-weight:700;color:#dc2626;">💡 一鍵清理</span>';
+      html += '<span style="font-size:11px;color:var(--txs);flex:1;">每組保留第一筆，刪除其餘 <strong style="color:#dc2626;">' + totalDeletable + '</strong> 列。完全重複（同硬資料+同委託+同日）刪除不會有業務影響。</span>';
+      html += '<button onclick="dupBulkDelete()" id="dup-bulk-btn"'
+            + ' style="padding:8px 14px;border-radius:8px;background:#dc2626;color:#fff;border:none;font-size:12px;font-weight:700;cursor:pointer;">🗑️ 一鍵清理 ' + totalDeletable + ' 列</button>';
+      html += '</div>';
+    }
     groups.forEach(function(g, gi){
       html += '<div style="border:1px solid var(--bd);border-radius:10px;padding:10px 12px;margin-bottom:10px;background:var(--bg-s);">';
       html += '<div style="font-size:11px;color:var(--txm);margin-bottom:6px;font-family:monospace;">🔑 ' + g.key + '</div>';
