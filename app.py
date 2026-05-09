@@ -1360,22 +1360,96 @@ def _access_norm_val(field, val):
     # 一般字串：壓縮空白
     return re.sub(r'\s+', ' ', v)
 
-def _access_make_key(d):
-    """建立比對主鍵（三層）：
-    1. 委託編號 + 建號：建物（同一委託多戶，靠建號區分）
-    2. 委託編號 + 地號：土地（同一委託多筆，靠地號區分）
-    3. fallback：案名 + 地號 + 物件地址
+def _is_land_category(cat):
+    """判斷物件類別是否為土地類（農地、建地）。沿用 app.py 其他地方的判斷邏輯。"""
+    s = str(cat or "").strip()
+    return any(t in s for t in ("農地", "建地"))
+
+
+def _normalize_landno(s):
+    """地號正規化 + 拆分：去空白、去 .0 結尾、空白拆成多 token。
+    例：'0835-0001 0835-0002' → ['0835-0001', '0835-0002']
     """
+    raw = str(s or "").strip()
+    if not raw:
+        return []
+    # 把全形空白、各種分隔符統一成空白，再拆
+    cleaned = re.sub(r'[　,，、/／]+', ' ', raw)
+    tokens = []
+    for t in re.split(r'\s+', cleaned):
+        t = re.sub(r'\.0$', '', t).strip()
+        if t:
+            tokens.append(t)
+    return tokens
+
+
+def _normalize_bldgno(s):
+    """建號正規化 + 拆分（同地號邏輯）。"""
+    return _normalize_landno(s)
+
+
+def _access_hard_keys(d):
+    """產出此筆資料的所有「硬資料指紋」key tuple。
+
+    讀取欄位：物件類別 / 鄉/市/鎮 / 段別 / 地號 / 建號
+
+    若 鄉/市/鎮 + 段別 + 任一個地號 都有值：
+      土地類 → ("hard_land", f"{鄉/市/鎮}|{段別}|{地號}")
+      建物類 → 每個 (地號, 建號) 配對 → ("hard_bldg", f"{鄉/市/鎮}|{段別}|{地號}|{建號}")
+      類別缺失 → 兩種都吐（permissive），讓比對更寬
+
+    一筆資料可能產出 0~多個 key（多地號的農地會吐多個）。
+    缺鄉鎮、段別、或地號的物件回傳空 list（fallback 到 _access_make_key）。
+    """
+    area = str(d.get("鄉/市/鎮", "") or "").strip()
+    sect = str(d.get("段別", "") or "").strip()
+    if not area or not sect:
+        return []
+    landnos = _normalize_landno(d.get("地號", ""))
+    if not landnos:
+        return []
+    bldgnos = _normalize_bldgno(d.get("建號", ""))
+    cat = str(d.get("物件類別", "") or "").strip()
+
+    # 類別判斷：土地、建物、或類別缺失（兩種都吐）
+    is_land = _is_land_category(cat) if cat else None  # None = 不確定
+    keys = []
+    # 土地 key：對每個地號各產一個（不需建號）
+    if is_land or is_land is None:
+        for ln in landnos:
+            keys.append(("hard_land", f"{area}|{sect}|{ln}"))
+    # 建物 key：對每個 (地號, 建號) 配對各產一個（建物必須有建號才有意義）
+    if (is_land is False) or (is_land is None and bldgnos):
+        for ln in landnos:
+            for bn in bldgnos:
+                keys.append(("hard_bldg", f"{area}|{sect}|{ln}|{bn}"))
+    return keys
+
+
+def _access_make_key(d):
+    """建立比對主鍵（多層 fallback）：
+    1. 硬資料指紋（鄉/市/鎮 + 段別 + 地號 + 建號）→ 永遠優先
+    2. 委託編號 + 建號/地號（向後相容）
+    3. 案名 + 地號 + 物件地址（最後 fallback）
+
+    僅回傳第一個（單一 tuple，向後相容 _AC_CACHE / stringify）。
+    多 key 索引交給 orig_index 端用 _access_hard_keys 自行展開。
+    """
+    # 1. 硬資料指紋
+    hk = _access_hard_keys(d)
+    if hk:
+        return hk[0]
+    # 2. 委託編號（保留現有邏輯）
     comm = re.sub(r'\.0$', '', str(d.get("委託編號", "") or "").strip())
     comm = re.sub(r'\s+', ' ', comm).strip()
-    bno  = re.sub(r'\.0$', '', str(d.get("建號", "") or "").strip())   # 建號
-    dino = re.sub(r'\s+', '', str(d.get("地號", "") or "").strip())    # 地號
+    bno  = re.sub(r'\.0$', '', str(d.get("建號", "") or "").strip())
+    dino = re.sub(r'\s+', '', str(d.get("地號", "") or "").strip())
     name = re.sub(r'\s+', '', str(d.get("案名", "") or "").strip())
     addr = re.sub(r'\s+', '', str(d.get("物件地址", "") or "").strip())
     if comm:
-        # 加入建號或地號，確保同一委託的不同戶/筆不衝突
-        detail = bno or dino  # 優先用建號，土地用地號
+        detail = bno or dino
         return ("comm", f"{comm}|{detail}")
+    # 3. fallback
     return ("name_addr", f"{name}|{dino}|{addr}")
 
 def _access_row_to_dict(headers, row):
@@ -1547,54 +1621,96 @@ def api_access_compare():
         compare_fields = [f for f in _IMPORTANT if f in orig_hdr_set and f in new_hdr_set] + \
                          [f for f in all_common if f not in _IMPORTANT]
 
-        # ── 建立原始 Sheets index：key → {row_number, data_dict, seq} ──
-        orig_index = {}
-        orig_key_collision = []  # 記錄 key 衝突（同 key 多筆）
+        # ── 建立原始 Sheets 多 key 索引 ──
+        # 每個 entry 用 entry_id 唯一識別；同一 entry 可被多個 key 指到
+        # （例如多地號的農地會吐多個 hard_land key 都指向同一 entry）
+        all_entries = []          # 所有 orig entry 列表（依序）
+        orig_index = {}            # key → entry（多 key 索引到同一 entry）
+        orig_key_collision = []    # 記錄 key 衝突
+        orig_no_hard_key_count = 0  # 沒有 hard_key 的 orig 筆數（資料品質指標）
+
         for i, row in enumerate(orig_data):
             d = _access_row_to_dict(orig_headers, row)
-            k = _access_make_key(d)
-            if k in orig_index:
-                # 同 key 第二筆起記錄衝突
-                orig_key_collision.append({
-                    "key": str(k),
-                    "kept":     orig_index[k]["data"].get("案名", ""),
-                    "overwritten": d.get("案名", ""),
-                })
-            orig_index[k] = {
+            entry_id = len(all_entries)
+            entry = {
+                "_id":        entry_id,
                 "row_number": orig_row_numbers[i],
-                "data": d,
-                "seq": d.get("資料序號", "").strip(),
-                "_key": str(k),  # 除錯用
+                "data":       d,
+                "seq":        d.get("資料序號", "").strip(),
+                "_key":       "",  # 第一個 key 字串，除錯用
             }
+            # 收集所有 key：硬資料指紋（多個）+ 主 key（單一，可能與 hard 重複）
+            hard_keys = _access_hard_keys(d)
+            main_key  = _access_make_key(d)
+            if not hard_keys:
+                orig_no_hard_key_count += 1
+            entry["_key"] = str(main_key)
+            # 去重後索引
+            seen_for_this_entry = set()
+            for k in hard_keys + [main_key]:
+                if k in seen_for_this_entry:
+                    continue
+                seen_for_this_entry.add(k)
+                if k in orig_index:
+                    # 不同 entry 共用同 key → 衝突（保留第一個）
+                    if orig_index[k]["_id"] != entry_id:
+                        orig_key_collision.append({
+                            "key":         str(k),
+                            "kept":        orig_index[k]["data"].get("案名", ""),
+                            "overwritten": d.get("案名", ""),
+                        })
+                    continue
+                orig_index[k] = entry
+            all_entries.append(entry)
 
         # ── 比對 ──
-        added_display    = []  # 前端顯示用（輕量）
+        added_display    = []
         modified_display = []
         removed_display  = []
-        added_full       = []  # 完整資料，暫存在伺服器端
+        added_full       = []
         modified_full    = []
-        new_keys = set()
+        matched_entry_ids = set()  # 已被新 ACCESS 配對到的 entry id
+        match_kind_counts = {       # 命中種類統計（含二次 fallback）
+            "hard_bldg": 0, "hard_land": 0, "comm": 0, "name_addr": 0, "fallback": 0
+        }
 
         for idx, new_row in enumerate(new_data):
             nd = _access_row_to_dict(new_headers, new_row)
-            k  = _access_make_key(nd)
-            new_keys.add(k)
+            nd_hard_keys = _access_hard_keys(nd)
+            nd_main_key  = _access_make_key(nd)
 
-            if k not in orig_index:
-                # 新增：Access 有但原始 Sheets 沒有
+            # 按優先序試 key：先 hard，再 main
+            matched_entry = None
+            matched_kind  = None
+            matched_orig_k = None
+            for k in nd_hard_keys:
+                if k in orig_index:
+                    matched_entry = orig_index[k]
+                    matched_kind  = k[0]  # "hard_land" / "hard_bldg"
+                    matched_orig_k = k
+                    break
+            if matched_entry is None and nd_main_key in orig_index:
+                # nd_main_key 可能是 hard_*、comm、或 name_addr
+                matched_entry = orig_index[nd_main_key]
+                matched_kind  = nd_main_key[0]
+                matched_orig_k = nd_main_key
+
+            if matched_entry is None:
+                # 第一輪沒命中 → 暫進新增（可能會被二次配對救回）
                 added_display.append({
                     "idx":          idx,
                     "display_name": nd.get("案名", "") or nd.get("委託編號", "（未知案名）"),
                     "price":        nd.get("售價(萬)", ""),
                     "agent":        nd.get("經紀人", ""),
                     "comm":         nd.get("委託編號", ""),
-                    "_key":         str(k),  # 除錯：顯示實際 key
+                    "_key":         str(nd_main_key),
                 })
                 added_full.append({f: nd.get(f, "") for f in new_headers if f})
             else:
-                # 比較差異（只看交集欄位）
-                od = orig_index[k]["data"]
-                obj_key_str = str(k)
+                matched_entry_ids.add(matched_entry["_id"])
+                match_kind_counts[matched_kind] = match_kind_counts.get(matched_kind, 0) + 1
+                od = matched_entry["data"]
+                obj_key_str = str(matched_orig_k)
                 changed_fields = []
                 for field in compare_fields:
                     nv = _access_norm_val(field, nd.get(field, ""))
@@ -1614,32 +1730,31 @@ def api_access_compare():
                     midx = len(modified_display)
                     modified_display.append({
                         "idx":           midx,
-                        "row_in_orig":   orig_index[k]["row_number"],
-                        "seq":           orig_index[k]["seq"],
-                        "display_name":  od.get("案名", "") or str(k),
+                        "row_in_orig":   matched_entry["row_number"],
+                        "seq":           matched_entry["seq"],
+                        "display_name":  od.get("案名", "") or str(matched_orig_k),
                         "changed_fields": changed_fields,
-                        "_key":          str(k),  # 除錯：顯示實際配對 key
+                        "_key":          str(matched_orig_k) + "→" + matched_kind,
                     })
                     modified_full.append({
-                        "row_in_orig": orig_index[k]["row_number"],
+                        "row_in_orig": matched_entry["row_number"],
                         "new_data":    {f: nd.get(f, "") for f in new_headers if f},
                     })
 
-        # ── 二次配對：name_addr 未配到的新增項，用「案名+物件地址」再比一次 ──
-        # 原因：新 Sheets 沒有委託編號的物件用 name_addr key；
-        # 但原始 Sheets 同一物件若有委託編號則用 comm key → 第一次配對永遠配不到
-        # 建立原始 Sheets「尚未被配對」的項目，以（案名, 物件地址）為次要索引
-        matched_orig_keys = set(new_keys) & set(orig_index.keys())  # 已配對的 orig key
-        orig_name_addr_fallback = {}  # (正規化案名, 正規化地址) → orig_index entry
-        for ok, entry in orig_index.items():
-            if ok not in matched_orig_keys:
-                d = entry["data"]
-                fname = re.sub(r'\s+', '', str(d.get("案名", "") or "").strip())
-                faddr = re.sub(r'\s+', '', str(d.get("物件地址", "") or "").strip())
-                if fname or faddr:
-                    fallback_key = (fname, faddr)
-                    if fallback_key not in orig_name_addr_fallback:
-                        orig_name_addr_fallback[fallback_key] = (ok, entry)
+        # ── 二次配對：未配到的新增項，用「案名+物件地址」再比一次 ──
+        # 原因：新 Sheets 沒有 hard_key 也沒有委託編號的物件 → 第一輪走 name_addr，
+        # 但原始 Sheets 同一物件若有 hard_key/comm key → 第一輪永遠配不到
+        orig_name_addr_fallback = {}  # (正規化案名, 正規化地址) → entry
+        for entry in all_entries:
+            if entry["_id"] in matched_entry_ids:
+                continue
+            d = entry["data"]
+            fname = re.sub(r'\s+', '', str(d.get("案名", "") or "").strip())
+            faddr = re.sub(r'\s+', '', str(d.get("物件地址", "") or "").strip())
+            if fname or faddr:
+                fallback_key = (fname, faddr)
+                if fallback_key not in orig_name_addr_fallback:
+                    orig_name_addr_fallback[fallback_key] = entry
 
         # 對所有「新增」項目嘗試二次配對
         still_added_display = []
@@ -1651,12 +1766,14 @@ def api_access_compare():
             fallback_key = (fname, faddr)
             if (fname or faddr) and fallback_key in orig_name_addr_fallback:
                 # 二次配對成功，改為修改
-                orig_k, orig_entry = orig_name_addr_fallback[fallback_key]
-                del orig_name_addr_fallback[fallback_key]  # 每個 orig 只配一次
-                matched_orig_keys.add(orig_k)
-                new_keys.add(orig_k)  # 標記 orig key 已被配對，不算下架
+                orig_entry = orig_name_addr_fallback[fallback_key]
+                del orig_name_addr_fallback[fallback_key]  # 每個 entry 只配一次
+                matched_entry_ids.add(orig_entry["_id"])
+                match_kind_counts["fallback"] = match_kind_counts.get("fallback", 0) + 1
                 od = orig_entry["data"]
-                obj_key_str2 = str(orig_k)
+                # 用 entry 的代表性 main_key 字串做為 ignore_rules 查詢的 key
+                orig_main_key = _access_make_key(od)
+                obj_key_str2 = str(orig_main_key)
                 changed_fields = []
                 for field in compare_fields:
                     nv = _access_norm_val(field, nd.get(field, ""))
@@ -1678,9 +1795,9 @@ def api_access_compare():
                         "idx":            midx,
                         "row_in_orig":    orig_entry["row_number"],
                         "seq":            orig_entry["seq"],
-                        "display_name":   od.get("案名", "") or str(orig_k),
+                        "display_name":   od.get("案名", "") or str(orig_main_key),
                         "changed_fields": changed_fields,
-                        "_key":           str(orig_k) + "→fallback",
+                        "_key":           str(orig_main_key) + "→fallback",
                     })
                     modified_full.append({
                         "row_in_orig": orig_entry["row_number"],
@@ -1693,15 +1810,16 @@ def api_access_compare():
         added_display = still_added_display
         added_full    = still_added_full
 
-        # 可能下架：原始 Sheets 有、Access 沒有
-        for k, entry in orig_index.items():
-            if k not in new_keys:
-                d = entry["data"]
-                removed_display.append({
-                    "seq":          entry["seq"],
-                    "display_name": d.get("案名", "") or str(k),
-                    "comm":         d.get("委託編號", ""),
-                })
+        # 可能下架：原始 Sheets 有、ACCESS 沒有（用 entry id 判斷，不再用 key）
+        for entry in all_entries:
+            if entry["_id"] in matched_entry_ids:
+                continue
+            d = entry["data"]
+            removed_display.append({
+                "seq":          entry["seq"],
+                "display_name": d.get("案名", "") or entry["_key"],
+                "comm":         d.get("委託編號", ""),
+            })
 
         # ── 伺服器端暫存完整資料（供 apply 使用）──
         _AC_CACHE[email] = {
@@ -1729,15 +1847,17 @@ def api_access_compare():
             "removed_total":   len(removed_display),
             "compare_fields":  compare_fields,
             "_diag": {
-                "orig_headers_sample":  orig_headers[:5],
-                "new_headers_sample":   new_headers[:5],
-                "orig_keys_sample":     orig_sample,
-                "new_keys_sample":      new_sample,
-                "new_header_idx":       new_header_idx,
-                "orig_data_count":      len(orig_data),
-                "new_data_count":       len(new_data),
-                "key_collisions":       orig_key_collision[:20],  # 最多顯示20筆衝突
-                "key_collision_count":  len(orig_key_collision),
+                "orig_headers_sample":     orig_headers[:5],
+                "new_headers_sample":      new_headers[:5],
+                "orig_keys_sample":        orig_sample,
+                "new_keys_sample":         new_sample,
+                "new_header_idx":          new_header_idx,
+                "orig_data_count":         len(orig_data),
+                "new_data_count":          len(new_data),
+                "key_collisions":          orig_key_collision[:20],  # 最多顯示20筆衝突
+                "key_collision_count":     len(orig_key_collision),
+                "match_kind_counts":       match_kind_counts,        # 各種 key 命中分佈
+                "orig_no_hard_key_count":  orig_no_hard_key_count,   # 缺硬資料的 orig 筆數
             },
         })
 
@@ -1915,6 +2035,73 @@ def api_access_apply():
     except Exception as e:
         import traceback
         return jsonify({"error": str(e), "detail": traceback.format_exc()}), 500
+
+
+@app.route("/api/access-data-audit", methods=["GET"])
+def api_access_data_audit():
+    """資料體檢：掃描銷售中物件，找出缺硬資料（鄉/市/鎮、段別、地號、建物缺建號）的物件。
+    這些物件在 ACCESS 比對時會 fallback 到 name_addr 配對（精準度低），建議補齊。
+    僅管理員。
+    """
+    email, err = _require_user()
+    if err: return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email): return jsonify({"error": "僅管理員可使用"}), 403
+
+    db = _get_db()
+    if db is None: return jsonify({"error": "Firestore 未連線"}), 503
+
+    missing = []
+    stats = {
+        "missing_鄉/市/鎮":    0,
+        "missing_段別":       0,
+        "missing_地號":       0,
+        "missing_建號（建物）": 0,
+    }
+    total = 0
+
+    try:
+        for d in db.collection("company_properties").stream():
+            rd = d.to_dict() or {}
+            if not _is_selling(rd):
+                continue
+            total += 1
+            cat   = str(rd.get("物件類別", "") or "").strip()
+            area  = str(rd.get("鄉/市/鎮", "") or "").strip()
+            sect  = str(rd.get("段別", "") or "").strip()
+            land  = _normalize_landno(rd.get("地號", ""))
+            bldg  = _normalize_bldgno(rd.get("建號", ""))
+            is_land = _is_land_category(cat)
+            缺欄位 = []
+            if not area:
+                缺欄位.append("鄉/市/鎮"); stats["missing_鄉/市/鎮"] += 1
+            if not sect:
+                缺欄位.append("段別"); stats["missing_段別"] += 1
+            if not land:
+                缺欄位.append("地號"); stats["missing_地號"] += 1
+            # 建物類額外要建號
+            if not is_land and not bldg:
+                缺欄位.append("建號"); stats["missing_建號（建物）"] += 1
+            if 缺欄位:
+                missing.append({
+                    "doc_id":     d.id,
+                    "案名":       rd.get("案名", ""),
+                    "委託編號":   rd.get("委託編號", ""),
+                    "物件類別":   cat,
+                    "資料序號":   rd.get("資料序號", ""),
+                    "經紀人":     rd.get("經紀人", ""),
+                    "缺欄位":     缺欄位,
+                })
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "detail": traceback.format_exc()[:500]}), 500
+
+    return jsonify({
+        "ok":            True,
+        "total_scanned": total,
+        "missing_count": len(missing),
+        "missing":       missing[:1000],   # 最多回 1000 筆，避免 payload 太大
+        "stats":         stats,
+    })
 
 
 def _parse_price_num(val):
@@ -7167,8 +7354,11 @@ window.addEventListener('unhandledrejection', function(e) {
       <div style="padding:16px 22px 12px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px;flex-shrink:0;">
         <span style="font-size:15px;font-weight:700;color:var(--tx);">📋 ACCESS 比對更新</span>
         <span id="ac-subtitle" style="font-size:12px;color:var(--txs);"></span>
+        <button onclick="openAuditModal()"
+          style="margin-left:auto;font-size:12px;padding:4px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--bg-t);color:var(--txm);cursor:pointer;"
+          title="掃描銷售中物件，列出缺鄉/市/鎮、段別、地號、建號（建物）的物件。這些物件比對精準度低，建議補齊。">🩺 資料體檢</button>
         <button onclick="openAcIgnoreModal()"
-          style="margin-left:auto;font-size:12px;padding:4px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--bg-t);color:var(--txm);cursor:pointer;">🔒 忽略規則</button>
+          style="margin-left:8px;font-size:12px;padding:4px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--bg-t);color:var(--txm);cursor:pointer;">🔒 忽略規則</button>
         <button onclick="document.getElementById('ac-modal').style.display='none'"
           style="margin-left:8px;background:none;border:none;color:var(--txm);font-size:20px;cursor:pointer;line-height:1;">✕</button>
       </div>
@@ -7287,6 +7477,33 @@ window.addEventListener('unhandledrejection', function(e) {
       <div style="padding:12px 22px;border-top:1px solid var(--bd);flex-shrink:0;text-align:right;">
         <button onclick="document.getElementById('ac-ignore-modal').style.display='none'"
           style="padding:7px 18px;border-radius:8px;background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);font-size:12px;cursor:pointer;">關閉</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 🩺 資料體檢 Modal（管理員限定） -->
+  <div id="ac-audit-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:700;align-items:center;justify-content:center;"
+    onclick="if(event.target===this)document.getElementById('ac-audit-modal').style.display='none'">
+    <div style="background:var(--bg-s);border:1px solid var(--bd);border-radius:16px;width:96%;max-width:760px;max-height:88vh;display:flex;flex-direction:column;box-shadow:var(--sh);">
+      <div style="padding:18px 22px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px;">
+        <span style="font-size:18px;">🩺</span>
+        <span style="font-size:15px;font-weight:700;color:var(--tx);">物件硬資料體檢</span>
+        <span id="ac-audit-subtitle" style="font-size:11px;color:var(--txm);">掃描中…</span>
+        <button onclick="document.getElementById('ac-audit-modal').style.display='none'"
+          style="margin-left:auto;background:none;border:none;color:var(--txm);font-size:20px;cursor:pointer;line-height:1;">✕</button>
+      </div>
+      <div style="padding:14px 22px;border-bottom:1px solid var(--bd);background:var(--bg-t);">
+        <p style="margin:0 0 8px;font-size:12px;color:var(--txs);line-height:1.6;">缺<strong style="color:var(--tx);">鄉/市/鎮、段別、地號（土地）或建號（建物）</strong>的物件，比對時無法用「硬資料指紋」精準配對，會 fallback 到案名+地址（精準度低，容易誤配）。</p>
+        <p style="margin:0;font-size:11px;color:var(--txm);">補齊這些欄位後比對會更準。請按下方清單去 Sheets 補資料。</p>
+      </div>
+      <div style="padding:12px 22px;flex:1;overflow-y:auto;">
+        <div id="ac-audit-stats" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;font-size:11px;"></div>
+        <div id="ac-audit-list" style="display:flex;flex-direction:column;gap:6px;"></div>
+      </div>
+      <div style="padding:12px 22px;border-top:1px solid var(--bd);background:var(--bg-t);display:flex;align-items:center;gap:10px;">
+        <span id="ac-audit-summary" style="font-size:11px;color:var(--txm);"></span>
+        <button onclick="document.getElementById('ac-audit-modal').style.display='none'"
+          style="margin-left:auto;padding:7px 18px;border-radius:8px;background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);font-size:12px;cursor:pointer;">關閉</button>
       </div>
     </div>
   </div>
@@ -10710,6 +10927,72 @@ window.addEventListener('unhandledrejection', function(e) {
         toast('解鎖失敗：' + (d.error || ''), 'error');
       }
     }).catch(function(e) { toast('解鎖失敗：' + e.message, 'error'); });
+  }
+
+  // 🩺 開啟資料體檢 Modal
+  function openAuditModal() {
+    document.getElementById('ac-audit-modal').style.display = 'flex';
+    document.getElementById('ac-audit-subtitle').textContent = '掃描中（5000+ 筆需 5-15 秒）…';
+    document.getElementById('ac-audit-stats').innerHTML = '';
+    document.getElementById('ac-audit-list').innerHTML = '<p style="margin:0;font-size:12px;color:var(--txs);">⏳ 讀取 Firestore…</p>';
+    document.getElementById('ac-audit-summary').textContent = '';
+
+    fetch('/api/access-data-audit')
+      .then(function(r){ return r.json(); })
+      .then(function(d) {
+        if (d.error) {
+          document.getElementById('ac-audit-list').innerHTML = '<p style="margin:0;font-size:12px;color:#f87171;">❌ ' + d.error + '</p>';
+          document.getElementById('ac-audit-subtitle').textContent = '失敗';
+          return;
+        }
+        document.getElementById('ac-audit-subtitle').textContent =
+          '掃了 ' + d.total_scanned + ' 筆銷售中物件，發現 ' + d.missing_count + ' 筆需要補硬資料';
+
+        // 統計徽章
+        var statsHtml = '';
+        var icons = {'missing_鄉/市/鎮':'🏙', 'missing_段別':'📍', 'missing_地號':'🆔', 'missing_建號（建物）':'🏢'};
+        Object.keys(d.stats).forEach(function(k){
+          var label = k.replace('missing_', '缺');
+          var icon = icons[k] || '⚠️';
+          var count = d.stats[k];
+          var color = count > 0 ? '#d97706' : 'var(--txm)';
+          statsHtml += '<span style="background:var(--bg-t);border:1px solid var(--bd);border-radius:6px;padding:4px 10px;color:' + color + ';">' + icon + ' ' + label + '：<strong>' + count + '</strong></span>';
+        });
+        document.getElementById('ac-audit-stats').innerHTML = statsHtml;
+
+        // 列表（按缺欄位數排序，多的在前）
+        var items = d.missing.slice().sort(function(a,b){ return b.缺欄位.length - a.缺欄位.length; });
+        if (!items.length) {
+          document.getElementById('ac-audit-list').innerHTML = '<p style="margin:0;padding:20px;font-size:13px;color:var(--ok);text-align:center;">✅ 太好了，所有銷售中物件硬資料都齊全！</p>';
+        } else {
+          var html = '';
+          items.forEach(function(it){
+            var fields = it.缺欄位.map(function(f){
+              return '<span style="background:rgba(217,119,6,0.15);color:#d97706;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700;">缺 ' + f + '</span>';
+            }).join(' ');
+            html += '<div style="border:1px solid var(--bd);border-radius:8px;padding:8px 12px;background:var(--bg-s);">';
+            html += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;">';
+            html += '<strong style="color:var(--tx);">' + (it.案名 || '(無案名)') + '</strong>';
+            if (it.物件類別) html += '<span style="color:var(--txm);font-size:11px;">[' + it.物件類別 + ']</span>';
+            if (it.資料序號) html += '<span style="color:var(--txm);font-size:11px;">序號 ' + it.資料序號 + '</span>';
+            if (it.委託編號) html += '<span style="color:var(--txm);font-size:11px;">委託 ' + it.委託編號 + '</span>';
+            if (it.經紀人) html += '<span style="color:var(--txm);font-size:11px;">' + it.經紀人 + '</span>';
+            html += '</div>';
+            html += '<div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap;">' + fields + '</div>';
+            html += '</div>';
+          });
+          document.getElementById('ac-audit-list').innerHTML = html;
+        }
+
+        // 底部摘要
+        var summary = '共 ' + d.missing_count + ' / ' + d.total_scanned + ' 筆需要補資料';
+        if (d.missing_count > d.missing.length) summary += '（顯示前 ' + d.missing.length + ' 筆）';
+        document.getElementById('ac-audit-summary').textContent = summary;
+      })
+      .catch(function(e){
+        document.getElementById('ac-audit-list').innerHTML = '<p style="margin:0;font-size:12px;color:#f87171;">❌ 失敗：' + e.message + '</p>';
+        document.getElementById('ac-audit-subtitle').textContent = '失敗';
+      });
   }
 
   // 開啟忽略規則管理 Modal
