@@ -3295,6 +3295,50 @@ def api_company_properties_search():
                 return any(ag in raw for ag in agents)
             results = [r for r in results if _agent_match(r)]
 
+        # ── 同物件多次委託歷史去重：同 hard_key 多筆 → 取「委託日最新」當代表
+        # 舊版本壓進 _history 欄位（前端「📜 委託歷史」按鈕展開）
+        # 沒 hard_key 的物件保持獨立（不會被誤合併）
+        from collections import defaultdict as _dd
+        hk_groups = _dd(list)
+        no_hk_results = []
+        for r in results:
+            hks = _access_hard_keys(r)
+            if not hks:
+                no_hk_results.append(r)
+                continue
+            bldg = [k for k in hks if k[0] == "hard_bldg"]
+            land = [k for k in hks if k[0] == "hard_land"]
+            primary = bldg[0] if bldg else land[0]
+            hk_groups[primary].append(r)
+        deduped = list(no_hk_results)
+        for k, items in hk_groups.items():
+            if len(items) == 1:
+                deduped.append(items[0])
+                continue
+            sorted_items = sorted(
+                items,
+                key=lambda r: _parse_date_for_compare(str(r.get("委託日", "") or "")),
+                reverse=True
+            )
+            latest = sorted_items[0]
+            history = []
+            for old in sorted_items[1:]:
+                history.append({
+                    "委託日":       str(old.get("委託日", "") or ""),
+                    "委託編號":     str(old.get("委託編號", "") or ""),
+                    "售價(萬)":    old.get("售價(萬)"),
+                    "經紀人":       str(old.get("經紀人", "") or ""),
+                    "委託到期日":   str(old.get("委託到期日", "") or ""),
+                    "銷售中":       _is_selling(old),
+                    "成交日期":     str(old.get("成交日期", "") or ""),
+                    "成交金額(萬)": old.get("成交金額(萬)"),
+                    "資料序號":     old.get("資料序號"),
+                    "id":           old.get("id"),
+                })
+            latest["_history"] = history
+            deduped.append(latest)
+        results = deduped
+
         # 後端排序（依前端傳入的 sort 參數）
         def _parse_expiry_key(r):
             """將委託到期日解析為可比較的字串 YYYY-MM-DD，無值給 '9999-99-99'（排最後）"""
@@ -3337,7 +3381,8 @@ def api_company_properties_search():
             "id", "案名", "物件地址", "物件類別", "售價(萬)",
             "建坪", "地坪", "經紀人", "銷售中", "成交日期", "委託到期日",
             "資料序號", "鄉/市/鎮", "已加星", "舊案名", "原售價(萬)", "所有權人",
-            "段別", "地號"  # FOUNDI 土地查詢用
+            "段別", "地號",   # FOUNDI 土地查詢用
+            "_history"        # 同物件多次委託歷史（前端展示「📜 委託歷史」用）
         }
         slim = [{k: r[k] for k in card_fields if k in r} for r in page_data]
         # 補上 id，並將「銷售中」統一轉為布林值，避免前端收到字串導致判斷錯誤
@@ -10871,11 +10916,46 @@ window.addEventListener('unhandledrejection', function(e) {
                   + 'style="font-size:0.75rem;color:var(--txs);padding:0.125rem 0.5rem;border-radius:0.375rem;border:1px solid var(--bd);background:none;cursor:pointer;" '
                   + 'data-prop-id="' + safeId + '" data-loaded="0" title="查看曾帶看此物件的買方">👥 帶看</button>';
           }
+          // 📜 委託歷史按鈕（同物件多次委託紀錄）
+          var hist = item['_history'] || [];
+          if (hist.length > 0) {
+            html += '<button class="cp-history-toggle" '
+                  + 'style="font-size:0.75rem;color:#a78bfa;padding:0.125rem 0.5rem;border-radius:0.375rem;border:1px solid rgba(167,139,250,0.4);background:rgba(167,139,250,0.08);cursor:pointer;" '
+                  + 'data-prop-id="' + safeId + '" title="此物件過去的委託紀錄（' + hist.length + ' 筆）">📜 歷史 ' + hist.length + '</button>';
+          }
           html += '</div>';
           // 帶看摘要區（預設摺疊）
           if (BUYER_URL) {
             html += '<div id="showing-panel-' + safeId + '" class="hidden mt-2 pt-2" style="border-top:1px solid var(--bd);">'
                   + '<p style="font-size:0.75rem;color:var(--txm);text-align:center;padding:0.5rem 0;">載入中…</p></div>';
+          }
+          // 委託歷史展開 panel（預設摺疊）
+          if (hist.length > 0) {
+            var histHtml = '<div id="history-panel-' + safeId + '" class="hidden mt-2 pt-2" style="border-top:1px solid var(--bd);">'
+                         + '<p style="font-size:0.7rem;color:#a78bfa;font-weight:700;margin:0 0 6px;">📜 此物件過去的委託紀錄（' + hist.length + ' 筆，由新到舊）</p>';
+            hist.forEach(function(h){
+              var hSelling = h['銷售中'];
+              var hBadge;
+              if (hSelling === false && h['成交日期']) {
+                hBadge = '<span style="background:var(--tg);color:var(--tgt);padding:1px 6px;border-radius:4px;font-size:9px;font-weight:700;">已成交 ' + escapeHtml(h['成交日期']) + '</span>';
+              } else if (hSelling === false) {
+                hBadge = '<span style="background:var(--bg-h);color:var(--txs);padding:1px 6px;border-radius:4px;font-size:9px;font-weight:700;">已下架</span>';
+              } else {
+                hBadge = '<span style="background:var(--ok);color:#fff;padding:1px 6px;border-radius:4px;font-size:9px;font-weight:700;">銷售中</span>';
+              }
+              histHtml += '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:5px 8px;font-size:11px;background:var(--bg-s);border:1px solid var(--bd);border-radius:6px;margin-bottom:4px;">';
+              histHtml += hBadge;
+              if (h['委託日'])     histHtml += '<span style="color:var(--tx);">📅 委託 ' + escapeHtml(h['委託日']) + '</span>';
+              if (h['委託到期日']) histHtml += '<span style="color:var(--txm);">到期 ' + escapeHtml(h['委託到期日']) + '</span>';
+              if (h['委託編號'])   histHtml += '<span style="color:var(--txm);">編號 ' + escapeHtml(h['委託編號']) + '</span>';
+              if (h['售價(萬)'] != null && h['售價(萬)'] !== '') histHtml += '<span style="color:var(--ac);font-weight:700;">' + escapeHtml(String(h['售價(萬)'])) + '萬</span>';
+              if (h['成交金額(萬)'] != null && h['成交金額(萬)'] !== '') histHtml += '<span style="color:var(--tgt);">成交 ' + escapeHtml(String(h['成交金額(萬)'])) + '萬</span>';
+              if (h['經紀人'])     histHtml += '<span style="color:var(--txm);">' + escapeHtml(h['經紀人']) + '</span>';
+              if (h['資料序號'])   histHtml += '<span style="color:var(--txm);font-size:10px;">序號 ' + escapeHtml(String(h['資料序號'])) + '</span>';
+              histHtml += '</div>';
+            });
+            histHtml += '</div>';
+            html += histHtml;
           }
           html += '</div></div>';
         }
@@ -10904,6 +10984,16 @@ window.addEventListener('unhandledrejection', function(e) {
                   }
                 }
               });
+          });
+        });
+        // 委託歷史展開按鈕事件委派
+        list.querySelectorAll('.cp-history-toggle').forEach(function(btn) {
+          btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            var pid = this.dataset.propId;
+            var panel = document.getElementById('history-panel-' + pid);
+            if (!panel) return;
+            panel.classList.toggle('hidden');
           });
         });
         // 帶看摘要展開按鈕事件委派
@@ -11531,12 +11621,12 @@ window.addEventListener('unhandledrejection', function(e) {
       btnE.style.borderBottomColor = 'var(--ac)'; btnE.style.color = 'var(--ac)';
       btnH.style.borderBottomColor = 'transparent'; btnH.style.color = 'var(--txm)';
       document.getElementById('ac-dup-tab-hint').innerHTML =
-        '<strong style="color:#dc2626;">完全重複</strong>：同物件被貼了兩次（同硬資料 + 同委託編號 + 同委託日）。<strong>一定要刪一份</strong>，不會有業務影響。';
+        '<strong style="color:#dc2626;">完全重複</strong>：同物件被貼了兩次（同硬資料 + 同委託編號 + 同委託日）。<strong>一定要刪一份</strong>，不會有業務影響（兩筆完全相同，留一筆即可）。';
     } else {
       btnH.style.borderBottomColor = 'var(--ac)'; btnH.style.color = 'var(--ac)';
       btnE.style.borderBottomColor = 'transparent'; btnE.style.color = 'var(--txm)';
       document.getElementById('ac-dup-tab-hint').innerHTML =
-        '<strong style="color:#d97706;">歷史版本</strong>：同物件多次委託紀錄（委託編號或委託日不同）。<strong>由你決定</strong>是否刪除舊版（✅ 標記為最新的會建議保留，🕓 是歷史可考慮刪除）。';
+        '<strong style="color:#d97706;">歷史版本</strong>：同物件多次委託紀錄（委託編號或委託日不同）。<strong>主頁 Sheets 不需要刪</strong>（保留歷史紀錄，包括 ACCESS 拷貝那邊也是）。<br>系統會在 LIBRARY 公司物件庫顯示時自動過濾舊版，只顯示 ✅ 最新那筆。本清單僅供你檢視。';
     }
     _dupRender(tab);
   }
