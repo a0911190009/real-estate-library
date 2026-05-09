@@ -1405,6 +1405,27 @@ def _is_land_category(cat):
     return _has_land_part(cat)
 
 
+def _parse_date_for_compare(s):
+    """把日期字串轉成 (年, 月, 日) tuple 供比較。空值或無法解析 → (0,0,0)。
+    用於同 hard_bldg 多筆時取委託日較新者。
+    """
+    s = str(s or "").strip()
+    if not s:
+        return (0, 0, 0)
+    # 西元 YYYY/MM/DD 或 YYYY-MM-DD
+    m = re.match(r'^(\d{4})[/\-\.](\d{1,2})[/\-\.](\d{1,2})', s)
+    if m:
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    # 民國年 NNN年MM月DD日（含可能的空白）
+    m2 = re.match(r'^(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})', s)
+    if m2:
+        y = int(m2.group(1))
+        if y < 1000:
+            y += 1911
+        return (y, int(m2.group(2)), int(m2.group(3)))
+    return (0, 0, 0)
+
+
 def _normalize_landno(s):
     """地號正規化 + 拆分：去空白、去 .0 結尾、空白拆成多 token。
     例：'0835-0001 0835-0002' → ['0835-0001', '0835-0002']
@@ -1724,6 +1745,9 @@ def api_access_compare():
             keys_for_index = bldg_keys if bldg_keys else land_keys
             if main_key not in keys_for_index:
                 keys_for_index = keys_for_index + [main_key]
+            # 同物件兩筆委託歷史（如：先建檔無委託約、後簽約再建檔）→ 保留委託日較新的當代表
+            entry_date = _parse_date_for_compare(d.get("委託日", ""))
+            entry["_date"] = entry_date  # 保留供新 ACCESS 端比較用
             # 去重索引
             seen_for_this_entry = set()
             for k in keys_for_index:
@@ -1731,16 +1755,54 @@ def api_access_compare():
                     continue
                 seen_for_this_entry.add(k)
                 if k in orig_index:
-                    # 不同 entry 共用同 key → 衝突（保留第一個）
+                    # 不同 entry 共用同 key → 衝突
                     if orig_index[k]["_id"] != entry_id:
-                        orig_key_collision.append({
-                            "key":         str(k),
-                            "kept":        orig_index[k]["data"].get("案名", ""),
-                            "overwritten": d.get("案名", ""),
-                        })
+                        existing = orig_index[k]
+                        existing_date = existing.get("_date") or _parse_date_for_compare(existing["data"].get("委託日", ""))
+                        if entry_date > existing_date:
+                            # 本筆較新 → 替換
+                            orig_index[k] = entry
+                            orig_key_collision.append({
+                                "key":         str(k),
+                                "kept":        d.get("案名", "") + " (委託日 " + str(d.get("委託日","")) + ")",
+                                "overwritten": existing["data"].get("案名", "") + " (委託日 " + str(existing["data"].get("委託日","")) + ")",
+                                "_reason":     "保留委託日較新者",
+                            })
+                        else:
+                            # 既有較新 → 不變，本筆當作衝突
+                            orig_key_collision.append({
+                                "key":         str(k),
+                                "kept":        existing["data"].get("案名", "") + " (委託日 " + str(existing["data"].get("委託日","")) + ")",
+                                "overwritten": d.get("案名", "") + " (委託日 " + str(d.get("委託日","")) + ")",
+                                "_reason":     "保留委託日較新者",
+                            })
                     continue
                 orig_index[k] = entry
             all_entries.append(entry)
+
+        # ── 新 ACCESS 端去重：同 hard_bldg 多筆 → 只保留委託日較新者參與比對 ──
+        # （例如：USER 同物件先以「無委託約」建檔、後又以「已簽約」建檔，ACCESS 兩筆都在）
+        new_dedup_skip_idx = set()  # 要跳過的 new_data index
+        new_dedup_count = 0
+        new_seen_bldg_keys = {}  # hard_bldg key → (idx, 委託日 tuple)
+        for idx, new_row in enumerate(new_data):
+            nd_pre = _access_row_to_dict(new_headers, new_row)
+            nd_pre_hard = _access_hard_keys(nd_pre)
+            nd_pre_bldg = [k for k in nd_pre_hard if k[0] == "hard_bldg"]
+            if not nd_pre_bldg:
+                continue
+            pk = nd_pre_bldg[0]
+            nd_pre_date = _parse_date_for_compare(nd_pre.get("委託日", ""))
+            if pk in new_seen_bldg_keys:
+                old_idx, old_date = new_seen_bldg_keys[pk]
+                if nd_pre_date > old_date:
+                    new_dedup_skip_idx.add(old_idx)
+                    new_seen_bldg_keys[pk] = (idx, nd_pre_date)
+                else:
+                    new_dedup_skip_idx.add(idx)
+                new_dedup_count += 1
+            else:
+                new_seen_bldg_keys[pk] = (idx, nd_pre_date)
 
         # ── 比對 ──
         added_display    = []
@@ -1754,6 +1816,8 @@ def api_access_compare():
         }
 
         for idx, new_row in enumerate(new_data):
+            if idx in new_dedup_skip_idx:
+                continue  # 同 hard_bldg 較舊版本，跳過
             nd = _access_row_to_dict(new_headers, new_row)
             nd_hard_keys = _access_hard_keys(nd)
             nd_main_key  = _access_make_key(nd)
@@ -1943,6 +2007,7 @@ def api_access_compare():
                 "key_collision_count":     len(orig_key_collision),
                 "match_kind_counts":       match_kind_counts,        # 各種 key 命中分佈
                 "orig_no_hard_key_count":  orig_no_hard_key_count,   # 缺硬資料的 orig 筆數
+                "new_dedup_count":         new_dedup_count,          # ACCESS 端同物件多筆委託歷史，去重的筆數
             },
         })
 
