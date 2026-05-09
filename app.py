@@ -11707,12 +11707,12 @@ window.addEventListener('unhandledrejection', function(e) {
       toast('沒有列需要刪除', 'info');
       return;
     }
-    // 強制確認 dialog
-    var msg = '確定要從主頁 Sheets 刪除 ' + rowsToDelete.length + ' 列嗎？\n\n'
+    // 強制確認 dialog（用 \\n 讓 Python 輸出實際反斜線+n 給 JS，pitfalls #47）
+    var msg = '確定要從主頁 Sheets 刪除 ' + rowsToDelete.length + ' 列嗎？\\n\\n'
             + '這些都是「完全重複」的列（同硬資料 + 同委託編號 + 同委託日），'
-            + '系統會每組保留第一筆，刪除其餘。\n\n'
-            + '⚠️ 操作會直接寫入 Google Sheets。\n'
-            + '✅ 仍可在 Sheets 用「檔案 → 版本記錄」找回。\n\n'
+            + '系統會每組保留第一筆，刪除其餘。\\n\\n'
+            + '⚠️ 操作會直接寫入 Google Sheets。\\n'
+            + '✅ 仍可在 Sheets 用「檔案 → 版本記錄」找回。\\n\\n'
             + '繼續？';
     if (!confirm(msg)) return;
 
