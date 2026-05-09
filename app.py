@@ -1780,29 +1780,45 @@ def api_access_compare():
                 orig_index[k] = entry
             all_entries.append(entry)
 
-        # ── 新 ACCESS 端去重：同 hard_bldg 多筆 → 只保留委託日較新者參與比對 ──
-        # （例如：USER 同物件先以「無委託約」建檔、後又以「已簽約」建檔，ACCESS 兩筆都在）
-        new_dedup_skip_idx = set()  # 要跳過的 new_data index
+        # ── 新 ACCESS 端去重（通用版：對所有 hard_keys 各自比委託日）──
+        # 場景：
+        # (a) ACCESS 同物件兩筆（hard_bldg 重複）
+        # (b) ACCESS 多地號合併新版 + 舊拆分版（hard_land 多 key 重疊）
+        #     例：主頁合併新版（2026 委託，地號「695 699」）
+        #         ACCESS 留著舊 A/B 拆分版（2025 委託，A=695、B=699）
+        #         ACCESS 也有合併新版（2026 委託，地號「695 699」）
+        #     → 合併新版的 hard_land(695) 和 hard_land(699) 都比 A/B 的委託日新
+        #       → A、B 兩列整列跳過（所有 hard_key 都被新版搶走）
+        new_dedup_skip_idx = set()
         new_dedup_count = 0
-        new_seen_bldg_keys = {}  # hard_bldg key → (idx, 委託日 tuple)
+        # 第一遍：每個 hard_key 找出「委託日最新」的 row
+        key_winner = {}  # hard_key → (idx, date_tuple)
+        new_pre = []  # 預先 row → (nd, hard_keys, date) 避免重複計算
         for idx, new_row in enumerate(new_data):
             nd_pre = _access_row_to_dict(new_headers, new_row)
             nd_pre_hard = _access_hard_keys(nd_pre)
-            nd_pre_bldg = [k for k in nd_pre_hard if k[0] == "hard_bldg"]
-            if not nd_pre_bldg:
-                continue
-            pk = nd_pre_bldg[0]
             nd_pre_date = _parse_date_for_compare(nd_pre.get("委託日", ""))
-            if pk in new_seen_bldg_keys:
-                old_idx, old_date = new_seen_bldg_keys[pk]
-                if nd_pre_date > old_date:
-                    new_dedup_skip_idx.add(old_idx)
-                    new_seen_bldg_keys[pk] = (idx, nd_pre_date)
-                else:
-                    new_dedup_skip_idx.add(idx)
+            new_pre.append((nd_pre, nd_pre_hard, nd_pre_date))
+            for k in nd_pre_hard:
+                if k not in key_winner or nd_pre_date > key_winner[k][1]:
+                    key_winner[k] = (idx, nd_pre_date)
+        # 第二遍：跳過條件 = 此 row 所有 hard_key 都被「**嚴格較新**」的 row 搶走
+        # 重要：同日（無法判斷誰新誰舊，例如 預售屋 A/B 同日簽約）或自己無日期 → 不跳過
+        for idx, (nd_pre, nd_pre_hard, nd_pre_date) in enumerate(new_pre):
+            if not nd_pre_hard:
+                continue  # 無 hard_key 的不參與這個去重（仍走 comm/name_addr）
+            if nd_pre_date == (0, 0, 0):
+                continue  # 自己沒委託日 → 無法判斷新舊，保留
+            all_outdated = True
+            for k in nd_pre_hard:
+                wi, wd = key_winner.get(k, (idx, nd_pre_date))
+                if wi == idx:
+                    all_outdated = False; break  # 自己就是 winner
+                if wd <= nd_pre_date:
+                    all_outdated = False; break  # 沒被嚴格較新搶走（同日或更舊）
+            if all_outdated:
+                new_dedup_skip_idx.add(idx)
                 new_dedup_count += 1
-            else:
-                new_seen_bldg_keys[pk] = (idx, nd_pre_date)
 
         # ── 比對 ──
         added_display    = []
