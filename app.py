@@ -12037,12 +12037,20 @@ window.addEventListener('unhandledrejection', function(e) {
   })();
   // ══ 地圖分頁 JS 結束 ══
 
-  // 頁面載入後：若 URL 有 ?tab= 就切到指定分頁，否則預設公司物件庫
+  // 頁面載入後：若 URL 有 ?tab= 就切到指定分頁；?cp=<id> 自動開物件詳情
   (function() {
-    var _initTab = new URLSearchParams(window.location.search).get('tab') || 'company';
+    var _params = new URLSearchParams(window.location.search);
+    var _initTab = _params.get('tab') || 'company';
+    var _initCp = _params.get('cp');
     var _allowed = ['company','sellers','map','dbview','settings','org'];
     switchTab(_allowed.indexOf(_initTab) >= 0 ? _initTab : 'company');
-    // 清除 URL 裡的 tab 參數，避免重整後仍帶著
+    if (_initCp) {
+      // 等公司物件庫載入後再開（cpOpenDetail 內會自己 fetch 資料）
+      setTimeout(function() {
+        try { cpOpenDetail(_initCp); } catch (e) { console.error(e); }
+      }, 800);
+    }
+    // 清除 URL 裡的參數，避免重整後仍帶著
     if (window.location.search) history.replaceState(null, '', window.location.pathname);
   })();
 
