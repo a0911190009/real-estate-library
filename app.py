@@ -1360,10 +1360,29 @@ def _access_norm_val(field, val):
     # 一般字串：壓縮空白
     return re.sub(r'\s+', ' ', v)
 
-def _is_land_category(cat):
-    """判斷物件類別是否為土地類（農地、建地）。沿用 app.py 其他地方的判斷邏輯。"""
+# 物件類別關鍵字（用於判斷該物件「有」土地或建物的部分）
+# 沿用 CATEGORY_GROUPS（app.py:2433）的設計，但 hardcode 在 helper 旁方便維護
+_LAND_HINTS = ("農地", "建地", "土地", "林地", "農舍", "農建")
+_BUILDING_HINTS = ("公寓", "套房", "華廈", "平房", "透天", "透住",
+                   "別墅", "店住", "店面", "攤位", "辦公", "民宿",
+                   "廠房", "廠辦", "住家", "住宅", "大樓")
+
+
+def _has_land_part(cat):
+    """類別裡是否含「土地」部分（含混合類別如『透天+農地』）。"""
     s = str(cat or "").strip()
-    return any(t in s for t in ("農地", "建地"))
+    return bool(s) and any(t in s for t in _LAND_HINTS)
+
+
+def _has_building_part(cat):
+    """類別裡是否含「建物」部分（含混合類別如『透天+農地』）。"""
+    s = str(cat or "").strip()
+    return bool(s) and any(t in s for t in _BUILDING_HINTS)
+
+
+def _is_land_category(cat):
+    """向後相容：判斷是否含土地部分。"""
+    return _has_land_part(cat)
 
 
 def _normalize_landno(s):
@@ -1411,15 +1430,21 @@ def _access_hard_keys(d):
     bldgnos = _normalize_bldgno(d.get("建號", ""))
     cat = str(d.get("物件類別", "") or "").strip()
 
-    # 類別判斷：土地、建物、或類別缺失（兩種都吐）
-    is_land = _is_land_category(cat) if cat else None  # None = 不確定
+    # 類別判斷：含土地部分 / 含建物部分 / 類別不認得（兩種都吐 permissive）
+    has_land = _has_land_part(cat)
+    has_bldg = _has_building_part(cat)
+    if not has_land and not has_bldg:
+        # 類別空白或不認得 → 兩種都吐
+        has_land = True
+        has_bldg = True
+
     keys = []
     # 土地 key：對每個地號各產一個（不需建號）
-    if is_land or is_land is None:
+    if has_land:
         for ln in landnos:
             keys.append(("hard_land", f"{area}|{sect}|{ln}"))
-    # 建物 key：對每個 (地號, 建號) 配對各產一個（建物必須有建號才有意義）
-    if (is_land is False) or (is_land is None and bldgnos):
+    # 建物 key：對每個 (地號, 建號) 配對各產一個（必須有建號才有意義）
+    if has_bldg and bldgnos:
         for ln in landnos:
             for bn in bldgnos:
                 keys.append(("hard_bldg", f"{area}|{sect}|{ln}|{bn}"))
@@ -2070,7 +2095,6 @@ def api_access_data_audit():
             sect  = str(rd.get("段別", "") or "").strip()
             land  = _normalize_landno(rd.get("地號", ""))
             bldg  = _normalize_bldgno(rd.get("建號", ""))
-            is_land = _is_land_category(cat)
             缺欄位 = []
             if not area:
                 缺欄位.append("鄉/市/鎮"); stats["missing_鄉/市/鎮"] += 1
@@ -2078,8 +2102,9 @@ def api_access_data_audit():
                 缺欄位.append("段別"); stats["missing_段別"] += 1
             if not land:
                 缺欄位.append("地號"); stats["missing_地號"] += 1
-            # 建物類額外要建號
-            if not is_land and not bldg:
+            # 只有「明確含建物部分」的類別才提示缺建號（例如 公寓、透天、別墅、店住、透天+農地…）
+            # 純土地（農地、建地、土地、林地）或類別空白 → 不檢查建號
+            if _has_building_part(cat) and not bldg:
                 缺欄位.append("建號"); stats["missing_建號（建物）"] += 1
             if 缺欄位:
                 missing.append({
