@@ -1402,9 +1402,36 @@ def _normalize_landno(s):
     return tokens
 
 
+# 建號欄的「明確無建號」標記（預售屋、老屋未保存登記等）
+# 助理在 Sheets 建號欄填這些值，等同告訴系統「這筆物件沒有建號是事實」：
+# - 體檢不再提示「缺建號」
+# - 比對時不會產生 hard_bldg key（避免誤配對）
+_NO_BLDGNO_MARKERS = {
+    "無", "無建號", "沒有", "沒有建號",
+    "N/A", "n/a", "NA", "na", "N.A.",
+    "—", "-", "─", "－",
+    "未保存", "未保存登記", "未登記", "尚未登記", "保存登記中",
+    "預售", "預售中", "預售屋",
+    "待登記", "待保存", "待登",
+}
+
+
 def _normalize_bldgno(s):
-    """建號正規化 + 拆分（同地號邏輯）。"""
-    return _normalize_landno(s)
+    """建號正規化 + 拆分。
+    若整個欄位是「無/N/A/預售/未保存」等標記 → 回傳空 list（明確無建號）。
+    其他正常情況同地號邏輯（去空白、拆 token）。
+    """
+    raw = str(s or "").strip()
+    if not raw or raw in _NO_BLDGNO_MARKERS:
+        return []
+    # 一般情況：拆 token 並過濾掉混在一起的標記
+    cleaned = re.sub(r'[　,，、/／]+', ' ', raw)
+    tokens = []
+    for t in re.split(r'\s+', cleaned):
+        t = re.sub(r'\.0$', '', t).strip()
+        if t and t not in _NO_BLDGNO_MARKERS:
+            tokens.append(t)
+    return tokens
 
 
 def _access_hard_keys(d):
@@ -2090,11 +2117,11 @@ def api_access_data_audit():
             if not _is_selling(rd):
                 continue
             total += 1
-            cat   = str(rd.get("物件類別", "") or "").strip()
-            area  = str(rd.get("鄉/市/鎮", "") or "").strip()
-            sect  = str(rd.get("段別", "") or "").strip()
-            land  = _normalize_landno(rd.get("地號", ""))
-            bldg  = _normalize_bldgno(rd.get("建號", ""))
+            cat      = str(rd.get("物件類別", "") or "").strip()
+            area     = str(rd.get("鄉/市/鎮", "") or "").strip()
+            sect     = str(rd.get("段別", "") or "").strip()
+            land     = _normalize_landno(rd.get("地號", ""))
+            bldg_raw = str(rd.get("建號", "") or "").strip()  # 助理填的原始值
             缺欄位 = []
             if not area:
                 缺欄位.append("鄉/市/鎮"); stats["missing_鄉/市/鎮"] += 1
@@ -2102,9 +2129,11 @@ def api_access_data_audit():
                 缺欄位.append("段別"); stats["missing_段別"] += 1
             if not land:
                 缺欄位.append("地號"); stats["missing_地號"] += 1
-            # 只有「明確含建物部分」的類別才提示缺建號（例如 公寓、透天、別墅、店住、透天+農地…）
-            # 純土地（農地、建地、土地、林地）或類別空白 → 不檢查建號
-            if _has_building_part(cat) and not bldg:
+            # 建號規則：
+            # - 純土地（農地/建地/土地/林地）或類別空白 → 不檢查
+            # - 含建物部分（公寓/透天/別墅/店住/透天+農地…）且建號欄完全空白 → 提示缺建號
+            # - 助理填了任何值（包括「無」「預售」「N/A」等標記）→ 視為已處理，不提示
+            if _has_building_part(cat) and not bldg_raw:
                 缺欄位.append("建號"); stats["missing_建號（建物）"] += 1
             if 缺欄位:
                 missing.append({
@@ -7519,7 +7548,8 @@ window.addEventListener('unhandledrejection', function(e) {
       </div>
       <div style="padding:14px 22px;border-bottom:1px solid var(--bd);background:var(--bg-t);">
         <p style="margin:0 0 8px;font-size:12px;color:var(--txs);line-height:1.6;">缺<strong style="color:var(--tx);">鄉/市/鎮、段別、地號（土地）或建號（建物）</strong>的物件，比對時無法用「硬資料指紋」精準配對，會 fallback 到案名+地址（精準度低，容易誤配）。</p>
-        <p style="margin:0;font-size:11px;color:var(--txm);">補齊這些欄位後比對會更準。請按下方清單去 Sheets 補資料。</p>
+        <p style="margin:0 0 6px;font-size:11px;color:var(--txm);">補齊這些欄位後比對會更準。請按下方清單去 Sheets 補資料。</p>
+        <p style="margin:0;font-size:11px;color:var(--ac);line-height:1.6;">💡 若是<strong>預售屋、老屋未保存登記</strong>等本來就沒有建號的物件，請在建號欄填「<code style="background:var(--bg-p);padding:1px 4px;border-radius:3px;">無</code>」、「<code style="background:var(--bg-p);padding:1px 4px;border-radius:3px;">預售</code>」、「<code style="background:var(--bg-p);padding:1px 4px;border-radius:3px;">N/A</code>」或「<code style="background:var(--bg-p);padding:1px 4px;border-radius:3px;">未保存</code>」即可，系統會視為已處理，不再提示。</p>
       </div>
       <div style="padding:12px 22px;flex:1;overflow-y:auto;">
         <div id="ac-audit-stats" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;font-size:11px;"></div>
