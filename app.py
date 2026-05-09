@@ -2089,10 +2089,20 @@ def api_access_apply():
         return jsonify({"error": str(e), "detail": traceback.format_exc()}), 500
 
 
+def _audit_ack_id(firestore_doc_id, field):
+    """產生「已檢查」的 doc id：每個 (firestore_doc_id, field) 一對一。
+    這樣使用者可以「只確認某個欄位（如建號＝未保存登記）」而不影響其他缺欄位的提醒。
+    """
+    import hashlib
+    raw = f"{firestore_doc_id}|{field}"
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()[:20]
+
+
 @app.route("/api/access-data-audit", methods=["GET"])
 def api_access_data_audit():
     """資料體檢：掃描銷售中物件，找出缺硬資料（鄉/市/鎮、段別、地號、建物缺建號）的物件。
     這些物件在 ACCESS 比對時會 fallback 到 name_addr 配對（精準度低），建議補齊。
+    使用者按過「✓ 已檢查」的（存在 audit_acks collection）會自動隱藏。
     僅管理員。
     """
     email, err = _require_user()
@@ -2102,6 +2112,19 @@ def api_access_data_audit():
     db = _get_db()
     if db is None: return jsonify({"error": "Firestore 未連線"}), 503
 
+    # 載入所有「已檢查」確認，建立 (doc_id, field) → True 的索引
+    # 同時保留 ack_id → (doc_id, field) 反查表，前端管理用
+    acked_pairs = set()  # set of (firestore_doc_id, field)
+    try:
+        for ack in db.collection("audit_acks").stream():
+            r = ack.to_dict() or {}
+            fid = r.get("firestore_doc_id", "")
+            fld = r.get("field", "")
+            if fid and fld:
+                acked_pairs.add((fid, fld))
+    except Exception:
+        pass  # ack 載入失敗不影響主流程
+
     missing = []
     stats = {
         "missing_鄉/市/鎮":    0,
@@ -2110,6 +2133,7 @@ def api_access_data_audit():
         "missing_建號（建物）": 0,
     }
     total = 0
+    hidden = 0  # 被「已檢查」隱藏的筆數
 
     try:
         for d in db.collection("company_properties").stream():
@@ -2124,26 +2148,45 @@ def api_access_data_audit():
             bldg_raw = str(rd.get("建號", "") or "").strip()  # 助理填的原始值
             缺欄位 = []
             if not area:
-                缺欄位.append("鄉/市/鎮"); stats["missing_鄉/市/鎮"] += 1
+                缺欄位.append("鄉/市/鎮")
             if not sect:
-                缺欄位.append("段別"); stats["missing_段別"] += 1
+                缺欄位.append("段別")
             if not land:
-                缺欄位.append("地號"); stats["missing_地號"] += 1
+                缺欄位.append("地號")
             # 建號規則：
             # - 純土地（農地/建地/土地/林地）或類別空白 → 不檢查
             # - 含建物部分（公寓/透天/別墅/店住/透天+農地…）且建號欄完全空白 → 提示缺建號
             # - 助理填了任何值（包括「無」「預售」「N/A」等標記）→ 視為已處理，不提示
             if _has_building_part(cat) and not bldg_raw:
-                缺欄位.append("建號"); stats["missing_建號（建物）"] += 1
+                缺欄位.append("建號")
             if 缺欄位:
+                # 過濾掉每個欄位的已檢查確認
+                visible_fields = []
+                hidden_fields  = []
+                for f in 缺欄位:
+                    if (d.id, f) in acked_pairs:
+                        hidden_fields.append(f)
+                    else:
+                        visible_fields.append(f)
+                if not visible_fields:
+                    # 全部欄位都已確認 → 該筆不顯示
+                    hidden += 1
+                    continue
+                # 累計統計（只統計顯示的欄位）
+                for f in visible_fields:
+                    key = f"missing_{f}" if f != "建號" else "missing_建號（建物）"
+                    if key in stats:
+                        stats[key] += 1
                 missing.append({
-                    "doc_id":     d.id,
-                    "案名":       rd.get("案名", ""),
-                    "委託編號":   rd.get("委託編號", ""),
-                    "物件類別":   cat,
-                    "資料序號":   rd.get("資料序號", ""),
-                    "經紀人":     rd.get("經紀人", ""),
-                    "缺欄位":     缺欄位,
+                    "doc_id":          d.id,
+                    "案名":            rd.get("案名", ""),
+                    "委託編號":        rd.get("委託編號", ""),
+                    "物件類別":        cat,
+                    "資料序號":        rd.get("資料序號", ""),
+                    "經紀人":          rd.get("經紀人", ""),
+                    "缺欄位":          visible_fields,
+                    "已確認欄位":      hidden_fields,    # 同筆其他欄位已確認的清單（顯示用）
+                    "ack_ids":         {f: _audit_ack_id(d.id, f) for f in visible_fields},
                 })
     except Exception as e:
         import traceback
@@ -2153,9 +2196,80 @@ def api_access_data_audit():
         "ok":            True,
         "total_scanned": total,
         "missing_count": len(missing),
+        "hidden_count":  hidden,           # 被「已檢查」隱藏的筆數
         "missing":       missing[:1000],   # 最多回 1000 筆，避免 payload 太大
         "stats":         stats,
     })
+
+
+@app.route("/api/access-data-audit/ack", methods=["POST"])
+def api_access_data_audit_ack():
+    """標記某筆物件「某個欄位」為「已檢查」，下次體檢自動隱藏這個欄位的提醒。
+    Body: { firestore_doc_id, field, note (optional), display_name (optional) }
+    """
+    email, err = _require_user()
+    if err: return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email): return jsonify({"error": "僅管理員可使用"}), 403
+
+    db = _get_db()
+    if db is None: return jsonify({"error": "Firestore 未連線"}), 503
+
+    data = request.get_json(silent=True) or {}
+    fid = str(data.get("firestore_doc_id", "") or "").strip()
+    field = str(data.get("field", "") or "").strip()
+    if not fid or not field:
+        return jsonify({"error": "缺 firestore_doc_id 或 field"}), 400
+
+    ack_id = _audit_ack_id(fid, field)
+    from datetime import datetime as _dt
+    db.collection("audit_acks").document(ack_id).set({
+        "firestore_doc_id": fid,
+        "field":            field,
+        "display_name":     str(data.get("display_name", "") or ""),
+        "note":             str(data.get("note", "") or ""),
+        "acked_by":         email,
+        "acked_at":         _dt.utcnow().isoformat(),
+    })
+    return jsonify({"ok": True, "ack_id": ack_id})
+
+
+@app.route("/api/access-data-audit/acks", methods=["GET"])
+def api_access_data_audit_acks_list():
+    """列出所有已檢查確認（用於管理 UI）。"""
+    email, err = _require_user()
+    if err: return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email): return jsonify({"error": "僅管理員可使用"}), 403
+
+    db = _get_db()
+    if db is None: return jsonify({"error": "Firestore 未連線"}), 503
+
+    items = []
+    try:
+        for d in db.collection("audit_acks").stream():
+            rec = d.to_dict() or {}
+            rec["id"] = d.id
+            items.append(rec)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    items.sort(key=lambda x: x.get("acked_at", ""), reverse=True)
+    return jsonify({"ok": True, "items": items, "total": len(items)})
+
+
+@app.route("/api/access-data-audit/acks/<ack_id>", methods=["DELETE"])
+def api_access_data_audit_acks_delete(ack_id):
+    """解除「已檢查」（取消後該筆物件下次體檢會重新出現）。"""
+    email, err = _require_user()
+    if err: return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email): return jsonify({"error": "僅管理員可使用"}), 403
+
+    db = _get_db()
+    if db is None: return jsonify({"error": "Firestore 未連線"}), 503
+
+    try:
+        db.collection("audit_acks").document(ack_id).delete()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"ok": True})
 
 
 def _parse_price_num(val):
@@ -7535,6 +7649,21 @@ window.addEventListener('unhandledrejection', function(e) {
     </div>
   </div>
 
+  <!-- 已檢查清單管理 Modal -->
+  <div id="ac-audit-acks-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:710;align-items:center;justify-content:center;"
+    onclick="if(event.target===this)document.getElementById('ac-audit-acks-modal').style.display='none'">
+    <div style="background:var(--bg-s);border:1px solid var(--bd);border-radius:16px;width:96%;max-width:680px;max-height:85vh;display:flex;flex-direction:column;box-shadow:var(--sh);">
+      <div style="padding:16px 22px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px;">
+        <span style="font-size:16px;">📋</span>
+        <span style="font-size:14px;font-weight:700;color:var(--tx);">已檢查確認清單</span>
+        <span style="font-size:11px;color:var(--txm);">解除後該欄位下次體檢會重新出現</span>
+        <button onclick="document.getElementById('ac-audit-acks-modal').style.display='none'"
+          style="margin-left:auto;background:none;border:none;color:var(--txm);font-size:20px;cursor:pointer;line-height:1;">✕</button>
+      </div>
+      <div id="ac-audit-acks-list" style="padding:14px 22px;flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px;"></div>
+    </div>
+  </div>
+
   <!-- 🩺 資料體檢 Modal（管理員限定） -->
   <div id="ac-audit-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:700;align-items:center;justify-content:center;"
     onclick="if(event.target===this)document.getElementById('ac-audit-modal').style.display='none'">
@@ -10991,7 +11120,10 @@ window.addEventListener('unhandledrejection', function(e) {
     document.getElementById('ac-audit-stats').innerHTML = '';
     document.getElementById('ac-audit-list').innerHTML = '<p style="margin:0;font-size:12px;color:var(--txs);">⏳ 讀取 Firestore…</p>';
     document.getElementById('ac-audit-summary').textContent = '';
+    _loadAuditData();
+  }
 
+  function _loadAuditData() {
     fetch('/api/access-data-audit')
       .then(function(r){ return r.json(); })
       .then(function(d) {
@@ -11000,8 +11132,11 @@ window.addEventListener('unhandledrejection', function(e) {
           document.getElementById('ac-audit-subtitle').textContent = '失敗';
           return;
         }
-        document.getElementById('ac-audit-subtitle').textContent =
-          '掃了 ' + d.total_scanned + ' 筆銷售中物件，發現 ' + d.missing_count + ' 筆需要補硬資料';
+        var subtitle = '掃了 ' + d.total_scanned + ' 筆銷售中物件，發現 ' + d.missing_count + ' 筆需要補資料';
+        if (d.hidden_count > 0) {
+          subtitle += '（已隱藏 ' + d.hidden_count + ' 筆<a href="javascript:void(0)" onclick="openAuditAcksModal()" style="color:var(--ac);text-decoration:underline;margin-left:4px;">管理</a>）';
+        }
+        document.getElementById('ac-audit-subtitle').innerHTML = subtitle;
 
         // 統計徽章
         var statsHtml = '';
@@ -11022,9 +11157,22 @@ window.addEventListener('unhandledrejection', function(e) {
         } else {
           var html = '';
           items.forEach(function(it){
+            // 每個缺欄位徽章旁加 ✓ 按鈕（單獨確認該欄位）
             var fields = it.缺欄位.map(function(f){
-              return '<span style="background:rgba(217,119,6,0.15);color:#d97706;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700;">缺 ' + f + '</span>';
+              var ackId = (it.ack_ids || {})[f] || '';
+              var dispName = (it.案名 || '').replace(/'/g, '');
+              return '<span class="audit-field-tag" data-fid="' + it.doc_id + '" data-field="' + f + '" data-name="' + dispName + '"'
+                   + ' style="display:inline-flex;align-items:center;gap:4px;background:rgba(217,119,6,0.15);color:#d97706;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:700;">'
+                   + '缺 ' + f
+                   + '<button onclick="auditAckField(this)" title="這個欄位確認過（例如：建號是未保存登記）"'
+                   + ' style="background:transparent;border:none;color:#16a34a;cursor:pointer;font-size:11px;padding:0 2px;line-height:1;font-weight:700;">✓</button>'
+                   + '</span>';
             }).join(' ');
+            // 同筆其他欄位已確認的提示（如果有）
+            var ackedHint = '';
+            if (it.已確認欄位 && it.已確認欄位.length) {
+              ackedHint = '<span style="color:var(--txm);font-size:10px;margin-left:6px;">（' + it.已確認欄位.map(function(f){return '✓'+f;}).join(' ') + '）</span>';
+            }
             html += '<div style="border:1px solid var(--bd);border-radius:8px;padding:8px 12px;background:var(--bg-s);">';
             html += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;">';
             html += '<strong style="color:var(--tx);">' + (it.案名 || '(無案名)') + '</strong>';
@@ -11033,7 +11181,7 @@ window.addEventListener('unhandledrejection', function(e) {
             if (it.委託編號) html += '<span style="color:var(--txm);font-size:11px;">委託 ' + it.委託編號 + '</span>';
             if (it.經紀人) html += '<span style="color:var(--txm);font-size:11px;">' + it.經紀人 + '</span>';
             html += '</div>';
-            html += '<div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap;">' + fields + '</div>';
+            html += '<div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap;align-items:center;">' + fields + ackedHint + '</div>';
             html += '</div>';
           });
           document.getElementById('ac-audit-list').innerHTML = html;
@@ -11042,12 +11190,88 @@ window.addEventListener('unhandledrejection', function(e) {
         // 底部摘要
         var summary = '共 ' + d.missing_count + ' / ' + d.total_scanned + ' 筆需要補資料';
         if (d.missing_count > d.missing.length) summary += '（顯示前 ' + d.missing.length + ' 筆）';
+        if (d.hidden_count) summary += '｜已隱藏 ' + d.hidden_count + ' 筆';
         document.getElementById('ac-audit-summary').textContent = summary;
       })
       .catch(function(e){
         document.getElementById('ac-audit-list').innerHTML = '<p style="margin:0;font-size:12px;color:#f87171;">❌ 失敗：' + e.message + '</p>';
         document.getElementById('ac-audit-subtitle').textContent = '失敗';
       });
+  }
+
+  // 確認單一欄位（如：這筆建號是未保存登記）
+  function auditAckField(btn) {
+    var tag = btn.closest('.audit-field-tag');
+    if (!tag) return;
+    var fid = tag.dataset.fid;
+    var field = tag.dataset.field;
+    var name = tag.dataset.name || '';
+    fetch('/api/access-data-audit/ack', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({firestore_doc_id: fid, field: field, display_name: name})
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (d.ok) {
+        toast('✓ 已確認「' + name + '」的「' + field + '」欄位', 'success');
+        // 重新載入列表（同筆物件的其他缺欄位仍會顯示，本欄位的徽章會消失）
+        _loadAuditData();
+      } else {
+        toast('❌ ' + (d.error || '失敗'), 'error');
+      }
+    })
+    .catch(function(e){ toast('❌ ' + e.message, 'error'); });
+  }
+
+  // 開啟「已檢查清單」管理 Modal
+  function openAuditAcksModal() {
+    document.getElementById('ac-audit-acks-modal').style.display = 'flex';
+    var listEl = document.getElementById('ac-audit-acks-list');
+    listEl.innerHTML = '<p style="margin:0;font-size:12px;color:var(--txs);">⏳ 載入中…</p>';
+    fetch('/api/access-data-audit/acks')
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if (d.error) {
+          listEl.innerHTML = '<p style="margin:0;font-size:12px;color:#f87171;">❌ ' + d.error + '</p>';
+          return;
+        }
+        if (!d.items.length) {
+          listEl.innerHTML = '<p style="margin:0;padding:20px;text-align:center;color:var(--txm);font-size:12px;">（尚無已檢查確認）</p>';
+          return;
+        }
+        var html = '';
+        d.items.forEach(function(r){
+          var dt = r.acked_at ? new Date(r.acked_at).toLocaleDateString('zh-TW') : '';
+          html += '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--bg-t);font-size:12px;">';
+          html += '<strong style="color:var(--tx);">' + (r.display_name || '(無案名)') + '</strong>';
+          html += '<span style="background:rgba(34,197,94,0.15);color:#16a34a;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700;">已確認 ' + r.field + '</span>';
+          html += '<span style="margin-left:auto;color:var(--txm);font-size:10px;">' + dt + ' / ' + (r.acked_by || '').split('@')[0] + '</span>';
+          html += '<button data-id="' + r.id + '" onclick="auditUnack(this)"'
+                + ' style="padding:3px 8px;border-radius:5px;background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);font-size:11px;cursor:pointer;">🔓 解除</button>';
+          html += '</div>';
+        });
+        listEl.innerHTML = html;
+      })
+      .catch(function(e){ listEl.innerHTML = '<p style="color:#f87171;">❌ ' + e.message + '</p>'; });
+  }
+
+  // 解除某筆「已檢查」（下次體檢會重新出現）
+  function auditUnack(btn) {
+    var ackId = btn.dataset.id;
+    if (!confirm('解除後該筆物件下次體檢會再出現，確定？')) return;
+    fetch('/api/access-data-audit/acks/' + ackId, {method:'DELETE'})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if (d.ok) {
+          toast('🔓 已解除', 'success');
+          openAuditAcksModal();   // 重載
+          _loadAuditData();        // 主清單也重整
+        } else {
+          toast('❌ ' + (d.error || '失敗'), 'error');
+        }
+      })
+      .catch(function(e){ toast('❌ ' + e.message, 'error'); });
   }
 
   // 開啟忽略規則管理 Modal
