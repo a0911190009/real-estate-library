@@ -1337,6 +1337,10 @@ def _access_norm_val(field, val):
     v = str(val).strip() if val is not None else ""
     if not v:
         return ""
+    # 電話欄位：去非數字字元 + 去前置 0（963060220 vs 0963060220 視為相同）
+    if field in ("行動電話1", "行動電話2", "室內電話1", "室內電話2", "電話"):
+        digits = re.sub(r'\D', '', v)
+        return digits.lstrip('0')
     # 委託編號 / 委託號碼：去 .0、空白；單一編號補零到 6 位（91839 vs 091839 視為相同）
     if field in ("委託編號", "委託號碼"):
         cleaned = re.sub(r'\.0$', '', v).strip()
@@ -1403,6 +1407,35 @@ def _has_building_part(cat):
 def _is_land_category(cat):
     """向後相容：判斷是否含土地部分。"""
     return _has_land_part(cat)
+
+
+def _likely_different_property(od, nd, changed_fields):
+    """判斷 ACCESS 比對命中的兩筆，是不是「同一不動產的不同物件」（不該套用為修改）。
+    場景：同地號的舊屋拆掉重蓋新屋 / 屋主轉售後新屋主再委託 / 同地號老物件已成交、新物件新建。
+    這些 case 雖然 hard_key 相同，但其實是兩個獨立的委託物件，不該被當「修改」直接覆蓋。
+    """
+    # 條件 A：所有權人變動 + 案名變動 + 售價差 > 50%
+    owner_old = str(od.get("所有權人", "") or "").strip()
+    owner_new = str(nd.get("所有權人", "") or "").strip()
+    name_old  = str(od.get("案名", "") or "").strip()
+    name_new  = str(nd.get("案名", "") or "").strip()
+    price_old = _parse_price_num(od.get("售價(萬)"))
+    price_new = _parse_price_num(nd.get("售價(萬)"))
+    owner_changed = owner_old and owner_new and owner_old != owner_new
+    name_changed  = name_old  and name_new  and name_old  != name_new
+    big_price_diff = False
+    try:
+        if isinstance(price_old, (int, float)) and isinstance(price_new, (int, float)) and price_old > 0 and price_new > 0:
+            ratio = abs(price_new - price_old) / max(price_old, price_new)
+            big_price_diff = ratio > 0.5
+    except Exception:
+        pass
+    if owner_changed and name_changed and big_price_diff:
+        return True
+    # 條件 B：差異欄位 ≥ 5（噪音欄位 SKIP_FIELDS 已被排除，剩下都是有意義的）
+    if len(changed_fields) >= 5:
+        return True
+    return False
 
 
 def _parse_date_for_compare(s):
@@ -1914,6 +1947,10 @@ def api_access_compare():
                         "display_name":  od.get("案名", "") or str(matched_orig_k),
                         "changed_fields": changed_fields,
                         "_key":          str(matched_orig_k) + "→" + matched_kind,
+                        "_likely_different": _likely_different_property(od, nd, changed_fields),
+                        "_old_name":     od.get("案名", ""),
+                        "_old_owner":    od.get("所有權人", ""),
+                        "_new_owner":    nd.get("所有權人", ""),
                     })
                     modified_full.append({
                         "row_in_orig": matched_entry["row_number"],
@@ -1973,10 +2010,14 @@ def api_access_compare():
                     modified_display.append({
                         "idx":            midx,
                         "row_in_orig":    orig_entry["row_number"],
-                        "seq":            orig_entry["seq"],
-                        "display_name":   od.get("案名", "") or str(orig_main_key),
-                        "changed_fields": changed_fields,
-                        "_key":           str(orig_main_key) + "→fallback",
+                        "seq":             orig_entry["seq"],
+                        "display_name":    od.get("案名", "") or str(orig_main_key),
+                        "changed_fields":  changed_fields,
+                        "_key":            str(orig_main_key) + "→fallback",
+                        "_likely_different": _likely_different_property(od, nd, changed_fields),
+                        "_old_name":       od.get("案名", ""),
+                        "_old_owner":      od.get("所有權人", ""),
+                        "_new_owner":      nd.get("所有權人", ""),
                     })
                     modified_full.append({
                         "row_in_orig": orig_entry["row_number"],
@@ -11948,6 +11989,9 @@ window.addEventListener('unhandledrejection', function(e) {
       modList.innerHTML = '<p style="color:var(--txs);font-size:13px;">' + (modTotal === 0 ? '✅ 無修改差異' : '（套用時全部 ' + modTotal + ' 筆都會處理）') + '</p>';
     } else {
       var modHtml = d.modified.map(function(item, idx) {
+        // _likely_different 卡片所有欄位也預設不勾（讓使用者主動勾才會套用）
+        var likelyDiffPre = item._likely_different === true;
+        var fieldDefaultChecked = likelyDiffPre ? '' : 'checked';
         // 每個欄位都有自己的勾選框；被鎖定的欄位顯示 🔒，不可勾選
         var fieldsHtml = item.changed_fields.map(function(f, fi) {
           if (f._locked) {
@@ -11963,7 +12007,7 @@ window.addEventListener('unhandledrejection', function(e) {
           }
           return '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:4px;">' +
             '<label style="display:flex;align-items:center;gap:4px;cursor:pointer;min-width:100px;">' +
-            '<input type="checkbox" class="ac-field-cb" data-card-idx="' + idx + '" data-field-idx="' + fi + '" checked' +
+            '<input type="checkbox" class="ac-field-cb" data-card-idx="' + idx + '" data-field-idx="' + fi + '" ' + fieldDefaultChecked +
             ' onchange="_acFieldCbChange(this,' + idx + ')" style="flex-shrink:0;">' +
             '<span style="font-size:11px;color:var(--txm);">' + _escHtml(f.field) + '</span>' +
             '</label>' +
@@ -11975,9 +12019,20 @@ window.addEventListener('unhandledrejection', function(e) {
             'style="font-size:10px;padding:1px 6px;border:1px solid var(--bd);border-radius:4px;background:var(--bg);color:var(--txs);cursor:pointer;flex-shrink:0;">🔒鎖定</button>' +
             '</div>';
         }).join('');
-        return '<div style="border:1px solid var(--bd);border-radius:8px;padding:10px 12px;background:var(--bg-t);" data-name="' + _escHtml(item.display_name) + '">' +
+        // _likely_different = 同地號但所有權人/案名/售價差異大 → 可能是不同物件，預設不勾選 + 紅色警告
+        var likelyDiff = item._likely_different === true;
+        var checkedAttr = likelyDiff ? '' : 'checked';
+        var cardBg = likelyDiff ? 'rgba(239,68,68,0.06)' : 'var(--bg-t)';
+        var cardBorder = likelyDiff ? '1px solid rgba(239,68,68,0.4)' : '1px solid var(--bd)';
+        var warnBanner = likelyDiff
+          ? '<div style="background:rgba(239,68,68,0.15);color:#dc2626;padding:6px 10px;border-radius:6px;font-size:11px;font-weight:700;margin-bottom:6px;line-height:1.5;">⚠️ 可能是「同地號的不同物件」（同一塊地不同委託）— 已預設取消勾選，建議跳過或逐欄檢視<br>'
+          + (item._old_owner || item._new_owner ? '<span style="font-weight:400;font-size:10px;color:var(--txs);">所有權人：' + _escHtml(item._old_owner || '(空)') + ' → ' + _escHtml(item._new_owner || '(空)') + '</span>' : '')
+          + '</div>'
+          : '';
+        return '<div style="border:' + cardBorder + ';border-radius:8px;padding:10px 12px;background:' + cardBg + ';" data-name="' + _escHtml(item.display_name) + '">' +
+          warnBanner +
           '<div style="display:flex;gap:8px;align-items:flex-start;">' +
-          '<input type="checkbox" class="ac-mod-cb" data-idx="' + idx + '" checked onchange="_acModCbChange(this,' + idx + ');_acUpdateApplyCount()" style="margin-top:3px;flex-shrink:0;">' +
+          '<input type="checkbox" class="ac-mod-cb" data-idx="' + idx + '" ' + checkedAttr + ' onchange="_acModCbChange(this,' + idx + ');_acUpdateApplyCount()" style="margin-top:3px;flex-shrink:0;">' +
           '<div style="flex:1;">' +
           '<div style="font-size:13px;font-weight:600;color:var(--tx);margin-bottom:6px;">' +
           _escHtml(item.display_name) +
