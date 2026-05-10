@@ -2770,6 +2770,21 @@ def _do_sync(org_id=None):
         except Exception as ex:
             log.warning(f"索引更新失敗（不影響同步結果）: {ex}")
 
+        # 通知 home-start 對外網站做全量同步（webhook 失敗不影響主流程）
+        try:
+            home_start_url = (os.environ.get("HOME_START_URL") or "").strip()
+            service_key    = (os.environ.get("SERVICE_API_KEY") or "").strip()
+            if home_start_url and service_key:
+                import requests as _req
+                _req.post(
+                    f"{home_start_url.rstrip('/')}/api/sync/full",
+                    headers={"X-Service-Key": service_key},
+                    timeout=8,
+                )
+                log.info("已通知 home-start 全量同步")
+        except Exception as ex:
+            log.warning(f"通知 home-start 失敗（不影響本同步結果）: {ex}")
+
         return result
 
     except Exception as e:
@@ -3107,6 +3122,125 @@ def _is_selling(r):
     if s in ("True", "銷售中", "true", "1"): return True
     if s in ("False", "已下架", "已成交", "false", "0"): return False
     return True  # 無此欄位或其他值，視為銷售中
+
+
+def _notify_home_start(property_id, action="upsert"):
+    """通知 home-start 物件變動（webhook）。失敗不影響主流程。
+    action: upsert（新增/修改）/ unlist（下架）/ delete（刪除）。
+    """
+    home_start_url = (os.environ.get("HOME_START_URL") or "").strip()
+    service_key    = (os.environ.get("SERVICE_API_KEY") or "").strip()
+    if not home_start_url or not service_key or not property_id:
+        return
+    try:
+        import requests as _req
+        _req.post(
+            f"{home_start_url.rstrip('/')}/api/sync/webhook",
+            json={"property_id": str(property_id), "action": action},
+            headers={"X-Service-Key": service_key, "Content-Type": "application/json"},
+            timeout=5,
+        )
+    except Exception as _e:
+        # webhook 失敗不影響本主流程，只記 log
+        print(f"[home-start webhook] {_e}", flush=True)
+
+
+def _public_property_payload(r):
+    """組成對外公開的物件資訊（簡化欄位，不含經紀人/所有權人等內部資訊）。"""
+    if not r:
+        return None
+    coord = (r.get("座標") or "").strip()
+    lat = lng = None
+    if coord and "," in coord:
+        try:
+            parts = coord.split(",")
+            lat = float(parts[0].strip())
+            lng = float(parts[1].strip())
+        except (ValueError, IndexError):
+            pass
+    layout = ""
+    rooms = baths = 0
+    try:
+        rooms = int(r.get("房數") or r.get("房") or 0)
+    except (ValueError, TypeError):
+        pass
+    try:
+        baths = int(r.get("衛數") or r.get("衛") or 0)
+    except (ValueError, TypeError):
+        pass
+    if rooms or baths:
+        layout = f"{rooms or '?'}房{baths or '?'}衛"
+    return {
+        "id":            r.get("id"),
+        "source_id":     r.get("id"),
+        "title":         (r.get("案名") or "").strip(),
+        "address":       (r.get("物件地址") or "").strip(),
+        "area":          (r.get("鄉/市/鎮") or r.get("地區") or "").strip(),
+        "category":      (r.get("物件類別") or "").strip(),
+        "price":         r.get("售價(萬)") or r.get("售價") or None,
+        "building_ping": r.get("建坪") or None,
+        "land_ping":     r.get("地坪") or None,
+        "rooms":         rooms,
+        "baths":         baths,
+        "layout":        layout or (r.get("格局") or ""),
+        "floor":         (r.get("樓層") or r.get("floor") or "").strip(),
+        "age":           r.get("屋齡") or r.get("age") or None,
+        "parking":       (r.get("車位") or "").strip(),
+        "lat":           lat,
+        "lng":           lng,
+        "is_selling":    _is_selling(r),
+    }
+
+
+def _verify_service_key():
+    """跨服務驗證：header X-Service-Key 等於環境變數 SERVICE_API_KEY。"""
+    expected = (os.environ.get("SERVICE_API_KEY") or "").strip()
+    got = (request.headers.get("X-Service-Key") or "").strip()
+    return bool(expected) and got == expected
+
+
+# ── 對外公開 API（給 home-start 同步用，需 X-Service-Key）──
+
+@app.route("/api/public/properties", methods=["GET"])
+def api_public_properties():
+    """回傳所有銷售中物件的簡化欄位。home-start 全量同步用。"""
+    if not _verify_service_key():
+        return jsonify({"error": "unauthorized"}), 401
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    items = []
+    try:
+        for doc in db.collection("company_properties").stream():
+            r = doc.to_dict()
+            r["id"] = doc.id
+            if not _is_selling(r):
+                continue
+            payload = _public_property_payload(r)
+            if payload:
+                items.append(payload)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"items": items, "count": len(items)})
+
+
+@app.route("/api/public/properties/<prop_id>", methods=["GET"])
+def api_public_property_one(prop_id):
+    """回傳單筆物件的簡化欄位。home-start webhook 同步單筆用。"""
+    if not _verify_service_key():
+        return jsonify({"error": "unauthorized"}), 401
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    try:
+        doc = db.collection("company_properties").document(prop_id).get()
+        if not doc.exists:
+            return jsonify({"error": "not found"}), 404
+        r = doc.to_dict()
+        r["id"] = doc.id
+        return jsonify(_public_property_payload(r))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # ── 地圖：取得有座標的銷售中物件 ──
@@ -5357,6 +5491,8 @@ def api_company_property_star(prop_id):
         current = doc.to_dict().get("已加星", False)
         new_val = not bool(current)
         doc_ref.update({"已加星": new_val})
+        # 通知 home-start 該物件變動（雖然 star 不顯示，但保持資料新鮮）
+        _notify_home_start(prop_id, action="upsert")
         return jsonify({"starred": new_val})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
