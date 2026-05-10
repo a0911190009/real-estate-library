@@ -1342,12 +1342,15 @@ def _access_norm_val(field, val):
         digits = re.sub(r'\D', '', v)
         return digits.lstrip('0')
     # 竣工日期：兩邊常常一邊是「年/月」一邊是「年/月/日」造成假差異，只比對到「月」
+    # 同時統一民國／西元（< 1911 視為民國，0102 = 民國 102 = 西元 2013）
     if field == "竣工日期":
         s = re.sub(r'[/\-\.\s]+$', '', v).strip()  # 去尾巴 /
-        m = re.match(r'^(\d{2,4})[/\-\.](\d{1,2})', s)
+        m = re.match(r'^(\d{1,4})\s*年\s*(\d{1,2})', s)
+        if not m:
+            m = re.match(r'^(\d{1,4})[/\-\.](\d{1,2})', s)
         if m:
             y, mo = int(m.group(1)), int(m.group(2))
-            if y < 1000:
+            if y < 1911:
                 y += 1911
             return f"{y}/{mo:02d}"
         return v
@@ -1379,17 +1382,17 @@ def _access_norm_val(field, val):
         except Exception:
             return v
     if field in _ACCESS_DATE_FIELDS:
-        # 民國年 → 西元：113年1月15日 → 2024/01/15
-        m = re.match(r'^(\d{2,3})[\s年/\-](\d{1,2})[\s月/\-](\d{1,2})', v)
+        # 民國／西元 統一成西元 YYYY/MM/DD
+        # 涵蓋：「113年1月15日」「102/4/20」「0102/4/20」「2024/04/20」等
+        # 規則：4 位數但 y < 1911 也視為民國年（如 0102 = 民國 102 = 西元 2013）
+        m = re.match(r'^(\d{1,4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})', v)
+        if not m:
+            m = re.match(r'^(\d{1,4})[/\-\.](\d{1,2})[/\-\.](\d{1,2})', v)
         if m:
             y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-            if y < 1000:
+            if y < 1911:
                 y += 1911
             return f"{y}/{mo:02d}/{d:02d}"
-        # 已是西元格式
-        m2 = re.match(r'^(\d{4})[\-/](\d{1,2})[\-/](\d{1,2})', v)
-        if m2:
-            return f"{m2.group(1)}/{int(m2.group(2)):02d}/{int(m2.group(3)):02d}"
         return v
     # 一般字串：壓縮空白
     return re.sub(r'\s+', ' ', v)
