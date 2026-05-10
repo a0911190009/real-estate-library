@@ -3124,6 +3124,34 @@ def _is_selling(r):
     return True  # 無此欄位或其他值，視為銷售中
 
 
+def _parse_expiry_yyyymmdd(r):
+    """將物件的「委託到期日」解析為 YYYY-MM-DD 字串；無值或無法解析回傳 None。
+    支援格式：民國「115年5月29日」、西元「2026/05/29」、「2026-05-29」。
+    """
+    exp = str(r.get("委託到期日") or "").strip()
+    if not exp:
+        return None
+    import re as _re
+    m = _re.match(r"(\d+)\s*年\s*(\d+)\s*月\s*(\d+)\s*日", exp)
+    if m:
+        yr = int(m.group(1)) + (1911 if int(m.group(1)) < 1000 else 0)
+        return f"{yr:04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    m2 = _re.match(r"(\d{4})[/\-](\d{1,2})[/\-](\d{1,2})", exp)
+    if m2:
+        return f"{int(m2.group(1)):04d}-{int(m2.group(2)):02d}-{int(m2.group(3)):02d}"
+    return None
+
+
+def _is_within_delegation(r):
+    """委託期間內：有「委託到期日」且日期 >= 今天（台灣時區）。"""
+    expiry = _parse_expiry_yyyymmdd(r)
+    if not expiry:
+        return False
+    from datetime import datetime, timezone, timedelta
+    today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+    return expiry >= today
+
+
 def _notify_home_start(property_id, action="upsert"):
     """通知 home-start 物件變動（webhook）。失敗不影響主流程。
     action: upsert（新增/修改）/ unlist（下架）/ delete（刪除）。
@@ -3203,7 +3231,9 @@ def _verify_service_key():
 
 @app.route("/api/public/properties", methods=["GET"])
 def api_public_properties():
-    """回傳所有銷售中物件的簡化欄位。home-start 全量同步用。"""
+    """回傳「銷售中 + 委託期間內」的物件（簡化欄位）。home-start 全量同步用。
+    過期委託（無到期日或到期日 < 今天）不會被列入，確保對外網站只顯示能成交的物件。
+    """
     if not _verify_service_key():
         return jsonify({"error": "unauthorized"}), 401
     db = _get_db()
@@ -3216,6 +3246,8 @@ def api_public_properties():
             r["id"] = doc.id
             if not _is_selling(r):
                 continue
+            if not _is_within_delegation(r):
+                continue  # 委託已到期或無到期日，不對外公開
             payload = _public_property_payload(r)
             if payload:
                 items.append(payload)
@@ -3226,7 +3258,9 @@ def api_public_properties():
 
 @app.route("/api/public/properties/<prop_id>", methods=["GET"])
 def api_public_property_one(prop_id):
-    """回傳單筆物件的簡化欄位。home-start webhook 同步單筆用。"""
+    """回傳單筆物件的簡化欄位。home-start webhook 同步單筆用。
+    若已下架或委託過期，回傳 410 Gone，方便 home-start 知道要下架本地快取。
+    """
     if not _verify_service_key():
         return jsonify({"error": "unauthorized"}), 401
     db = _get_db()
@@ -3238,6 +3272,8 @@ def api_public_property_one(prop_id):
             return jsonify({"error": "not found"}), 404
         r = doc.to_dict()
         r["id"] = doc.id
+        if not _is_selling(r) or not _is_within_delegation(r):
+            return jsonify({"error": "gone"}), 410
         return jsonify(_public_property_payload(r))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
