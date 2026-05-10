@@ -1700,6 +1700,24 @@ def api_access_compare():
         # ── 載入忽略規則（全公司共用）──
         ignore_rules = _ac_load_ignore_rules()  # {(obj_key_str, field, val): doc_id}
 
+        # ── 取兩邊 Sheets 的 sheet_gid（給前端組「📍 列 N」連結用）──
+        orig_sheet_gid = 0
+        new_sheet_gid  = 0
+        try:
+            orig_meta = service.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
+            for s in orig_meta.get("sheets", []):
+                if s["properties"]["title"] == SHEET_NAME:
+                    orig_sheet_gid = s["properties"]["sheetId"]
+                    break
+            new_meta = service.spreadsheets().get(spreadsheetId=new_sheet_id).execute()
+            for s in new_meta.get("sheets", []):
+                title = s["properties"]["title"]
+                if (new_sheet_name and title == new_sheet_name) or (not new_sheet_name):
+                    new_sheet_gid = s["properties"]["sheetId"]
+                    break
+        except Exception:
+            pass  # gid 抓不到不影響主流程，只是連結會 fallback 到 gid=0
+
         # ── 讀原始 Sheets（只取 A~AU 欄，跳過 AV+ 自訂欄）──
         orig_result = service.spreadsheets().values().get(
             spreadsheetId=SHEET_ID,
@@ -1743,9 +1761,16 @@ def api_access_compare():
                 new_header_idx = i
                 break
         new_headers = [h.strip() for h in new_all[new_header_idx]]
-        new_data = [r for r in new_all[new_header_idx + 1:] if any(c.strip() for c in r)]
-        # 過濾重複的 header 行
-        new_data = [r for r in new_data if not (r and r[0].strip() == new_headers[0])]
+        # 同時保留 row 編號（給前端「📍 ACCESS 列 N」連結用）
+        new_data_with_rn = []
+        for i, r in enumerate(new_all[new_header_idx + 1:]):
+            if any(c.strip() for c in r):
+                # 過濾重複的 header 行
+                if r and r[0].strip() == new_headers[0]:
+                    continue
+                new_data_with_rn.append((new_header_idx + 2 + i, r))  # 1-based row number
+        new_row_numbers = [rn for rn, _ in new_data_with_rn]
+        new_data = [r for _, r in new_data_with_rn]
 
         # ── 決定比較欄位（取兩邊 header 的交集，排除資料序號）──
         orig_hdr_set = set(h for h in orig_headers if h)
@@ -1926,6 +1951,7 @@ def api_access_compare():
                     "agent":        nd.get("經紀人", ""),
                     "comm":         nd.get("委託編號", ""),
                     "_key":         str(nd_main_key),
+                    "row_in_new":   new_row_numbers[idx] if idx < len(new_row_numbers) else None,
                 })
                 added_full.append({f: nd.get(f, "") for f in new_headers if f})
             else:
@@ -1953,6 +1979,7 @@ def api_access_compare():
                     modified_display.append({
                         "idx":           midx,
                         "row_in_orig":   matched_entry["row_number"],
+                        "row_in_new":    new_row_numbers[idx] if idx < len(new_row_numbers) else None,
                         "seq":           matched_entry["seq"],
                         "display_name":  od.get("案名", "") or str(matched_orig_k),
                         "changed_fields": changed_fields,
@@ -2016,10 +2043,14 @@ def api_access_compare():
                             "_rule_id": ignore_rules.get(rule_key2, ""),
                         })
                 if changed_fields:
+                    # 從 added_display item 的 idx 取對應的 ACCESS row 編號
+                    new_idx = item.get("idx") if isinstance(item, dict) else None
+                    row_in_new = new_row_numbers[new_idx] if (new_idx is not None and new_idx < len(new_row_numbers)) else None
                     midx = len(modified_display)
                     modified_display.append({
                         "idx":            midx,
                         "row_in_orig":    orig_entry["row_number"],
+                        "row_in_new":     row_in_new,
                         "seq":             orig_entry["seq"],
                         "display_name":    od.get("案名", "") or str(orig_main_key),
                         "changed_fields":  changed_fields,
@@ -2047,6 +2078,7 @@ def api_access_compare():
             d = entry["data"]
             removed_display.append({
                 "seq":          entry["seq"],
+                "row_in_orig":  entry["row_number"],
                 "display_name": d.get("案名", "") or entry["_key"],
                 "comm":         d.get("委託編號", ""),
             })
@@ -2076,6 +2108,11 @@ def api_access_compare():
             "removed":         removed_display[:_DISP_LIMIT],
             "removed_total":   len(removed_display),
             "compare_fields":  compare_fields,
+            # 兩邊 Sheets 的 ID + sheet_gid（給前端組「📍 列 N」連結用）
+            "orig_sheet_id":   SHEET_ID,
+            "orig_sheet_gid":  orig_sheet_gid,
+            "new_sheet_id":    new_sheet_id,
+            "new_sheet_gid":   new_sheet_gid,
             "_diag": {
                 "orig_headers_sample":     orig_headers[:5],
                 "new_headers_sample":      new_headers[:5],
@@ -11982,6 +12019,26 @@ window.addEventListener('unhandledrejection', function(e) {
   }
 
   function _acRenderResults(d) {
+    // 兩邊 Sheets 連結 base（給卡片內 📍 列 N 連結用）
+    var origSid = d.orig_sheet_id || '';
+    var origGid = d.orig_sheet_gid || 0;
+    var newSid  = d.new_sheet_id  || '';
+    var newGid  = d.new_sheet_gid || 0;
+    function _origRowLink(rn) {
+      if (!rn || !origSid) return '';
+      var url = 'https://docs.google.com/spreadsheets/d/' + origSid + '/edit#gid=' + origGid + '&range=A' + rn;
+      return '<a href="' + url + '" target="_blank" rel="noopener" '
+           + 'style="display:inline-flex;align-items:center;gap:2px;padding:2px 7px;border-radius:5px;background:rgba(245,158,11,0.12);color:#d97706;border:1px solid rgba(245,158,11,0.4);font-size:10px;font-weight:700;text-decoration:none;margin-right:4px;" '
+           + 'title="開主頁 Sheets 跳到此列">📍 主頁 ' + rn + '</a>';
+    }
+    function _newRowLink(rn) {
+      if (!rn || !newSid) return '';
+      var url = 'https://docs.google.com/spreadsheets/d/' + newSid + '/edit#gid=' + newGid + '&range=A' + rn;
+      return '<a href="' + url + '" target="_blank" rel="noopener" '
+           + 'style="display:inline-flex;align-items:center;gap:2px;padding:2px 7px;border-radius:5px;background:rgba(99,102,241,0.12);color:#6366f1;border:1px solid rgba(99,102,241,0.4);font-size:10px;font-weight:700;text-decoration:none;margin-right:4px;" '
+           + 'title="開 ACCESS 拷貝 Sheets 跳到此列">📍 ACCESS ' + rn + '</a>';
+    }
+
     // 更新 Tab 計數（顯示實際總筆數）
     var modTotal = d.modified_total || d.modified.length;
     var addTotal = d.added_total   || d.added.length;
@@ -12044,9 +12101,11 @@ window.addEventListener('unhandledrejection', function(e) {
           '<div style="display:flex;gap:8px;align-items:flex-start;">' +
           '<input type="checkbox" class="ac-mod-cb" data-idx="' + idx + '" ' + checkedAttr + ' onchange="_acModCbChange(this,' + idx + ');_acUpdateApplyCount()" style="margin-top:3px;flex-shrink:0;">' +
           '<div style="flex:1;">' +
-          '<div style="font-size:13px;font-weight:600;color:var(--tx);margin-bottom:6px;">' +
-          _escHtml(item.display_name) +
-          (item.seq ? '<span style="font-size:11px;color:var(--txs);font-weight:400;margin-left:6px;">序號 ' + _escHtml(item.seq) + '</span>' : '') +
+          '<div style="font-size:13px;font-weight:600;color:var(--tx);margin-bottom:6px;display:flex;flex-wrap:wrap;align-items:center;gap:4px;">' +
+          '<span>' + _escHtml(item.display_name) + '</span>' +
+          (item.seq ? '<span style="font-size:11px;color:var(--txs);font-weight:400;">序號 ' + _escHtml(item.seq) + '</span>' : '') +
+          _origRowLink(item.row_in_orig) +
+          _newRowLink(item.row_in_new) +
           '</div>' + fieldsHtml +
           (item._key ? '<div style="font-size:10px;color:#888;margin-top:4px;word-break:break-all;">🔑 ' + _escHtml(item._key) + '</div>' : '') +
           '</div></div></div>';
@@ -12062,13 +12121,16 @@ window.addEventListener('unhandledrejection', function(e) {
     } else {
       addList.innerHTML = d.added.map(function(item, idx) {
         return '<div style="border:1px solid var(--bd);border-radius:8px;padding:10px 12px;background:var(--bg-t);">' +
-          '<label style="display:flex;gap:8px;align-items:center;cursor:pointer;">' +
+          '<label style="display:flex;gap:8px;align-items:center;cursor:pointer;flex-wrap:wrap;">' +
           '<input type="checkbox" class="ac-add-cb" data-idx="' + idx + '" checked onchange="_acUpdateApplyCount()" style="flex-shrink:0;">' +
-          '<div>' +
+          '<div style="flex:1;">' +
+          '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">' +
           '<span style="font-size:13px;font-weight:600;color:var(--tx);">' + _escHtml(item.display_name) + '</span>' +
-          (item.price ? '<span style="font-size:11px;color:var(--txs);margin-left:8px;">售價 ' + _escHtml(item.price) + ' 萬</span>' : '') +
-          (item.agent ? '<span style="font-size:11px;color:var(--txs);margin-left:8px;">經紀人 ' + _escHtml(item.agent) + '</span>' : '') +
-          (item.comm  ? '<span style="font-size:11px;color:var(--txs);margin-left:8px;">委託 ' + _escHtml(item.comm) + '</span>' : '') +
+          _newRowLink(item.row_in_new) +
+          '</div>' +
+          (item.price ? '<span style="font-size:11px;color:var(--txs);margin-right:8px;">售價 ' + _escHtml(item.price) + ' 萬</span>' : '') +
+          (item.agent ? '<span style="font-size:11px;color:var(--txs);margin-right:8px;">經紀人 ' + _escHtml(item.agent) + '</span>' : '') +
+          (item.comm  ? '<span style="font-size:11px;color:var(--txs);margin-right:8px;">委託 ' + _escHtml(item.comm) + '</span>' : '') +
           (item._key  ? '<div style="font-size:10px;color:#888;margin-top:3px;word-break:break-all;">🔑 ' + _escHtml(item._key) + '</div>' : '') +
           '</div></label></div>';
       }).join('') + (addTotal > d.added.length ? '<p style="color:#f87171;font-size:12px;margin-top:8px;">⚠️ 筆數超過顯示上限，僅顯示前 ' + d.added.length + ' 筆。請用搜尋框確認後再套用，套用時全部 ' + addTotal + ' 筆都會處理。</p>' : '');
@@ -12080,10 +12142,11 @@ window.addEventListener('unhandledrejection', function(e) {
       remList.innerHTML = '<p style="color:var(--txs);font-size:13px;">' + (remTotal === 0 ? '✅ 無可能下架物件' : '（共 ' + remTotal + ' 筆，請人工確認）') + '</p>';
     } else {
       remList.innerHTML = d.removed.map(function(item) {
-        return '<div style="padding:7px 10px;border-radius:6px;background:var(--bg-t);border:1px solid var(--bd);font-size:12px;color:var(--txm);">' +
-          _escHtml(item.display_name) +
-          (item.comm ? '<span style="color:var(--txs);margin-left:6px;">委託 ' + _escHtml(item.comm) + '</span>' : '') +
-          (item.seq  ? '<span style="color:var(--txs);margin-left:6px;">序號 ' + _escHtml(item.seq) + '</span>' : '') +
+        return '<div style="padding:7px 10px;border-radius:6px;background:var(--bg-t);border:1px solid var(--bd);font-size:12px;color:var(--txm);display:flex;align-items:center;gap:6px;flex-wrap:wrap;">' +
+          '<span>' + _escHtml(item.display_name) + '</span>' +
+          _origRowLink(item.row_in_orig) +
+          (item.comm ? '<span style="color:var(--txs);">委託 ' + _escHtml(item.comm) + '</span>' : '') +
+          (item.seq  ? '<span style="color:var(--txs);">序號 ' + _escHtml(item.seq) + '</span>' : '') +
           '</div>';
       }).join('') + (remTotal > d.removed.length ? '<p style="color:var(--txs);font-size:12px;margin-top:8px;">⚠️ 僅顯示前 ' + d.removed.length + ' 筆，共 ' + remTotal + ' 筆</p>' : '');
     }
