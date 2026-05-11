@@ -2680,6 +2680,80 @@ def api_access_data_audit_delete_rows():
         return jsonify({"error": str(e), "detail": traceback.format_exc()[:500]}), 500
 
 
+@app.route("/api/access-clean-broken-rows", methods=["GET", "POST"])
+def api_access_clean_broken_rows():
+    """一次性清理 ACCESS 套用 bug 造成的破損列：
+    - 條件：非空欄位 <= 2、銷售中欄有值、無案名
+    - 從大到小刪除避免 row 偏移
+    - 僅管理員。GET 預覽（不刪）、POST 實際執行（必須帶 confirm_token）
+    """
+    email, err = _require_user()
+    if err: return jsonify({"error": err[0]}), err[1]
+    if not _is_admin(email): return jsonify({"error": "僅管理員可使用"}), 403
+
+    try:
+        service = _get_sheets_service(timeout=60)
+        meta = service.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
+        sheet_gid = None
+        for s in meta.get("sheets", []):
+            if s["properties"]["title"] == SHEET_NAME:
+                sheet_gid = s["properties"]["sheetId"]; break
+        if sheet_gid is None:
+            return jsonify({"error": f"找不到分頁 {SHEET_NAME}"}), 500
+
+        res = service.spreadsheets().values().get(
+            spreadsheetId=SHEET_ID, range=f"{SHEET_NAME}!A1:AU9999"
+        ).execute()
+        rows = res.get("values", [])
+        if len(rows) < 5:
+            return jsonify({"error": "資料不足"}), 400
+        h = rows[1]
+        name_idx = h.index("案名") if "案名" in h else -1
+        sell_idx = h.index("銷售中") if "銷售中" in h else -1
+        broken_list = []
+        for i, row in enumerate(rows[4:], start=5):
+            if not row: continue
+            non_empty = sum(1 for c in row if c.strip())
+            if non_empty == 0: continue
+            sell_v = (row[sell_idx].strip() if sell_idx >= 0 and sell_idx < len(row) else "")
+            name_v = (row[name_idx].strip() if name_idx >= 0 and name_idx < len(row) else "")
+            if non_empty <= 2 and sell_v and not name_v:
+                broken_list.append(i)
+
+        method = request.method
+        if method == "GET":
+            return jsonify({
+                "ok": True,
+                "preview_only": True,
+                "broken_count": len(broken_list),
+                "broken_rows":  broken_list,
+                "hint":         "POST 同端點 + body {confirm_token:'CONFIRM_CLEAN_BROKEN'} 才會實際刪除"
+            })
+
+        data = request.get_json(silent=True) or {}
+        if data.get("confirm_token") != "CONFIRM_CLEAN_BROKEN":
+            return jsonify({"error": "缺確認 token"}), 400
+
+        # 從大到小刪除
+        requests_body = []
+        for r in sorted(set(broken_list), reverse=True):
+            if r < 5: continue  # 保護表頭
+            requests_body.append({
+                "deleteDimension": {
+                    "range": {"sheetId": sheet_gid, "dimension": "ROWS",
+                              "startIndex": r - 1, "endIndex": r}
+                }
+            })
+        if requests_body:
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=SHEET_ID, body={"requests": requests_body}
+            ).execute()
+        return jsonify({"ok": True, "deleted_count": len(requests_body), "deleted_rows": broken_list})
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "detail": traceback.format_exc()[:500]}), 500
+
+
 @app.route("/api/access-data-audit/duplicates", methods=["GET"])
 def api_access_data_audit_duplicates():
     """主頁 Sheets 重複物件偵測：
