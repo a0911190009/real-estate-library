@@ -2708,16 +2708,19 @@ def api_access_clean_broken_rows():
         if len(rows) < 5:
             return jsonify({"error": "資料不足"}), 400
         h = rows[1]
-        name_idx = h.index("案名") if "案名" in h else -1
-        sell_idx = h.index("銷售中") if "銷售中" in h else -1
+        name_idx  = h.index("案名") if "案名" in h else -1
+        sell_idx  = h.index("銷售中") if "銷售中" in h else -1
+        owner_idx = h.index("所有權人") if "所有權人" in h else -1
         broken_list = []
         for i, row in enumerate(rows[4:], start=5):
             if not row: continue
             non_empty = sum(1 for c in row if c.strip())
             if non_empty == 0: continue
-            sell_v = (row[sell_idx].strip() if sell_idx >= 0 and sell_idx < len(row) else "")
-            name_v = (row[name_idx].strip() if name_idx >= 0 and name_idx < len(row) else "")
-            if non_empty <= 2 and sell_v and not name_v:
+            name_v  = (row[name_idx].strip()  if name_idx  >= 0 and name_idx  < len(row) else "")
+            owner_v = (row[owner_idx].strip() if owner_idx >= 0 and owner_idx < len(row) else "")
+            # broken 判定：無案名 + 無所有權人 + 非空 <= 5
+            # 「有所有權人」的列保留（可能是案名漏填的真實物件）
+            if not name_v and not owner_v and non_empty <= 5:
                 broken_list.append(i)
 
         method = request.method
