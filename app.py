@@ -3545,6 +3545,8 @@ def api_company_properties_search():
     sort_by    = request.args.get("sort", "serial_desc").strip()  # 排序方式
     page       = max(1, int(request.args.get("page", 1)))
     per_page   = min(500, max(1, int(request.args.get("per_page", 20))))
+    # 是否只看「目前在起家對外網站上架」（= 銷售中 + 委託期內）
+    on_home_start_only = request.args.get("on_home_start", "").strip() == "1"
 
     try:
         col = db.collection("company_properties")
@@ -3631,6 +3633,11 @@ def api_company_properties_search():
                 raw = str(r.get("經紀人", ""))
                 return any(ag in raw for ag in agents)
             results = [r for r in results if _agent_match(r)]
+
+        # Python 端：只看「目前在起家對外網站上架」
+        # 條件 = 銷售中 + 委託期內（與 home-start /api/public/properties 篩選邏輯一致）
+        if on_home_start_only:
+            results = [r for r in results if _is_selling(r) and _is_within_delegation(r)]
 
         # ── 同物件多次委託歷史去重：同 hard_key 多筆 → 取「委託日最新」當代表
         # 舊版本壓進 _history 欄位（前端「📜 委託歷史」按鈕展開）
@@ -3722,17 +3729,21 @@ def api_company_properties_search():
             "_history"        # 同物件多次委託歷史（前端展示「📜 委託歷史」用）
         }
         slim = [{k: r[k] for k in card_fields if k in r} for r in page_data]
-        # 補上 id，並將「銷售中」統一轉為布林值，避免前端收到字串導致判斷錯誤
+        # 補上 id、統一「銷售中」布林、加上「目前在起家上架」旗標
+        # （與 home-start /api/public/properties 篩選邏輯一致：銷售中 + 委託期內）
         for orig, s in zip(page_data, slim):
             s["id"] = orig["id"]
-            s["銷售中"] = _is_selling(orig)  # 統一轉布林
+            s["銷售中"] = _is_selling(orig)
+            s["on_home_start"] = _is_selling(orig) and _is_within_delegation(orig)
 
         return jsonify({
             "total": total,
             "page": page,
             "per_page": per_page,
             "pages": (total + per_page - 1) // per_page,
-            "items": slim
+            "items": slim,
+            # 給前端組「在起家上看」連結用（webhook URL 同時也是公開站台 URL）
+            "home_start_url": (os.environ.get("HOME_START_URL") or "").strip().rstrip("/"),
         })
 
     except Exception as e:
@@ -5530,6 +5541,36 @@ def api_company_property_star(prop_id):
         # 通知 home-start 該物件變動（雖然 star 不顯示，但保持資料新鮮）
         _notify_home_start(prop_id, action="upsert")
         return jsonify({"starred": new_val})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/company-properties/<prop_id>/push-to-home-start", methods=["POST"])
+def api_company_property_push_to_home_start(prop_id):
+    """單筆推送該物件到起家對外網站（觸發 home-start 從 library 拉最新資料）。
+    用於：使用者剛改完售價/物件資訊，不想等 daily cron、要立刻反映到對外網站。
+    """
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    if not prop_id:
+        return jsonify({"error": "缺少 property_id"}), 400
+    home_start_url = (os.environ.get("HOME_START_URL") or "").strip()
+    if not home_start_url:
+        return jsonify({"error": "HOME_START_URL 環境變數未設定"}), 500
+    # 同步呼叫 webhook（_notify_home_start 是 fire-and-forget；改成這裡直接 POST 看結果）
+    try:
+        import requests as _req
+        service_key = (os.environ.get("SERVICE_API_KEY") or "").strip()
+        r = _req.post(
+            f"{home_start_url.rstrip('/')}/api/sync/webhook",
+            json={"property_id": str(prop_id), "action": "upsert"},
+            headers={"X-Service-Key": service_key, "Content-Type": "application/json"},
+            timeout=8,
+        )
+        if r.status_code >= 400:
+            return jsonify({"error": f"home-start 回應 {r.status_code}: {r.text[:200]}"}), 502
+        return jsonify({"ok": True, "home_start_response": r.json() if r.text else None})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -7587,6 +7628,11 @@ window.addEventListener('unhandledrejection', function(e) {
         <option value="expired">已過期</option>
         <option value="empty">未填到期日</option>
       </select>
+      <!-- 在「起家」對外網站上架中（後端篩選：銷售中 + 委託期內） -->
+      <label class="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm cursor-pointer transition" style="background:var(--bg-h);border:1px solid var(--bd);color:var(--tx);" title="只看目前公開在起家網站的物件">
+        <input type="checkbox" id="cp-on-home-start" onchange="cpSearch()" style="cursor:pointer;">
+        <span>🏠 在起家</span>
+      </label>
       <!-- 類別複選按鈕 -->
       <div class="relative">
         <button id="cp-cat-btn" onclick="cpToggleDropdown('cat')"
@@ -9549,6 +9595,7 @@ window.addEventListener('unhandledrejection', function(e) {
 
   function cpSearch() {
     _cpPage = 1;
+    var onHsCb = document.getElementById('cp-on-home-start');
     _cpLastQuery = {
       keyword:   document.getElementById('cp-keyword').value.trim(),
       category:  Array.from(_cpSelected.cat).join(','),
@@ -9558,6 +9605,7 @@ window.addEventListener('unhandledrejection', function(e) {
       status:    document.getElementById('cp-status').value,
       agent:     Array.from(_cpSelected.agent).join(','),
       sort:      (document.getElementById('cp-sort') || {}).value || 'serial_desc',
+      on_home_start: (onHsCb && onHsCb.checked) ? '1' : '',
     };
     cpFetch();
   }
@@ -10972,6 +11020,29 @@ window.addEventListener('unhandledrejection', function(e) {
   }
   // ────────────────────────────────────────────────────────────────────
 
+  // 📤 推送單筆物件到 home-start（觸發對外網站立刻拉最新資料）
+  function cpPushToHomeStart(pid, btn) {
+    if (!pid) return;
+    var orig = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '⏳ 推送中…';
+    fetch('/api/company-properties/' + encodeURIComponent(pid) + '/push-to-home-start', { method: 'POST' })
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if (d.ok) {
+          btn.innerHTML = '✅ 已推送';
+          setTimeout(function(){ btn.innerHTML = orig; btn.disabled = false; }, 2000);
+        } else {
+          alert('推送失敗：' + (d.error || '未知錯誤'));
+          btn.innerHTML = orig; btn.disabled = false;
+        }
+      })
+      .catch(function(e){
+        alert('推送失敗：' + (e.message || e));
+        btn.innerHTML = orig; btn.disabled = false;
+      });
+  }
+
   function cpFetch() {
     var list = document.getElementById('cp-list');
     list.innerHTML = '<p class="text-center py-8" style="color:var(--txs);">載入中…</p>';
@@ -11001,7 +11072,7 @@ window.addEventListener('unhandledrejection', function(e) {
           if (page < (data.pages || 1)) {
             return fetchAll(page + 1, all);
           }
-          return { items: all, total: data.total, allLoaded: true };
+          return { items: all, total: data.total, allLoaded: true, home_start_url: data.home_start_url };
         });
     }
 
@@ -11026,6 +11097,9 @@ window.addEventListener('unhandledrejection', function(e) {
           return;
         }
         var items = data.items || [];
+        // home-start 公開站台 URL（給卡片組「在起家上看」連結用）
+        var homeStartUrl = (data.home_start_url || '').replace(/\/$/, '');
+        var hsLandCats = {'農地':1, '建地':1, '道路用地':1};
         if (!items.length) {
           list.innerHTML = '<p class="text-center py-10" style="color:var(--txm);">找不到符合條件的物件</p>';
           document.getElementById('cp-info').classList.add('hidden');
@@ -11262,6 +11336,18 @@ window.addEventListener('unhandledrejection', function(e) {
                   + 'style="font-size:0.75rem;color:#a78bfa;padding:0.125rem 0.5rem;border-radius:0.375rem;border:1px solid rgba(167,139,250,0.4);background:rgba(167,139,250,0.08);cursor:pointer;" '
                   + 'data-prop-id="' + safeId + '" title="此物件過去的委託紀錄（' + hist.length + ' 筆）">📜 歷史 ' + hist.length + '</button>';
           }
+          // 🏠 在起家上看（只在物件目前公開於 home-start 時顯示）
+          if (item.on_home_start && homeStartUrl) {
+            var hsPath = hsLandCats[item['物件類別']] ? '/land/' : '/property/';
+            var hsLink = homeStartUrl + hsPath + safeId;
+            html += '<a href="' + hsLink + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" '
+                  + 'style="font-size:0.75rem;color:#10b981;padding:0.125rem 0.5rem;border-radius:0.375rem;border:1px solid rgba(16,185,129,0.4);background:rgba(16,185,129,0.08);text-decoration:none;" '
+                  + 'title="在起家對外網站開啟此物件">🏠 在起家</a>';
+          }
+          // 📤 推送到起家（立刻把 Library 最新資料推到對外網站，不用等 daily cron）
+          html += '<button class="cp-push-home-btn" data-prop-id="' + safeId + '" '
+                + 'style="font-size:0.75rem;color:var(--ac);padding:0.125rem 0.5rem;border-radius:0.375rem;border:1px solid var(--bd);background:none;cursor:pointer;" '
+                + 'title="立刻把最新售價/資訊推到起家對外網站（5 秒生效）">📤 推送</button>';
           html += '</div>';
           // 帶看摘要區（預設摺疊）
           if (BUYER_URL) {
@@ -11388,6 +11474,13 @@ window.addEventListener('unhandledrejection', function(e) {
         list.querySelectorAll('.cp-detail-btn').forEach(function(el) {
           el.addEventListener('click', function() {
             cpOpenDetail(this.dataset.id);
+          });
+        });
+        // 📤 推送到起家：事件委派
+        list.querySelectorAll('.cp-push-home-btn').forEach(function(btn) {
+          btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            cpPushToHomeStart(this.dataset.propId, this);
           });
         });
     }).catch(function(e) {
