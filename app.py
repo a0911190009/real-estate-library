@@ -4534,7 +4534,17 @@ def api_word_review_analyze():
             csv_by_addr.setdefault(addr, []).append(p)
 
     col  = db.collection("company_properties")
-    docs = list(col.stream())
+    # 委託日過濾（民國 102/1/1）跟 ACCESS 比對 / 同步一致 — 跳過舊物件加速比對
+    MIN_COMMIT = (2013, 1, 1)
+    docs = []
+    review_filtered_old = 0
+    for d in col.stream():
+        rd = d.to_dict() or {}
+        t = _parse_date_smart(rd.get("委託日", ""))
+        if t is not None and t < MIN_COMMIT:
+            review_filtered_old += 1
+            continue
+        docs.append(d)
 
     high, medium, conflict = [], [], []
     matched_comms = set()
@@ -5142,7 +5152,17 @@ def api_word_review_upload_doc():
 
     # 從 Firestore 載入所有物件並建立索引（Word 是主體，Firestore 是查詢對象）
     col     = db.collection("company_properties")
-    db_docs = list(col.stream())
+    # 委託日過濾（民國 102/1/1）跟 ACCESS 比對 / 同步一致 — 跳過舊物件加速比對
+    MIN_COMMIT = (2013, 1, 1)
+    db_docs = []
+    upload_filtered_old = 0
+    for d in col.stream():
+        rd = d.to_dict() or {}
+        t = _parse_date_smart(rd.get("委託日", ""))
+        if t is not None and t < MIN_COMMIT:
+            upload_filtered_old += 1
+            continue
+        db_docs.append(d)
 
     db_by_comm = {}   # 委託編號 → Firestore doc dict
     db_by_name = {}   # 正規案名 → list of Firestore doc dict
