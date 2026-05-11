@@ -287,6 +287,100 @@ def run_full_sync(home_start_url, service_key, threshold=0.6, dry_run=False):
     }
 
 
+# ───── 下架：home-start 已連結 yes319_objno 但 yes319 已沒在賣 → 標記下架 ─────
+def run_unlist_missing(home_start_url, service_key, dry_run=False):
+    """找出 home-start 已連結 yes319_objno 但 yes319 已不存在的物件，標記下架。
+    需要 home-start 有對應的 admin API 或用 webhook 觸發。
+    """
+    if not home_start_url or not service_key:
+        return {"ok": False, "error": "缺少 home_start_url 或 service_key"}
+    started = time.time()
+    # 1. 收集 yes319 現有所有 objno
+    log.info("[unlist] 抓 yes319 列表...")
+    objs_m2 = _crawl_list("m2")
+    objs_m3 = _crawl_list("m3")
+    yes_set = objs_m2 | objs_m3
+    log.info(f"[unlist] yes319 現有 {len(yes_set)} 筆 objno")
+
+    # 2. 拉 home-start 現有物件
+    r = requests.get(f"{home_start_url.rstrip('/')}/api/properties", timeout=15)
+    hs_resp = r.json()
+    hs_items = hs_resp if isinstance(hs_resp, list) else hs_resp.get("items", [])
+
+    # 3. 找出「有 yes319_objno 但已不在 yes319 set 中」的物件
+    to_unlist = []
+    for p in hs_items:
+        objno = p.get("yes319_objno")
+        if objno and objno not in yes_set:
+            to_unlist.append({"id": p["id"], "title": p.get("title", ""),
+                              "objno": objno, "price": p.get("price")})
+    log.info(f"[unlist] 需下架: {len(to_unlist)} 筆")
+
+    if dry_run:
+        return {"ok": True, "dry_run": True, "yes319_total": len(yes_set),
+                "to_unlist": to_unlist, "elapsed_sec": round(time.time() - started, 1)}
+
+    # 4. 透過 home-start 的 sync webhook 標記 unlist
+    unlisted_ok, unlisted_fail = 0, 0
+    for t in to_unlist:
+        try:
+            r = requests.post(
+                f"{home_start_url.rstrip('/')}/api/sync/webhook",
+                json={"property_id": str(t["id"]), "action": "unlist"},
+                headers={"X-Service-Key": service_key, "Content-Type": "application/json"},
+                timeout=10,
+            )
+            if r.status_code == 200:
+                unlisted_ok += 1
+            else:
+                unlisted_fail += 1
+        except Exception as e:
+            unlisted_fail += 1
+            log.warning(f"[unlist] #{t['id']} 失敗：{e}")
+    return {"ok": True, "yes319_total": len(yes_set), "unlisted_ok": unlisted_ok,
+            "unlisted_fail": unlisted_fail, "to_unlist": to_unlist,
+            "elapsed_sec": round(time.time() - started, 1)}
+
+
+# ───── 新增 dry-run：yes319 有但 home-start 沒對應的物件清單 ─────
+def run_create_missing_dryrun(home_start_url, service_key):
+    """列出 yes319 有但 home-start 找不到對應的物件（dry-run，不寫入）。"""
+    started = time.time()
+    objs_m2 = _crawl_list("m2")
+    objs_m3 = _crawl_list("m3")
+    targets = [("m2", o) for o in sorted(objs_m2)] + [("m3", o) for o in sorted(objs_m3)]
+    yes_items = []
+    seen = set()
+    for kind, obj in targets:
+        if obj in seen: continue
+        seen.add(obj)
+        try:
+            yes_items.append(_parse_detail(kind, obj))
+        except Exception:
+            pass
+        time.sleep(0.3)
+
+    r = requests.get(f"{home_start_url.rstrip('/')}/api/properties", timeout=15)
+    hs_resp = r.json()
+    hs_items = hs_resp if isinstance(hs_resp, list) else hs_resp.get("items", [])
+
+    missing = []
+    for yes in yes_items:
+        if any(_score(yes, hs) is not None and _score(yes, hs) >= 0.6 for hs in hs_items):
+            continue
+        missing.append({
+            "objno": yes["objno"], "kind": yes["kind"], "title": yes["title"],
+            "price_wan": yes["price_wan"], "address": yes["address"],
+            "n_photos": len(yes.get("photos", [])),
+            "has_features": bool(yes.get("features")),
+        })
+    return {"ok": True, "yes319_total": len(yes_items),
+            "home_start_total": len(hs_items),
+            "missing_count": len(missing),
+            "missing": missing,
+            "elapsed_sec": round(time.time() - started, 1)}
+
+
 # ───── 補照片：對 home-start 沒照片但有 yes319_objno 的物件，從 yes319 下載照片補上 ─────
 def run_photo_sync(home_start_url, service_key, max_per_prop=15):
     """對 home-start 已連結 yes319 但無照片的物件，從 yes319 下載並上傳照片。"""

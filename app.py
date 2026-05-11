@@ -5931,6 +5931,62 @@ def api_yes319_sync():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/yes319/unlist-missing", methods=["POST"])
+def api_yes319_unlist_missing():
+    """home-start 有 yes319_objno 但 yes319 已不存在的物件 → 標記下架。
+    ?dry_run=1 只回傳要下架的清單，不實際標記。
+    """
+    has_session_auth = False
+    try:
+        email, err = _require_user()
+        if not err: has_session_auth = True
+    except Exception:
+        pass
+    if not has_session_auth:
+        expected_key = (os.environ.get("SERVICE_API_KEY") or "").strip()
+        sent_key = (request.headers.get("X-Service-Key") or "").strip()
+        if not expected_key or sent_key != expected_key:
+            return jsonify({"error": "unauthorized"}), 401
+
+    home_start_url = (os.environ.get("HOME_START_URL") or "").strip()
+    service_key = (os.environ.get("SERVICE_API_KEY") or "").strip()
+    if not home_start_url or not service_key:
+        return jsonify({"error": "HOME_START_URL 或 SERVICE_API_KEY 未設定"}), 500
+    dry_run = (request.args.get("dry_run") or "").strip() in ("1", "true", "yes")
+    try:
+        import yes319_sync
+        return jsonify(yes319_sync.run_unlist_missing(home_start_url, service_key, dry_run=dry_run))
+    except Exception as e:
+        import logging
+        logging.exception("yes319 unlist 失敗")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/yes319/create-missing-preview", methods=["GET", "POST"])
+def api_yes319_create_missing_preview():
+    """預覽 yes319 有但 home-start 沒有的物件清單（dry-run，不寫入）。"""
+    has_session_auth = False
+    try:
+        email, err = _require_user()
+        if not err: has_session_auth = True
+    except Exception:
+        pass
+    if not has_session_auth:
+        expected_key = (os.environ.get("SERVICE_API_KEY") or "").strip()
+        sent_key = (request.headers.get("X-Service-Key") or "").strip()
+        if not expected_key or sent_key != expected_key:
+            return jsonify({"error": "unauthorized"}), 401
+    home_start_url = (os.environ.get("HOME_START_URL") or "").strip()
+    service_key = (os.environ.get("SERVICE_API_KEY") or "").strip()
+    try:
+        import yes319_sync
+        return jsonify(yes319_sync.run_create_missing_dryrun(home_start_url, service_key))
+    except Exception as e:
+        import logging
+        logging.exception("yes319 create preview 失敗")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/yes319/sync-photos", methods=["POST"])
 def api_yes319_sync_photos():
     """從 yes319 下載照片，補到 home-start 那些「有 yes319_objno 但無照片」的物件。"""
@@ -8158,6 +8214,18 @@ window.addEventListener('unhandledrejection', function(e) {
         class="px-4 py-1.5 rounded-lg bg-pink-700 hover:bg-pink-600 text-white text-xs font-semibold transition"
         title="對 home-start 上「有 yes319_objno 但沒有照片」的物件，從 yes319 公司網頁下載照片補上去（每物件最多 15 張）。建議在「同步 yes319 文案」之後執行。">
         📷 補 yes319 照片
+      </button>
+      <!-- 步驟 5.6：下架（yes319 已不存在的物件 → home-start 下架） -->
+      <button id="cp-yes319-unlist-btn" onclick="cpUnlistMissingYes319()"
+        class="px-4 py-1.5 rounded-lg bg-orange-700 hover:bg-orange-600 text-white text-xs font-semibold transition"
+        title="home-start 已連結 yes319_objno 但 yes319 已不存在的物件 → 自動標記下架。會先 dry-run 預覽，確認後才執行。">
+        🚫 下架已撤離 yes319
+      </button>
+      <!-- 步驟 5.7：預覽 yes319 多出來的物件（home-start 沒對到的） -->
+      <button id="cp-yes319-preview-btn" onclick="cpPreviewMissingFromYes319()"
+        class="px-4 py-1.5 rounded-lg bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition"
+        title="預覽 yes319 有但 home-start 對不到的物件（dry-run）。看完清單後再決定要不要批次匯入。">
+        👁 預覽 yes319 缺漏物件
       </button>
       <!-- 說明按鈕 -->
       <button onclick="document.getElementById('cp-sync-help-modal').style.display='flex'"
@@ -12167,6 +12235,70 @@ window.addEventListener('unhandledrejection', function(e) {
         btn.innerHTML = orig; btn.disabled = false;
         toast('同步呼叫失敗：' + e, 'error');
       });
+  }
+
+  // 下架 yes319 已撤離物件：先 dry-run 顯示清單、用戶確認後才實際標記
+  function cpUnlistMissingYes319() {
+    var btn = document.getElementById('cp-yes319-unlist-btn');
+    btn.disabled = true;
+    var orig = btn.innerHTML;
+    btn.innerHTML = '⏳ 預覽中…';
+    fetch('/api/yes319/unlist-missing?dry_run=1', { method: 'POST' })
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        btn.innerHTML = orig; btn.disabled = false;
+        if (d.error) { toast('錯誤：' + d.error, 'error'); return; }
+        if (!d.to_unlist || d.to_unlist.length === 0) {
+          alert('✅ home-start 物件全部都還在 yes319 上，沒有需要下架的');
+          return;
+        }
+        var list = d.to_unlist.map(function(x){
+          return '  #' + x.id + ' [' + x.objno + '] ' + (x.title || '') + (x.price ? ' (' + x.price + '萬)' : '');
+        }).join('\n');
+        if (!confirm('找到 ' + d.to_unlist.length + ' 筆需下架（yes319 已撤離）：\n\n' + list + '\n\n確認下架嗎？（會把 is_selling 設為 False，物件不會從 home-start 列表消失但會標記為已下架）')) {
+          return;
+        }
+        btn.disabled = true; btn.innerHTML = '⏳ 下架中…';
+        fetch('/api/yes319/unlist-missing', { method: 'POST' })
+          .then(function(r){ return r.json(); })
+          .then(function(d2){
+            btn.innerHTML = orig; btn.disabled = false;
+            if (d2.error) { toast('下架失敗：' + d2.error, 'error'); return; }
+            alert('✅ 完成：下架 ' + d2.unlisted_ok + ' 筆（失敗 ' + (d2.unlisted_fail || 0) + '）');
+          })
+          .catch(function(e){ btn.innerHTML = orig; btn.disabled = false; toast('下架呼叫失敗：' + e, 'error'); });
+      })
+      .catch(function(e){ btn.innerHTML = orig; btn.disabled = false; toast('預覽失敗：' + e, 'error'); });
+  }
+
+  // 預覽 yes319 有但 home-start 沒對到的物件清單
+  function cpPreviewMissingFromYes319() {
+    var btn = document.getElementById('cp-yes319-preview-btn');
+    btn.disabled = true;
+    var orig = btn.innerHTML;
+    btn.innerHTML = '⏳ 爬蟲中…約 2-3 分鐘';
+    toast('掃描 yes319 中…', 'info');
+    fetch('/api/yes319/create-missing-preview', { method: 'POST' })
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        btn.innerHTML = orig; btn.disabled = false;
+        if (d.error) { toast('預覽失敗：' + d.error, 'error'); return; }
+        if (!d.missing || d.missing.length === 0) {
+          alert('✅ yes319 全部物件都已對應到 home-start');
+          return;
+        }
+        var preview = d.missing.slice(0, 30).map(function(x, i){
+          return (i+1) + '. [' + x.objno + '] ' + x.kind + ' ' + (x.title || '無案名') + ' | ' + (x.price_wan ? x.price_wan + '萬' : '無價格') + ' | ' + (x.address || '') + ' | ' + x.n_photos + '照' + (x.has_features ? ' ✓特色' : '');
+        }).join('\n');
+        var msg = 'yes319 有 ' + d.yes319_total + ' 筆、home-start ' + d.home_start_total + ' 筆\n'
+          + '需新增到 home-start: ' + d.missing_count + ' 筆\n\n'
+          + '前 30 筆預覽：\n' + preview
+          + (d.missing.length > 30 ? '\n\n... 還有 ' + (d.missing.length - 30) + ' 筆' : '')
+          + '\n\n（這是 dry-run 預覽，未實際寫入。批次匯入功能需另行實作）';
+        alert(msg);
+        console.log('[yes319 missing dump]', d.missing);
+      })
+      .catch(function(e){ btn.innerHTML = orig; btn.disabled = false; toast('預覽呼叫失敗：' + e, 'error'); });
   }
 
   // 從 yes319 下載照片，補到 home-start「有 objno 但無照片」的物件
