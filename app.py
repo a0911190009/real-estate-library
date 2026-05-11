@@ -2462,6 +2462,45 @@ def api_access_data_audit():
     except Exception:
         pass  # ack 載入失敗不影響主流程
 
+    # 建立「資料序號 → 主頁 Sheets row」字典（供前端跳行用）
+    # 主頁的「資料序號」欄在 column AV（96 欄 header 範圍中的第 48 欄）
+    seq_to_main_row = {}
+    main_sheet_gid = 0
+    try:
+        sheets_svc = _get_sheets_service(timeout=20)
+        # 取 sheet gid
+        sheets_meta = sheets_svc.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
+        for s in sheets_meta.get("sheets", []):
+            if s["properties"]["title"] == SHEET_NAME:
+                main_sheet_gid = s["properties"]["sheetId"]; break
+        # 讀整張 sheet header（96 欄）找出資料序號欄
+        full_hdr = sheets_svc.spreadsheets().values().get(
+            spreadsheetId=SHEET_ID, range=f"{SHEET_NAME}!A2:CY2"
+        ).execute().get("values", [[]])[0]
+        seq_col_in_main = None
+        for i, h in enumerate(full_hdr):
+            if h.strip() == "資料序號":
+                seq_col_in_main = i; break
+        if seq_col_in_main is not None:
+            # 用 column letter 算出範圍
+            col_letter = ""
+            n = seq_col_in_main
+            while True:
+                col_letter = chr(65 + n % 26) + col_letter
+                n = n // 26 - 1
+                if n < 0: break
+            seq_result = sheets_svc.spreadsheets().values().get(
+                spreadsheetId=SHEET_ID,
+                range=f"{SHEET_NAME}!{col_letter}5:{col_letter}9999"
+            ).execute()
+            seq_vals = seq_result.get("values", [])
+            for i, row_v in enumerate(seq_vals, start=5):  # 1-based row
+                v = (row_v[0] if row_v else "").strip()
+                if v:
+                    seq_to_main_row[v] = i
+    except Exception:
+        pass  # 找不到 row 不影響體檢，只是沒法跳行
+
     missing = []
     stats = {
         "missing_鄉/市/鎮":    0,
@@ -2514,6 +2553,11 @@ def api_access_data_audit():
                     key = f"missing_{f}" if f != "建號" else "missing_建號（建物）"
                     if key in stats:
                         stats[key] += 1
+                # 用資料序號（= Firestore doc_id）查主頁 Sheets 對應 row
+                main_row = seq_to_main_row.get(str(d.id), None)
+                if main_row is None:
+                    # 試一下 rd.get("資料序號") 字串化版本
+                    main_row = seq_to_main_row.get(str(rd.get("資料序號", "")).strip(), None)
                 missing.append({
                     "doc_id":          d.id,
                     "案名":            rd.get("案名", ""),
@@ -2524,6 +2568,7 @@ def api_access_data_audit():
                     "缺欄位":          visible_fields,
                     "已確認欄位":      hidden_fields,    # 同筆其他欄位已確認的清單（顯示用）
                     "ack_ids":         {f: _audit_ack_id(d.id, f) for f in visible_fields},
+                    "row_in_main":     main_row,         # 主頁 Sheets 對應行（前端跳行用）
                 })
     except Exception as e:
         import traceback
@@ -2536,6 +2581,8 @@ def api_access_data_audit():
         "hidden_count":  hidden,           # 被「已檢查」隱藏的筆數
         "missing":       missing[:1000],   # 最多回 1000 筆，避免 payload 太大
         "stats":         stats,
+        "main_sheet_id":  SHEET_ID,        # 主頁 Sheets ID（供前端組行號連結）
+        "main_sheet_gid": main_sheet_gid,
     })
 
 
@@ -12235,9 +12282,18 @@ window.addEventListener('unhandledrejection', function(e) {
             if (it.已確認欄位 && it.已確認欄位.length) {
               ackedHint = '<span style="color:var(--txm);font-size:10px;margin-left:6px;">（' + it.已確認欄位.map(function(f){return '✓'+f;}).join(' ') + '）</span>';
             }
+            // 主頁 Sheets 跳行連結
+            var rowLink = '';
+            if (it.row_in_main && d.main_sheet_id) {
+              var url = 'https://docs.google.com/spreadsheets/d/' + d.main_sheet_id + '/edit#gid=' + (d.main_sheet_gid || 0) + '&range=A' + it.row_in_main;
+              rowLink = '<a href="' + url + '" target="_blank" rel="noopener" '
+                      + 'style="display:inline-flex;align-items:center;gap:2px;padding:2px 7px;border-radius:5px;background:rgba(245,158,11,0.12);color:#d97706;border:1px solid rgba(245,158,11,0.4);font-size:10px;font-weight:700;text-decoration:none;" '
+                      + 'title="開主頁 Sheets 跳到此列">📍 主頁 ' + it.row_in_main + '</a>';
+            }
             html += '<div style="border:1px solid var(--bd);border-radius:8px;padding:8px 12px;background:var(--bg-s);">';
             html += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;">';
             html += '<strong style="color:var(--tx);">' + (it.案名 || '(無案名)') + '</strong>';
+            if (rowLink) html += rowLink;
             if (it.物件類別) html += '<span style="color:var(--txm);font-size:11px;">[' + it.物件類別 + ']</span>';
             if (it.資料序號) html += '<span style="color:var(--txm);font-size:11px;">序號 ' + it.資料序號 + '</span>';
             if (it.委託編號) html += '<span style="color:var(--txm);font-size:11px;">委託 ' + it.委託編號 + '</span>';
