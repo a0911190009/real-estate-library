@@ -2309,6 +2309,24 @@ def api_access_apply():
                     "values": [[new_val]]
                 })
 
+        # ⚠️ 重要：必須先寫 modified、再做 added 的 insertDimension。
+        # 原因：modified 用 row_in_orig（套用前的列號）；如果先 insert 會把所有資料下移，
+        # 之後 modified 寫入時用舊 row_in_orig 會寫到「插入空白行」的錯誤位置（bug 已造成 40 列受損）。
+        # 修法：先寫 modified（row_in_orig 有效），之後 insertDimension 會連同 modified 寫入的資料一起下移。
+
+        # ── 批次更新修改的欄位（必須先做，row_in_orig 在 insert 前還有效）──
+        modified_count = 0
+        if value_updates:
+            service.spreadsheets().values().batchUpdate(
+                spreadsheetId=SHEET_ID,
+                body={
+                    "valueInputOption": "USER_ENTERED",
+                    "data": value_updates
+                }
+            ).execute()
+            modified_count = len({item.get("row_in_orig") for item in apply_modified
+                                   if item.get("row_in_orig")})
+
         # ── 新增：從 server cache 取完整資料，找最大序號後追加 ──
         added_count = 0
         added_full  = cache.get("added_full", [])
@@ -2391,19 +2409,6 @@ def api_access_apply():
                     }
                 ).execute()
                 added_count = len(new_rows)
-
-        # ── 批次更新修改的欄位 ──
-        modified_count = 0
-        if value_updates:
-            service.spreadsheets().values().batchUpdate(
-                spreadsheetId=SHEET_ID,
-                body={
-                    "valueInputOption": "USER_ENTERED",
-                    "data": value_updates
-                }
-            ).execute()
-            modified_count = len({item.get("row_in_orig") for item in apply_modified
-                                   if item.get("row_in_orig")})
 
         msg = f"已修改 {modified_count} 筆物件"
         if added_count > 0:
