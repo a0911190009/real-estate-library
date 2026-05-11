@@ -12211,7 +12211,7 @@ window.addEventListener('unhandledrejection', function(e) {
   // yes319 公司網頁 → home-start 同步（爬蟲+比對+推送，3-5 分鐘）
   function cpSyncYes319() {
     var btn = document.getElementById('cp-yes319-btn');
-    if (!confirm('將爬公司 yes319 網頁（約 170 筆）→ 比對 home-start → 自動推送特色說明/生活機能/屋齡/樓層。\n預計 3-5 分鐘，期間請勿關閉頁面。\n\n確認執行？')) return;
+    if (!confirm('將爬公司 yes319 網頁（約 170 筆）→ 比對 home-start → 自動推送特色說明/生活機能/屋齡/樓層。\\n預計 3-5 分鐘，期間請勿關閉頁面。\\n\\n確認執行？')) return;
     btn.disabled = true;
     var orig = btn.innerHTML;
     btn.innerHTML = '⏳ 同步中…請稍候 3-5 分鐘';
@@ -12221,13 +12221,13 @@ window.addEventListener('unhandledrejection', function(e) {
       .then(function(d){
         btn.innerHTML = orig; btn.disabled = false;
         if (d.error) { toast('同步失敗：' + d.error, 'error'); return; }
-        var msg = '✅ yes319 同步完成\n\n'
-          + '爬取 yes319: ' + d.yes319_crawled + ' 筆（失敗 ' + d.yes319_fails + '）\n'
-          + 'home-start 物件: ' + d.home_start_total + ' 筆\n'
-          + '高信心配對: ' + d.matched + ' 對\n'
-          + '需人工確認: ' + d.suspect + ' 對\n'
-          + '無對應物件: ' + d.unmatched + ' 筆\n'
-          + '成功推送: ' + d.pushed_ok + ' 筆（失敗 ' + d.pushed_fail + '）\n'
+        var msg = '✅ yes319 同步完成\\n\\n'
+          + '爬取 yes319: ' + d.yes319_crawled + ' 筆（失敗 ' + d.yes319_fails + '）\\n'
+          + 'home-start 物件: ' + d.home_start_total + ' 筆\\n'
+          + '高信心配對: ' + d.matched + ' 對\\n'
+          + '需人工確認: ' + d.suspect + ' 對\\n'
+          + '無對應物件: ' + d.unmatched + ' 筆\\n'
+          + '成功推送: ' + d.pushed_ok + ' 筆（失敗 ' + d.pushed_fail + '）\\n'
           + '耗時: ' + d.elapsed_sec + ' 秒';
         alert(msg);
       })
@@ -12254,8 +12254,8 @@ window.addEventListener('unhandledrejection', function(e) {
         }
         var list = d.to_unlist.map(function(x){
           return '  #' + x.id + ' [' + x.objno + '] ' + (x.title || '') + (x.price ? ' (' + x.price + '萬)' : '');
-        }).join('\n');
-        if (!confirm('找到 ' + d.to_unlist.length + ' 筆需下架（yes319 已撤離）：\n\n' + list + '\n\n確認下架嗎？（會把 is_selling 設為 False，物件不會從 home-start 列表消失但會標記為已下架）')) {
+        }).join('\\n');
+        if (!confirm('找到 ' + d.to_unlist.length + ' 筆需下架（yes319 已撤離）：\\n\\n' + list + '\\n\\n確認下架嗎？（會把 is_selling 設為 False，物件不會從 home-start 列表消失但會標記為已下架）')) {
           return;
         }
         btn.disabled = true; btn.innerHTML = '⏳ 下架中…';
@@ -12289,12 +12289,12 @@ window.addEventListener('unhandledrejection', function(e) {
         }
         var preview = d.missing.slice(0, 30).map(function(x, i){
           return (i+1) + '. [' + x.objno + '] ' + x.kind + ' ' + (x.title || '無案名') + ' | ' + (x.price_wan ? x.price_wan + '萬' : '無價格') + ' | ' + (x.address || '') + ' | ' + x.n_photos + '照' + (x.has_features ? ' ✓特色' : '');
-        }).join('\n');
-        var msg = 'yes319 有 ' + d.yes319_total + ' 筆、home-start ' + d.home_start_total + ' 筆\n'
-          + '需新增到 home-start: ' + d.missing_count + ' 筆\n\n'
-          + '前 30 筆預覽：\n' + preview
-          + (d.missing.length > 30 ? '\n\n... 還有 ' + (d.missing.length - 30) + ' 筆' : '')
-          + '\n\n（這是 dry-run 預覽，未實際寫入。批次匯入功能需另行實作）';
+        }).join('\\n');
+        var msg = 'yes319 有 ' + d.yes319_total + ' 筆、home-start ' + d.home_start_total + ' 筆\\n'
+          + '需新增到 home-start: ' + d.missing_count + ' 筆\\n\\n'
+          + '前 30 筆預覽：\\n' + preview
+          + (d.missing.length > 30 ? '\\n\\n... 還有 ' + (d.missing.length - 30) + ' 筆' : '')
+          + '\\n\\n（這是 dry-run 預覽，未實際寫入。批次匯入功能需另行實作）';
         alert(msg);
         console.log('[yes319 missing dump]', d.missing);
       })
@@ -12304,7 +12304,7 @@ window.addEventListener('unhandledrejection', function(e) {
   // 從 yes319 下載照片，補到 home-start「有 objno 但無照片」的物件
   function cpSyncYes319Photos() {
     var btn = document.getElementById('cp-yes319-photo-btn');
-    if (!confirm('將對 home-start 上「有 yes319_objno 但無照片」的物件，從 yes319 下載照片補上。\n（建議先按過「同步 yes319 文案」連結 objno）\n\n每物件最多 15 張、預計 3-5 分鐘。確認執行？')) return;
+    if (!confirm('將對 home-start 上「有 yes319_objno 但無照片」的物件，從 yes319 下載照片補上。\\n（建議先按過「同步 yes319 文案」連結 objno）\\n\\n每物件最多 15 張、預計 3-5 分鐘。確認執行？')) return;
     btn.disabled = true;
     var orig = btn.innerHTML;
     btn.innerHTML = '⏳ 補照片中…';
@@ -12314,9 +12314,9 @@ window.addEventListener('unhandledrejection', function(e) {
       .then(function(d){
         btn.innerHTML = orig; btn.disabled = false;
         if (d.error) { toast('補照片失敗：' + d.error, 'error'); return; }
-        var msg = '✅ yes319 補照片完成\n\n'
-          + '處理物件: ' + d.targets + ' 筆\n'
-          + '上傳照片: ' + d.total_uploaded + ' 張（失敗 ' + (d.total_failed || 0) + ' 張）\n'
+        var msg = '✅ yes319 補照片完成\\n\\n'
+          + '處理物件: ' + d.targets + ' 筆\\n'
+          + '上傳照片: ' + d.total_uploaded + ' 張（失敗 ' + (d.total_failed || 0) + ' 張）\\n'
           + '耗時: ' + d.elapsed_sec + ' 秒';
         alert(msg);
       })
