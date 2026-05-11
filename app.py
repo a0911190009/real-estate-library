@@ -1422,6 +1422,40 @@ def _is_land_category(cat):
     return _has_land_part(cat)
 
 
+def _dates_equivalent(a, b):
+    """判斷兩個日期字串是否「民國/西元」等效。涵蓋幾種混雜情境：
+    - '95/4/22' vs '2006/4/22'（民國 vs 西元，差 1911）
+    - '1995/4/22' vs '95/4/22'（主頁 Sheets 自動加 19 前綴，實際是民國 95，後兩碼相等）
+    - '0095/4/22' vs '95/4/22'（零填充）
+    """
+    def _to_tuple(v):
+        s = str(v or "").strip()
+        if not s:
+            return None
+        m = (re.match(r'^(\d{1,4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})', s) or
+             re.match(r'^(\d{1,4})[/\-\.](\d{1,2})[/\-\.](\d{1,2})', s))
+        if not m:
+            return None
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    ta, tb = _to_tuple(a), _to_tuple(b)
+    if not ta or not tb:
+        return False
+    if ta[1] != tb[1] or ta[2] != tb[2]:
+        return False  # 月日必須相同
+    ya, yb = ta[0], tb[0]
+    if ya == yb:
+        return True
+    # 民國 vs 西元（差 1911）
+    if abs(ya - yb) == 1911:
+        return True
+    # 一邊「19XX」（被 Sheets 自動加 19）、另一邊「XX」民國 → 後兩碼相等
+    if ya >= 1900 and ya < 2000 and yb < 1000 and (ya % 100) == (yb % 100):
+        return True
+    if yb >= 1900 and yb < 2000 and ya < 1000 and (yb % 100) == (ya % 100):
+        return True
+    return False
+
+
 def _likely_different_property(od, nd, changed_fields):
     """判斷 ACCESS 比對命中的兩筆，是不是「同一不動產的不同物件」（不該套用為修改）。
     場景：同地號的舊屋拆掉重蓋新屋 / 屋主轉售後新屋主再委託 / 同地號老物件已成交、新物件新建。
@@ -1967,6 +2001,10 @@ def api_access_compare():
                     nv = _access_norm_val(field, nd.get(field, ""))
                     ov = _access_norm_val(field, od.get(field, ""))
                     if nv != ov:
+                        # 日期欄位：嘗試民國/西元等效（1995 vs 95、95 vs 2006 等視為相同）
+                        if field in _ACCESS_DATE_FIELDS or field == "竣工日期":
+                            if _dates_equivalent(nd.get(field, ""), od.get(field, "")):
+                                continue
                         raw_new = nd.get(field, "")
                         rule_key = (obj_key_str, field, raw_new.strip())
                         is_locked = rule_key in ignore_rules
@@ -2035,6 +2073,10 @@ def api_access_compare():
                     nv = _access_norm_val(field, nd.get(field, ""))
                     ov = _access_norm_val(field, od.get(field, ""))
                     if nv != ov:
+                        # 日期欄位：嘗試民國/西元等效
+                        if field in _ACCESS_DATE_FIELDS or field == "竣工日期":
+                            if _dates_equivalent(nd.get(field, ""), od.get(field, "")):
+                                continue
                         raw_new = nd.get(field, "")
                         rule_key2 = (obj_key_str2, field, raw_new.strip())
                         is_locked2 = rule_key2 in ignore_rules
