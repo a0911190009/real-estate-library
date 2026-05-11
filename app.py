@@ -2834,10 +2834,23 @@ def _do_sync(org_id=None):
 
         col = db.collection("company_properties")
 
-        # 讀取現有 Firestore 文件 ID 集合，用來偵測已刪除的資料
-        existing_ids = {doc.id for doc in col.select([]).stream()}
+        # 委託日過濾門檻（民國 102/1/1 = 西元 2013/1/1）— 同步只處理此日後物件，省時
+        # 對於既有 Firestore 中 < 2013/1/1 的舊物件：不更新、也不刪除（保留歷史）
+        MIN_COMMIT = (2013, 1, 1)
+        commit_col_idx = None
+        for i, h in enumerate(headers):
+            if h == "委託日":
+                commit_col_idx = i
+                break
 
-        written = skipped = deleted = 0
+        # 讀取既有 Firestore 文件 ID + 委託日（供 to_delete 階段判斷保留舊資料）
+        existing_with_date = {}
+        for doc in col.stream():
+            rec = doc.to_dict() or {}
+            existing_with_date[doc.id] = _parse_date_smart(rec.get("委託日", ""))
+        existing_ids = set(existing_with_date.keys())
+
+        written = skipped = deleted = skipped_old = preserved_old = 0
         seen_ids = set()
 
         for row in data_rows:
@@ -2846,6 +2859,16 @@ def _do_sync(org_id=None):
             if not seq or not seq.isdigit():
                 skipped += 1
                 continue
+
+            # 委託日過濾：< 2013/1/1 → 跳過寫入（省時），但放入 seen_ids 避免被誤刪
+            # 委託日空白者保留處理
+            if commit_col_idx is not None:
+                commit_v = row[commit_col_idx] if commit_col_idx < len(row) else ""
+                t = _parse_date_smart(commit_v)
+                if t is not None and t < MIN_COMMIT:
+                    skipped_old += 1
+                    seen_ids.add(seq)
+                    continue
 
             doc_id = seq
             seen_ids.add(doc_id)
@@ -2861,8 +2884,13 @@ def _do_sync(org_id=None):
                 log.info(f"進度：{written}/{len(data_rows)}")
 
         # 刪除 Firestore 中已不存在於 Sheets 的文件（避免髒資料）
+        # 但 < 2013/1/1 的舊物件保留不刪（使用者「先用一段時間再說」原則）
         to_delete = existing_ids - seen_ids
         for doc_id in to_delete:
+            ed = existing_with_date.get(doc_id)
+            if ed is None or ed < MIN_COMMIT:
+                preserved_old += 1
+                continue
             col.document(doc_id).delete()
             deleted += 1
 
