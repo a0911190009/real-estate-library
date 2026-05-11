@@ -3660,6 +3660,11 @@ def api_company_properties_search():
     per_page   = min(500, max(1, int(request.args.get("per_page", 20))))
     # 是否只看「目前在起家對外網站上架」（= 銷售中 + 委託期內）
     on_home_start_only = request.args.get("on_home_start", "").strip() == "1"
+    # 委託日過濾門檻（預設不過濾，前端傳「2013-01-01」才會啟用）
+    # 邏輯保留，但預設關閉，使用者「先用一段時間再說」（2026-05）
+    min_commit_date_raw = request.args.get("min_commit_date", "").strip()
+    _mcd_m = re.match(r'^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$', min_commit_date_raw)
+    min_commit_tuple = (int(_mcd_m.group(1)), int(_mcd_m.group(2)), int(_mcd_m.group(3))) if _mcd_m else None
 
     try:
         col = db.collection("company_properties")
@@ -3751,6 +3756,19 @@ def api_company_properties_search():
         # 條件 = 銷售中 + 委託期內（與 home-start /api/public/properties 篩選邏輯一致）
         if on_home_start_only:
             results = [r for r in results if _is_selling(r) and _is_within_delegation(r)]
+
+        # ── 委託日過濾（民國 102/1/1 預設，使用者進公司後的記錄才看）──
+        # 委託日 < 門檻 的物件不顯示（保留空白者，避免誤殺）
+        filtered_old_count = 0
+        if min_commit_tuple:
+            kept_results = []
+            for r in results:
+                t = _parse_date_smart(r.get("委託日", ""))
+                if t is None or t >= min_commit_tuple:
+                    kept_results.append(r)
+                else:
+                    filtered_old_count += 1
+            results = kept_results
 
         # ── 同物件多次委託歷史去重：同 hard_key 多筆 → 取「委託日最新」當代表
         # 舊版本壓進 _history 欄位（前端「📜 委託歷史」按鈕展開）
@@ -3855,6 +3873,8 @@ def api_company_properties_search():
             "per_page": per_page,
             "pages": (total + per_page - 1) // per_page,
             "items": slim,
+            "filtered_old_count": filtered_old_count,  # 被「委託日門檻」過濾掉的舊資料筆數
+            "min_commit_date":    min_commit_date_raw if min_commit_tuple else "",
             # 給前端組「在起家上看」連結用（webhook URL 同時也是公開站台 URL）
             "home_start_url": (os.environ.get("HOME_START_URL") or "").strip().rstrip("/"),
         })
