@@ -126,7 +126,24 @@ def _parse_detail(kind, objno):
         "floor_str": _td_after(html, "樓層/樓高"),
         "features": _features(html),
         "amenities": _amenities(html),
+        "photos": _photos_from_html(html),
     }
+
+
+def _photos_from_html(html):
+    """抽 yes319 詳情頁的照片 URL（carousel 內 src）。"""
+    m = re.search(r'class="carousel-inner"\s*>([\s\S]*?)</div>\s*<!--', html, re.S)
+    if not m:
+        return []
+    block = m.group(1)
+    urls = re.findall(r'<img\s+[^>]*?src="(/upload/[^"]+)"', block)
+    seen, result = set(), []
+    for u in urls:
+        full = u if u.startswith("http") else (BASE + u if u.startswith("/") else BASE + "/" + u)
+        if full not in seen:
+            seen.add(full)
+            result.append(full)
+    return result
 
 
 # ───── 比對 ─────
@@ -267,4 +284,86 @@ def run_full_sync(home_start_url, service_key, threshold=0.6, dry_run=False):
         "elapsed_sec": elapsed,
         "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "matched_items": matched[:20],   # 前 20 筆樣本
+    }
+
+
+# ───── 補照片：對 home-start 沒照片但有 yes319_objno 的物件，從 yes319 下載照片補上 ─────
+def run_photo_sync(home_start_url, service_key, max_per_prop=15):
+    """對 home-start 已連結 yes319 但無照片的物件，從 yes319 下載並上傳照片。"""
+    if not home_start_url or not service_key:
+        return {"ok": False, "error": "缺少 home_start_url 或 service_key"}
+    started = time.time()
+    log.info("[yes319-photo] 拉 home-start 物件清單...")
+    r = requests.get(f"{home_start_url.rstrip('/')}/api/properties", timeout=15)
+    hs_resp = r.json()
+    hs_items = hs_resp if isinstance(hs_resp, list) else hs_resp.get("items", [])
+
+    # 找出「有 yes319_objno 但 photos 為空」的物件
+    targets = []
+    for p in hs_items:
+        if p.get("yes319_objno") and not (p.get("photos") or []):
+            targets.append({"id": p["id"], "title": p.get("title", ""), "objno": p["yes319_objno"]})
+    log.info(f"[yes319-photo] 需補照片: {len(targets)} 筆")
+    if not targets:
+        return {"ok": True, "targets": 0, "elapsed_sec": round(time.time() - started, 1)}
+
+    total_uploaded = 0
+    total_failed = 0
+    detail = []
+    for t in targets:
+        # 從 yes319 抓詳情頁的照片清單（試 m2 失敗就 m3）
+        photos = []
+        for kind in ("m2", "m3"):
+            try:
+                html = _fetch(f"{BASE}/{kind}/showobj.php?objno={t['objno']}")
+                if "obj-detail-photo" in html or "carousel-inner" in html:
+                    photos = _photos_from_html(html)
+                    if photos:
+                        break
+            except Exception:
+                continue
+        photos = photos[:max_per_prop]
+        if not photos:
+            detail.append({"id": t["id"], "objno": t["objno"], "uploaded": 0, "skipped": "no yes319 photos"})
+            continue
+
+        n_ok, n_fail = 0, 0
+        for url in photos:
+            try:
+                # 下載圖
+                img_r = requests.get(url, headers={**HEADERS, "Referer": BASE}, timeout=30)
+                img_r.raise_for_status()
+                content = img_r.content
+                # 推到 home-start
+                ext = url.rsplit(".", 1)[-1].split("?")[0].lower()
+                filename = f"yes319_{t['objno']}.{ext}"
+                content_type = img_r.headers.get("Content-Type", "image/jpeg")
+                up = requests.post(
+                    f"{home_start_url.rstrip('/')}/admin/photos/upload",
+                    files={"photo": (filename, content, content_type)},
+                    data={"property_id": str(t["id"])},
+                    headers={"X-Service-Key": service_key},
+                    timeout=60,
+                )
+                if up.status_code == 200:
+                    n_ok += 1
+                else:
+                    n_fail += 1
+                    log.warning(f"[yes319-photo] upload #{t['id']} 失敗 {up.status_code}: {up.text[:200]}")
+            except Exception as e:
+                n_fail += 1
+                log.warning(f"[yes319-photo] download/upload #{t['id']} 失敗：{e}")
+        total_uploaded += n_ok
+        total_failed += n_fail
+        detail.append({"id": t["id"], "title": t["title"], "objno": t["objno"],
+                       "uploaded": n_ok, "failed": n_fail})
+        log.info(f"[yes319-photo] #{t['id']} {t['title']}：{n_ok} 張成功 / {n_fail} 張失敗")
+
+    return {
+        "ok": True,
+        "targets": len(targets),
+        "total_uploaded": total_uploaded,
+        "total_failed": total_failed,
+        "elapsed_sec": round(time.time() - started, 1),
+        "detail": detail,
     }

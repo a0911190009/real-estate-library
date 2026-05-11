@@ -5931,6 +5931,40 @@ def api_yes319_sync():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/yes319/sync-photos", methods=["POST"])
+def api_yes319_sync_photos():
+    """從 yes319 下載照片，補到 home-start 那些「有 yes319_objno 但無照片」的物件。"""
+    has_session_auth = False
+    try:
+        email, err = _require_user()
+        if not err:
+            has_session_auth = True
+    except Exception:
+        pass
+    if not has_session_auth:
+        expected_key = (os.environ.get("SERVICE_API_KEY") or "").strip()
+        sent_key = (request.headers.get("X-Service-Key") or "").strip()
+        if not expected_key or sent_key != expected_key:
+            return jsonify({"error": "unauthorized"}), 401
+
+    home_start_url = (os.environ.get("HOME_START_URL") or "").strip()
+    service_key = (os.environ.get("SERVICE_API_KEY") or "").strip()
+    if not home_start_url or not service_key:
+        return jsonify({"error": "HOME_START_URL 或 SERVICE_API_KEY 未設定"}), 500
+
+    try:
+        import yes319_sync
+        result = yes319_sync.run_photo_sync(
+            home_start_url=home_start_url,
+            service_key=service_key,
+        )
+        return jsonify(result)
+    except Exception as e:
+        import logging
+        logging.exception("yes319 photo sync 失敗")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/company-properties/<prop_id>/showings", methods=["GET"])
 def api_company_property_showings(prop_id):
     """取得該物件的帶看紀錄（從 Buyer 服務共用的 showings collection 查詢）。
@@ -8118,6 +8152,12 @@ window.addEventListener('unhandledrejection', function(e) {
         class="px-4 py-1.5 rounded-lg bg-rose-700 hover:bg-rose-600 text-white text-xs font-semibold transition"
         title="爬公司 yes319 網頁（http://日盛房屋.tw）→ 自動把『業務員手寫的物件特色、生活機能、屋齡、樓層』補到 home-start 對外網站。預計 3-5 分鐘。">
         🌐 同步 yes319 文案
+      </button>
+      <!-- 步驟 5.5：補照片（對有 yes319_objno 但無照片的物件，從 yes319 下載照片補上） -->
+      <button id="cp-yes319-photo-btn" onclick="cpSyncYes319Photos()"
+        class="px-4 py-1.5 rounded-lg bg-pink-700 hover:bg-pink-600 text-white text-xs font-semibold transition"
+        title="對 home-start 上「有 yes319_objno 但沒有照片」的物件，從 yes319 公司網頁下載照片補上去（每物件最多 15 張）。建議在「同步 yes319 文案」之後執行。">
+        📷 補 yes319 照片
       </button>
       <!-- 說明按鈕 -->
       <button onclick="document.getElementById('cp-sync-help-modal').style.display='flex'"
@@ -12126,6 +12166,31 @@ window.addEventListener('unhandledrejection', function(e) {
       .catch(function(e){
         btn.innerHTML = orig; btn.disabled = false;
         toast('同步呼叫失敗：' + e, 'error');
+      });
+  }
+
+  // 從 yes319 下載照片，補到 home-start「有 objno 但無照片」的物件
+  function cpSyncYes319Photos() {
+    var btn = document.getElementById('cp-yes319-photo-btn');
+    if (!confirm('將對 home-start 上「有 yes319_objno 但無照片」的物件，從 yes319 下載照片補上。\n（建議先按過「同步 yes319 文案」連結 objno）\n\n每物件最多 15 張、預計 3-5 分鐘。確認執行？')) return;
+    btn.disabled = true;
+    var orig = btn.innerHTML;
+    btn.innerHTML = '⏳ 補照片中…';
+    toast('yes319 補照片開始，預計 3-5 分鐘…', 'info');
+    fetch('/api/yes319/sync-photos', { method: 'POST' })
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        btn.innerHTML = orig; btn.disabled = false;
+        if (d.error) { toast('補照片失敗：' + d.error, 'error'); return; }
+        var msg = '✅ yes319 補照片完成\n\n'
+          + '處理物件: ' + d.targets + ' 筆\n'
+          + '上傳照片: ' + d.total_uploaded + ' 張（失敗 ' + (d.total_failed || 0) + ' 張）\n'
+          + '耗時: ' + d.elapsed_sec + ' 秒';
+        alert(msg);
+      })
+      .catch(function(e){
+        btn.innerHTML = orig; btn.disabled = false;
+        toast('呼叫失敗：' + e, 'error');
       });
   }
 
