@@ -1485,6 +1485,27 @@ def _likely_different_property(od, nd, changed_fields):
     return False
 
 
+def _parse_date_smart(s):
+    """強化日期解析：自動判斷民國/西元，處理 1995/4/22 = 民國 95 等情境。
+    回傳 (西元年, 月, 日) tuple，無法解析回 None（注意與 _parse_date_for_compare 不同：這裡用 None 代表「無資料」便於過濾判斷）。
+    """
+    s = str(s or "").strip()
+    if not s:
+        return None
+    m = (re.match(r'^(\d{1,4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})', s) or
+         re.match(r'^(\d{1,4})[/\-\.](\d{1,2})[/\-\.](\d{1,2})', s))
+    if not m:
+        return None
+    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if y < 1911:
+        # 民國年（含 4 位數但 < 1911 如 0102）
+        y += 1911
+    elif 1900 <= y < 2000:
+        # 19XX 視為民國 XX（Sheets 自動加 19 前綴）→ 取後 2 碼當民國年
+        y = (y % 100) + 1911
+    return (y, mo, d)
+
+
 def _parse_date_for_compare(s):
     """把日期字串轉成 (年, 月, 日) tuple 供比較。空值或無法解析 → (0,0,0)。
     用於同 hard_bldg 多筆時取委託日較新者。
@@ -1724,6 +1745,14 @@ def api_access_compare():
     data = request.get_json(silent=True) or {}
     raw_input      = (data.get("new_sheet_id") or "").strip()
     new_sheet_name = (data.get("new_sheet_name") or "").strip()
+    # 日期過濾門檻（委託日 < 此日期的物件不參與比對，但保留委託日空白者）
+    # 預設民國 102/1/1 = 西元 2013/01/01（使用者進公司日的同年）
+    min_commit_date_raw = (data.get("min_commit_date") or "2013-01-01").strip()
+    _min_date_match = re.match(r'^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$', min_commit_date_raw)
+    if _min_date_match:
+        min_commit_tuple = (int(_min_date_match.group(1)), int(_min_date_match.group(2)), int(_min_date_match.group(3)))
+    else:
+        min_commit_tuple = None  # 無效格式 → 不過濾
     if not raw_input:
         return jsonify({"error": "請提供新 Sheets 網址或 ID"}), 400
 
@@ -1808,6 +1837,44 @@ def api_access_compare():
                 new_data_with_rn.append((new_header_idx + 2 + i, r))  # 1-based row number
         new_row_numbers = [rn for rn, _ in new_data_with_rn]
         new_data = [r for _, r in new_data_with_rn]
+
+        # ── 委託日過濾（民國 102/1/1 預設）──
+        # 委託日 < 過濾門檻 的物件直接跳過比對（保留委託日空白者）
+        filtered_orig_count = 0
+        filtered_new_count  = 0
+        if min_commit_tuple:
+            # 主頁過濾
+            commit_col_orig = None
+            for i, h in enumerate(orig_headers):
+                if h == "委託日":
+                    commit_col_orig = i; break
+            if commit_col_orig is not None:
+                kept_data, kept_rns = [], []
+                for row, rn in zip(orig_data, orig_row_numbers):
+                    v = row[commit_col_orig] if commit_col_orig < len(row) else ""
+                    t = _parse_date_smart(v)
+                    if t is None or t >= min_commit_tuple:
+                        kept_data.append(row); kept_rns.append(rn)
+                    else:
+                        filtered_orig_count += 1
+                orig_data = kept_data
+                orig_row_numbers = kept_rns
+            # ACCESS 過濾
+            commit_col_new = None
+            for i, h in enumerate(new_headers):
+                if h == "委託日":
+                    commit_col_new = i; break
+            if commit_col_new is not None:
+                kept_data, kept_rns = [], []
+                for row, rn in zip(new_data, new_row_numbers):
+                    v = row[commit_col_new] if commit_col_new < len(row) else ""
+                    t = _parse_date_smart(v)
+                    if t is None or t >= min_commit_tuple:
+                        kept_data.append(row); kept_rns.append(rn)
+                    else:
+                        filtered_new_count += 1
+                new_data = kept_data
+                new_row_numbers = kept_rns
 
         # ── 決定比較欄位（取兩邊 header 的交集，排除資料序號）──
         orig_hdr_set = set(h for h in orig_headers if h)
@@ -2158,6 +2225,10 @@ def api_access_compare():
             "orig_sheet_gid":  orig_sheet_gid,
             "new_sheet_id":    new_sheet_id,
             "new_sheet_gid":   new_sheet_gid,
+            # 委託日過濾結果（讓前端知道濾掉了多少）
+            "min_commit_date":    min_commit_date_raw if min_commit_tuple else "",
+            "filtered_orig_count": filtered_orig_count,
+            "filtered_new_count":  filtered_new_count,
             "_diag": {
                 "orig_headers_sample":     orig_headers[:5],
                 "new_headers_sample":      new_headers[:5],
@@ -8243,9 +8314,14 @@ window.addEventListener('unhandledrejection', function(e) {
               placeholder="貼上 Google Sheets 網址或 ID 都可以"
               style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--bd);background:var(--bg-t);color:var(--tx);font-size:12px;box-sizing:border-box;">
           </div>
-          <div style="width:160px;">
-            <label style="font-size:11px;color:var(--txs);display:block;margin-bottom:4px;">分頁名稱（空白=第一個分頁）</label>
+          <div style="width:130px;">
+            <label style="font-size:11px;color:var(--txs);display:block;margin-bottom:4px;">分頁名稱（空白=第一個）</label>
             <input id="ac-sheet-name" type="text" placeholder="工作表1"
+              style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--bd);background:var(--bg-t);color:var(--tx);font-size:12px;box-sizing:border-box;">
+          </div>
+          <div style="width:160px;">
+            <label style="font-size:11px;color:var(--txs);display:block;margin-bottom:4px;" title="只比對委託日 >= 此日期的物件，空白者也保留">📅 委託日門檻</label>
+            <input id="ac-min-date" type="date" value="2013-01-01"
               style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--bd);background:var(--bg-t);color:var(--tx);font-size:12px;box-sizing:border-box;">
           </div>
           <button id="ac-compare-btn" onclick="accessRunCompare()"
@@ -8253,6 +8329,7 @@ window.addEventListener('unhandledrejection', function(e) {
             開始比對
           </button>
         </div>
+        <p style="margin:6px 0 0;font-size:10px;color:var(--txm);">💡 預設只比對民國 102/1/1（西元 2013/1/1）後的物件，省資源。委託日空白者保留。要比所有資料把日期改成 1900-01-01。</p>
         <div id="ac-loading" style="display:none;padding:10px 0;font-size:13px;color:var(--txs);">⏳ 比對中，請稍候…</div>
       </div>
 
@@ -11849,6 +11926,7 @@ window.addEventListener('unhandledrejection', function(e) {
   function accessRunCompare() {
     var sheetId   = (document.getElementById('ac-sheet-id').value || '').trim();
     var sheetName = (document.getElementById('ac-sheet-name').value || '').trim();
+    var minDate   = (document.getElementById('ac-min-date').value || '').trim();  // YYYY-MM-DD
     if (!sheetId) { toast('請輸入新 Sheets 網址或 ID', 'error'); return; }
 
     var btn = document.getElementById('ac-compare-btn');
@@ -11863,7 +11941,7 @@ window.addEventListener('unhandledrejection', function(e) {
     fetch('/api/access-compare', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ new_sheet_id: sheetId, new_sheet_name: sheetName }),
+      body: JSON.stringify({ new_sheet_id: sheetId, new_sheet_name: sheetName, min_commit_date: minDate }),
       signal: _acAbort.signal
     })
     .then(function(r) { clearTimeout(_acTimer); return r.json(); })
@@ -12357,8 +12435,11 @@ window.addEventListener('unhandledrejection', function(e) {
     document.getElementById('ac-cnt-add').textContent = addTotal;
     document.getElementById('ac-cnt-rem').textContent = remTotal;
 
-    document.getElementById('ac-subtitle').textContent =
-      '修改 ' + modTotal + ' ／ 新增 ' + addTotal + ' ／ 可能下架 ' + remTotal;
+    var subtitle = '修改 ' + modTotal + ' ／ 新增 ' + addTotal + ' ／ 可能下架 ' + remTotal;
+    if ((d.filtered_orig_count || 0) + (d.filtered_new_count || 0) > 0) {
+      subtitle += ' ｜📅 已濾掉舊資料：主頁 ' + (d.filtered_orig_count || 0) + ' 筆 + ACCESS ' + (d.filtered_new_count || 0) + ' 筆';
+    }
+    document.getElementById('ac-subtitle').textContent = subtitle;
 
     // ── 修改列表（一次性 innerHTML，避免 O(n²) 凍結）──
     var modList = document.getElementById('ac-list-mod');
