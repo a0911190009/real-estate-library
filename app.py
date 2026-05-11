@@ -5885,6 +5885,52 @@ def api_company_property_push_to_home_start(prop_id):
         return jsonify({"error": str(e)}), 500
 
 
+# ════════════════════════════════════════════════════════
+# yes319 公司網頁 → home-start 同步（爬蟲 + 比對 + 推送）
+# ════════════════════════════════════════════════════════
+
+@app.route("/api/yes319/sync", methods=["POST"])
+def api_yes319_sync():
+    """從 yes319 公司網頁爬全部委託期內物件、比對 home-start、把特色/機能/屋齡/樓層推到 home-start。
+    需要管理員或登入者觸發；Cloud Scheduler 也可用 X-Service-Key。
+    參數：?dry_run=1 → 只比對不推送（看會配對幾筆）
+    """
+    # 認證：本機/admin session 或 service key（Cloud Scheduler 用）
+    has_session_auth = False
+    try:
+        email, err = _require_user()
+        if not err:
+            has_session_auth = True
+    except Exception:
+        pass
+    if not has_session_auth:
+        # 退而其次：service key
+        expected_key = (os.environ.get("SERVICE_API_KEY") or "").strip()
+        sent_key = (request.headers.get("X-Service-Key") or "").strip()
+        if not expected_key or sent_key != expected_key:
+            return jsonify({"error": "unauthorized"}), 401
+
+    home_start_url = (os.environ.get("HOME_START_URL") or "").strip()
+    service_key = (os.environ.get("SERVICE_API_KEY") or "").strip()
+    if not home_start_url or not service_key:
+        return jsonify({"error": "HOME_START_URL 或 SERVICE_API_KEY 未設定"}), 500
+
+    dry_run = (request.args.get("dry_run") or request.form.get("dry_run") or "").strip() in ("1", "true", "yes")
+
+    try:
+        import yes319_sync
+        result = yes319_sync.run_full_sync(
+            home_start_url=home_start_url,
+            service_key=service_key,
+            dry_run=dry_run,
+        )
+        return jsonify(result)
+    except Exception as e:
+        import logging
+        logging.exception("yes319 sync 失敗")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/company-properties/<prop_id>/showings", methods=["GET"])
 def api_company_property_showings(prop_id):
     """取得該物件的帶看紀錄（從 Buyer 服務共用的 showings collection 查詢）。
@@ -8066,6 +8112,12 @@ window.addEventListener('unhandledrejection', function(e) {
         class="px-4 py-1.5 rounded-lg bg-indigo-700 hover:bg-indigo-600 text-white text-xs font-semibold transition"
         title="【步驟 4】把 Firestore 目前所有物件的「銷售中」狀態，一次回寫到 Google Sheets（只動銷售中欄，不碰其他欄位）。完整流程順序：1.ACCESS比對 → 2.同步Sheets → 3.比對審查 → 4.回寫銷售中。不做這步的話，下次「同步 Sheets」會把 Word 寫的銷售中又打回舊狀態。">
         📤 回寫銷售中
+      </button>
+      <!-- 步驟 5（獨立工作）：yes319 → home-start 同步物件特色、生活機能、屋齡、樓層 -->
+      <button id="cp-yes319-btn" onclick="cpSyncYes319()"
+        class="px-4 py-1.5 rounded-lg bg-rose-700 hover:bg-rose-600 text-white text-xs font-semibold transition"
+        title="爬公司 yes319 網頁（http://日盛房屋.tw）→ 自動把『業務員手寫的物件特色、生活機能、屋齡、樓層』補到 home-start 對外網站。預計 3-5 分鐘。">
+        🌐 同步 yes319 文案
       </button>
       <!-- 說明按鈕 -->
       <button onclick="document.getElementById('cp-sync-help-modal').style.display='flex'"
@@ -12046,6 +12098,35 @@ window.addEventListener('unhandledrejection', function(e) {
         });
       }, 3000);
     }).catch(function(e){ toast('\u547c\u53eb\u5931\u6557: ' + e, 'error'); btn.disabled=false; });
+  }
+
+  // yes319 公司網頁 → home-start 同步（爬蟲+比對+推送，3-5 分鐘）
+  function cpSyncYes319() {
+    var btn = document.getElementById('cp-yes319-btn');
+    if (!confirm('將爬公司 yes319 網頁（約 170 筆）→ 比對 home-start → 自動推送特色說明/生活機能/屋齡/樓層。\n預計 3-5 分鐘，期間請勿關閉頁面。\n\n確認執行？')) return;
+    btn.disabled = true;
+    var orig = btn.innerHTML;
+    btn.innerHTML = '⏳ 同步中…請稍候 3-5 分鐘';
+    toast('yes319 同步開始，預計 3-5 分鐘…', 'info');
+    fetch('/api/yes319/sync', { method: 'POST' })
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        btn.innerHTML = orig; btn.disabled = false;
+        if (d.error) { toast('同步失敗：' + d.error, 'error'); return; }
+        var msg = '✅ yes319 同步完成\n\n'
+          + '爬取 yes319: ' + d.yes319_crawled + ' 筆（失敗 ' + d.yes319_fails + '）\n'
+          + 'home-start 物件: ' + d.home_start_total + ' 筆\n'
+          + '高信心配對: ' + d.matched + ' 對\n'
+          + '需人工確認: ' + d.suspect + ' 對\n'
+          + '無對應物件: ' + d.unmatched + ' 筆\n'
+          + '成功推送: ' + d.pushed_ok + ' 筆（失敗 ' + d.pushed_fail + '）\n'
+          + '耗時: ' + d.elapsed_sec + ' 秒';
+        alert(msg);
+      })
+      .catch(function(e){
+        btn.innerHTML = orig; btn.disabled = false;
+        toast('同步呼叫失敗：' + e, 'error');
+      });
   }
 
   // 一鍵回寫 Firestore 銷售中 → Google Sheets
