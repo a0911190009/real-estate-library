@@ -2870,18 +2870,39 @@ def api_access_data_audit_duplicates():
         for k, items in key_groups.items():
             if len(items) < 2:
                 continue
-            # 完全重複條件：同委託編號 AND 同委託日（含都為空的也算）
-            comm_set = set(it["comm"] for it in items)
-            date_set = set(it["commit_date"] for it in items)
-            if len(comm_set) == 1 and len(date_set) == 1:
+            # 群內按 (委編, 委託日) 再分子群 — 同 hard_key 內同 (委編,日) 出現 ≥2 次的列就是完全重複；
+            # 其他列（不同委編或不同日）才當歷史版本。
+            # 修這個 bug：「皇家大樓一樓」3 列同 hard_key（14、15 完全重複；388 是舊版），
+            # 之前整群被歸 history → 列 14/15 沒進完全重複區。
+            from collections import defaultdict as _dd
+            sub = _dd(list)
+            for it in items:
+                sub[(it["comm"], it["commit_date"])].append(it)
+
+            exact_items_in_group = []  # 屬於完全重複的列（合併同 hard_key 內所有子群的「重複多餘列」）
+            unique_reps          = []  # 每個 (委編,日) 子群挑一筆代表（給歷史版本用）
+
+            for sub_key, sub_items in sub.items():
+                if len(sub_items) >= 2:
+                    # 完全重複子群：整組丟進 exact_dup_groups
+                    exact_items_in_group.extend(sub_items)
+                    # 留一筆當代表（保留列號最小者，留作歷史 representative）
+                    sub_items_sorted = sorted(sub_items, key=lambda x: x["row"])
+                    unique_reps.append(sub_items_sorted[0])
+                else:
+                    unique_reps.append(sub_items[0])
+
+            if exact_items_in_group:
+                # 同 hard_key 的完全重複另成一群（一次刪掉同群多餘列，前端可分群顯示）
                 exact_dup_groups.append({
                     "key":   str(k),
-                    "items": items,
+                    "items": exact_items_in_group,
                 })
-            else:
-                # 歷史版本：按委託日排序，最新者標 is_latest=True
+
+            # 不同 (委編,日) 的列才是歷史版本，需要 ≥ 2 個不同 (委編,日) 才算歷史
+            if len(unique_reps) >= 2:
                 sorted_items = sorted(
-                    items,
+                    unique_reps,
                     key=lambda x: _parse_date_for_compare(x["commit_date"]),
                     reverse=True
                 )
@@ -4915,6 +4936,10 @@ def api_word_review_ai_match():
             "經紀人":   str(rd.get("經紀人", "") or ""),
             "售價":     rd.get("售價(萬)") if rd.get("售價(萬)") is not None else rd.get("售價萬", ""),
             "委託編號": str(rd.get("委託編號", "") or ""),
+            # 硬資料：面積（給 AI 用來辨別「不同物件」）— 不一致 > 20% 就一定不同
+            "地坪":     str(rd.get("地坪", "") or ""),
+            "建坪":     str(rd.get("建坪", "") or ""),
+            "室內坪":   str(rd.get("室內坪", "") or ""),
         })
 
     def _split_agents(s):
@@ -4936,6 +4961,10 @@ def api_word_review_ai_match():
         csv_agent = item.get("csv_agent", "")
         csv_comm  = str(item.get("csv_comm", "") or "")
         csv_expiry= item.get("csv_expiry", "")
+        # Word 端面積（給 AI 比對用）
+        csv_land     = item.get("csv_land", "")
+        csv_build    = item.get("csv_build", "")
+        csv_interior = item.get("csv_interior", "")
 
         # 候選篩選（兩階段）：
         # 1. 經紀人有交集 → 加入候選池
@@ -4966,9 +4995,9 @@ def api_word_review_ai_match():
             })
             continue
 
-        # 建 prompt
+        # 建 prompt（含面積：地坪/建坪/室內坪 — 面積差 > 20% 一定不是同物件）
         cand_list = "\n".join([
-            f"  [{i+1}] doc_id={c[0]['doc_id']} | 案名：{c[0]['案名']} | 地址：{c[0]['物件地址']} | 類別：{c[0]['物件類別']} | 經紀人：{c[0]['經紀人']} | 售價：{c[0]['售價']} | 委託編號：{c[0]['委託編號']}"
+            f"  [{i+1}] doc_id={c[0]['doc_id']} | 案名：{c[0]['案名']} | 地址：{c[0]['物件地址']} | 類別：{c[0]['物件類別']} | 經紀人：{c[0]['經紀人']} | 售價：{c[0]['售價']}萬 | 委編：{c[0]['委託編號']} | 地坪：{c[0].get('地坪','')} | 建坪：{c[0].get('建坪','')} | 室內坪：{c[0].get('室內坪','')}"
             for i, c in enumerate(cands)
         ])
         prompt = (
@@ -4978,18 +5007,20 @@ def api_word_review_ai_match():
             f"  售價：{csv_price}萬\n"
             f"  經紀人：{csv_agent}\n"
             f"  委託編號：{csv_comm}\n"
-            f"  委託到期日：{csv_expiry}\n\n"
+            f"  委託到期日：{csv_expiry}\n"
+            f"  地坪：{csv_land}　建坪：{csv_build}　室內坪：{csv_interior}\n\n"
             "【候選物件清單】\n"
             f"{cand_list}\n\n"
             "請輸出 JSON（嚴格符合此格式，不要多餘文字）：\n"
             '{ "matched_doc_id": "若找到對應的 doc_id 字串；找不到則填 null", '
             '"confidence": 0.0 到 1.0 的數字, '
             '"reason": "30字內的判斷理由（中文）" }\n\n'
-            "判斷原則：\n"
-            "1. 案名去空白後字面相似 + 經紀人有交集 + 售價接近（差<10%） → 高信心 0.8-1.0\n"
-            "2. 案名相似但其他不一致，或經紀人差異大 → 中信心 0.4-0.7\n"
-            "3. 任何明顯不一致（例如售價差很多、案名語意完全不同） → 不配對 null + 低信心\n"
-            "4. 寧可不配對（null）也不要錯配。"
+            "判斷原則（按重要性排序）：\n"
+            "★ 面積是不動產的硬資料 — 同一物件實體面積不會變。地坪/建坪/室內坪若兩邊都有值，差距 > 20% → 一定是不同物件 → 不配對 null。\n"
+            "1. 面積吻合（差 ≤ 5%）+ 案名相似 + 經紀人有交集 + 售價接近 → 高信心 0.8-1.0\n"
+            "2. 面積無資料可驗證、其他軟資料相似 → 中信心 0.4-0.7\n"
+            "3. 面積差距 > 20%，或售價差很多、案名語意完全不同 → 不配對 null + 低信心\n"
+            "4. 寧可不配對（null）也不要錯配 — 案名相似但面積不符是「同段別不同戶」常見情況。"
         )
 
         try:
@@ -5252,10 +5283,14 @@ def api_word_review_upload_doc():
     def _hard_area_score(w_row, d_row):
         """不動產硬資料：面積欄位精確比對（2% 容差）
         同一物件的實體面積不會因換手或改價而改變，是最可靠的比對基準。
-        回傳 (score, has_hard_match)
+        回傳 (score, has_hard_match, has_area_data)
+          - has_hard_match：至少一組面積在 2% 內吻合
+          - has_area_data ：至少一組面積兩邊都有值（不論是否吻合）
+                            → 給上層用來區分「真的無面積」vs「有面積但不符」
         """
         score = 0
         has_hard = False
+        has_area_data = False
         # (Word欄, Firestore欄, 命中加分) — 同一 Firestore 欄只比一次
         pairs = [
             ('地坪',   '地坪',   8),   # 房屋地坪
@@ -5272,12 +5307,13 @@ def api_word_review_upload_doc():
             if not wv or not dv:
                 continue
             checked_db.add(df)
+            has_area_data = True  # 兩邊都有面積資料 → 可以驗證
             if _sm(wv, dv, 0.02):           # 2% 容差：硬資料命中
                 score += pts
                 has_hard = True
             elif not _sm(wv, dv, 0.20):     # 差距超過 20%：幾乎確定是不同物件
                 score -= pts
-        return score, has_hard
+        return score, has_hard, has_area_data
 
     # 從 Firestore 載入所有物件並建立索引（Word 是主體，Firestore 是查詢對象）
     col     = db.collection("company_properties")
@@ -5314,10 +5350,18 @@ def api_word_review_upload_doc():
         key = _nn(dbn)
         if key:
             db_by_name.setdefault(key, []).append(dd)
-        # 地址索引（正規化去空白）
+        # 地址索引（正規化去空白）— 同地址多筆時取「委託日最新」當代表
         dba = re.sub(r'\s+', '', str(dd.get('物件地址', '') or ''))
         if dba and len(dba) >= 6:
-            db_by_addr[dba] = dd
+            existing = db_by_addr.get(dba)
+            if existing is None:
+                db_by_addr[dba] = dd
+            else:
+                old_dt = _parse_date_smart(existing.get("委託日", ""))
+                new_dt = _parse_date_smart(dd.get("委託日", ""))
+                # 新筆有委託日 且 (舊筆沒有 或 新筆較新) → 替換
+                if new_dt is not None and (old_dt is None or new_dt > old_dt):
+                    db_by_addr[dba] = dd
         # 經紀人索引（案名差異大時的兜底）
         dag = str(dd.get("經紀人", "") or "").strip()
         if dag:
@@ -5375,6 +5419,7 @@ def api_word_review_upload_doc():
         key_no_town = key[len(region_nn):] if region_nn else ''
 
         match, match_by, score, name_changed, best_has_hard = None, "", 0, False, False
+        best_has_area = False  # 是否有面積資料可驗證（不論是否吻合）
 
         # 0. 強行配對記憶（優先級最高）
         mem = mem_by_comm.get(comm) or mem_by_name.get(key)
@@ -5423,6 +5468,8 @@ def api_word_review_upload_doc():
                 no_town_cands = [c for c in db_by_name.get(key_no_town, []) if c not in candidates]
                 candidates = candidates + no_town_cands
             best, best_score, best_has_hard = None, -999, False
+            best_has_area = False
+            best_date = (0, 0, 0)
             for cand in candidates:
                 cc_raw = str(cand.get('委託編號', '') or '').strip()
                 try:
@@ -5440,7 +5487,7 @@ def api_word_review_upload_doc():
                     if valid_cc and comm not in valid_cc:
                         continue
                 # 硬資料：面積精確比對（地坪/建坪/室內坪/面積坪，2% 容差）
-                area_sc, has_hard = _hard_area_score(row, cand)
+                area_sc, has_hard, has_area = _hard_area_score(row, cand)
                 s = area_sc
                 # 售價：輔助參考（正常波動不扣重分）
                 dbp = _pn(cand.get('售價(萬)'))
@@ -5450,10 +5497,14 @@ def api_word_review_upload_doc():
                 # 經紀人：軟資料，換手正常 → 只加分不扣分
                 s += _agent_score(cg, agent)
                 if cand.get('委託到期日'): s += 1
-                if s > best_score:
+                # 取最高分；分數相同時偏好「委託日較新」（Word 物件總表是現役清單，應配最新委託）
+                cand_date = _parse_date_smart(cand.get('委託日', '')) or (0, 0, 0)
+                if s > best_score or (s == best_score and cand_date > best_date):
                     best_score = s
                     best = cand
                     best_has_hard = has_hard
+                    best_has_area = has_area
+                    best_date = cand_date
             if best is not None:
                 match = best
                 score = best_score
@@ -5478,7 +5529,7 @@ def api_word_review_upload_doc():
                             # 2字地名相同：處理小地名插入（如「都歷看海農地」vs「都歷豐田看海農地」）
                             or (geo_prefix and len(db_key) >= 4 and db_key[:2] == geo_prefix)):
                         for cand in db_cands:
-                            area_sc, _ = _hard_area_score(row, cand)  # 面積也納入近似候選評分
+                            area_sc, _, _ = _hard_area_score(row, cand)  # 面積也納入近似候選評分
                             s = area_sc
                             s += _agent_score(str(cand.get('經紀人','') or '').strip(), agent)
                             # 售價：相近加分，差距太大扣分（農地 3530萬 vs 建地 220萬 → 必須懲罰）
@@ -5522,7 +5573,7 @@ def api_word_review_upload_doc():
             if near_miss is None and agent:
                 fallback_cands = db_by_agent.get(agent, [])
                 for cand in fallback_cands:
-                    area_sc2, _ = _hard_area_score(row, cand)
+                    area_sc2, _, _ = _hard_area_score(row, cand)
                     s2 = area_sc2
                     s2 += _agent_score(str(cand.get('經紀人', '') or '').strip(), agent)
                     cand_p2 = _effective_price(cand)   # 支援「X/分」農地單價格式
@@ -5660,6 +5711,7 @@ def api_word_review_upload_doc():
             "match_by":      match_by,
             "score":         score,
             "has_hard":      best_has_hard,
+            "has_area":      best_has_area,
             "name_changed":  name_changed,
         }
         # 委託號碼/序號命中或高評分 → 高信心；但地址明顯不符則降中信心
@@ -5683,8 +5735,13 @@ def api_word_review_upload_doc():
             # 有硬資料（面積）且明顯衝突 → 確實是不同物件
             item["conflict_reason"] = f"面積不符（分數 {score}）"
             conflict.append(item)
+        elif best_has_area:
+            # 兩邊都有面積但差距 > 20%（被扣分卻沒命中 2% 容差）→ 也是不同物件
+            # 之前這種情況誤判成「無面積驗證」歸中信心，AI 看不到面積差距還會說同意。
+            item["conflict_reason"] = f"面積不符（分數 {score}，兩邊面積差 > 20%）"
+            conflict.append(item)
         else:
-            # 無面積資料可驗證，僅軟資料不符 → 歸中信心，人工確認
+            # 真的無面積可驗證，僅軟資料不符 → 歸中信心，人工確認
             item["match_by"] = "案名比對（無面積驗證）"
             medium.append(item)
 
