@@ -73,18 +73,30 @@ class EasymapCrawler:
     def locate(self, sect_no, office, land_no):
         """
         用段號 + 辦事處代碼 + 地號取得座標
-        land_no 格式：8碼字串，主號4碼 + 子號4碼（例 0100-0021 → 01000021）
+        land_no 格式：8碼字串，主號 4 碼 + 子號 4 碼
+        例：
+          "0100-0021" → 主號 "0100" + 子號 "0021" → "01000021"
+          "364"       → 主號 "0364" + 子號 "0000" → "03640000"
+          "364-1"     → 主號 "0364" + 子號 "0001" → "03640001"
         回傳 {"lat": ..., "lng": ...} 或 None
         """
         self.init()
-        # 清除地號中的連字號和空白，確保 8 碼
-        land_no_clean = land_no.replace("-", "").replace(" ", "").zfill(8)
+        # 地號分成主號/子號，各 zfill 到 4 碼後拼起來（修正：原本 zfill(8) 會把 "364" 變成 "00000364" 是錯的）
+        raw = str(land_no).strip().replace(" ", "")
+        if "-" in raw:
+            main, sub = raw.split("-", 1)
+        else:
+            main, sub = raw, "0"
+        # 主號/子號只保留數字
+        main = "".join(ch for ch in main if ch.isdigit())
+        sub  = "".join(ch for ch in sub  if ch.isdigit()) or "0"
+        land_no_clean = main.zfill(4) + sub.zfill(4)
         res = self._post("Land_json_locate", {
             "sectNo": sect_no,
             "office": office,
             "landNo": land_no_clean,
         })
-        logger.info("Easymap locate 回應: %s", res)
+        logger.info("Easymap locate 回應 (landNo=%s): %s", land_no_clean, res)
         if res and res.get("X") and res.get("Y"):
             # Easymap 回傳 X=經度、Y=緯度（已是 WGS84，可直接用於 Leaflet）
             return {"lat": float(res["Y"]), "lng": float(res["X"])}

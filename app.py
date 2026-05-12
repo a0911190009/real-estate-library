@@ -1184,21 +1184,37 @@ def _sheets_read_all():
 _easymap_cache = {"cities": None, "towns": {}, "sections": {}}  # in-memory cache
 
 def _easymap_resolve(area, section, landno):
-    """area=鄉/市/鎮（如「成功鎮」）、section=段別（如「忠仁段」）、landno=地號（如 0123-0004 或 123）。
-    回傳 (lat, lng) 或 None。
+    """area=鄉/市/鎮（如「台東」「成功鎮」皆可）、section=段別（如「新田」「新田段」皆可）、
+    landno=地號（如 0123-0004 或 123）。回傳 (lat, lng) 或 None。
+
+    比對規則（重要 bug fix）：
+    - area: easymap 回傳「台東市」，library 資料常寫「台東」（沒後綴）→ 兩邊都剝 市/鎮/鄉/區
+    - section: easymap 回傳「新田段」，library 資料常寫「新田」（沒後綴）→ 兩邊都剝 段
+    - section 可能有多段別（"中濱 掃別"）：取第一個
+    - landno 可能有多地號（"364 359"）：取第一個
+    - 台 ↔ 臺 一律正規化
     """
     if not area or not section or not landno:
         return None
+
+    def _norm_area(s):
+        # 剝 市/鎮/鄉/區 後綴 + 台→臺
+        import re
+        return re.sub(r"[市鎮鄉區]$", "", str(s or "").strip()).replace("台", "臺")
+
+    def _norm_section(s):
+        # 剝 段 後綴 + 台→臺 + 取空格前第一個
+        return str(s or "").split(" ")[0].split(",")[0].strip().rstrip("段").replace("台", "臺")
+
     try:
         from easymap import EasymapCrawler
         c = EasymapCrawler()
         # 一次初始化 cache：縣市清單
         if _easymap_cache["cities"] is None:
             _easymap_cache["cities"] = c.get_cities()
-        # 找台東縣（台 → 臺 正規化）
-        target_city_name = "臺東縣"
+        # 找臺東縣
         city = next((x for x in _easymap_cache["cities"]
-                     if (x.get("name") or "").replace("台", "臺") == target_city_name), None)
+                     if (x.get("name") or "").replace("台", "臺") == "臺東縣"), None)
         if not city:
             return None
         city_code = city.get("id") or city.get("code")
@@ -1206,9 +1222,8 @@ def _easymap_resolve(area, section, landno):
         if city_code not in _easymap_cache["towns"]:
             _easymap_cache["towns"][city_code] = c.get_towns(city_code)
         towns = _easymap_cache["towns"][city_code]
-        area_norm = str(area).replace("台", "臺")
-        town = next((x for x in towns
-                     if (x.get("name") or "").replace("台", "臺") == area_norm), None)
+        area_norm = _norm_area(area)  # "台東" → "臺東"，"成功鎮" → "成功"
+        town = next((x for x in towns if _norm_area(x.get("name")) == area_norm), None)
         if not town:
             return None
         town_code = town.get("id") or town.get("code")
@@ -1217,9 +1232,8 @@ def _easymap_resolve(area, section, landno):
         if sec_key not in _easymap_cache["sections"]:
             _easymap_cache["sections"][sec_key] = c.get_sections(city_code, town_code)
         sections = _easymap_cache["sections"][sec_key]
-        sect_name_norm = str(section).replace("台", "臺")
-        sec = next((s for s in sections
-                    if (s.get("name") or "").replace("台", "臺") == sect_name_norm), None)
+        sect_name_norm = _norm_section(section)  # "新田" 或 "新田段" 都成「新田」
+        sec = next((s for s in sections if _norm_section(s.get("name")) == sect_name_norm), None)
         if not sec:
             return None
         sect_no = sec.get("sectNo") or sec.get("id")
