@@ -9379,8 +9379,9 @@ window.addEventListener('unhandledrejection', function(e) {
 </div>
 
 <!-- 公司物件詳情 Modal -->
+<!-- z-[700]：比 cp-review-modal (z-index:600) 高，避免在審查 modal 內點「序號 #N」開不出來 -->
 <div id="cp-detail-modal" role="dialog" aria-modal="true"
-  class="hidden fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+  class="hidden fixed inset-0 z-[700] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
   onclick="if(event.target===this)closeCpDetail()">
   <div class="w-full max-w-2xl rounded-2xl flex flex-col max-h-[90vh]" style="background:var(--bg-s);border:1px solid var(--bd);box-shadow:var(--sh);"
     onclick="event.stopPropagation()">
