@@ -3720,6 +3720,94 @@ def _verify_service_key():
 
 # ── 對外公開 API（給 home-start 同步用，需 X-Service-Key）──
 
+@app.route("/api/admin/backfill-coords", methods=["POST"])
+def api_admin_backfill_coords():
+    """補座標 API（service-key 認證，給管理腳本/排程用）。
+
+    動作：掃描銷售中 ∧ 有段別+地號 ∧ 座標空白的物件，呼叫 easymap 反查座標，
+    **只寫進 Firestore**「座標」欄位（merge=True），不動 Sheets。
+
+    與 /api/sheets/writeback-selling 內建的「順便補座標」差異：
+    - 不檢查委託期內（多補一些，畢竟 library 自家地圖也想看）
+    - 不寫回 Sheets（最低風險、不動主資料）
+    - 可用 service key 自動觸發（不用人工登入按鈕）
+
+    Query/Body：可加 ?limit=50 限制每次處理筆數（避免一次跑太久）
+    回傳：{ ok, candidates, resolved, failed, written_firestore, details:[...] }
+    """
+    if not _verify_service_key():
+        return jsonify({"error": "unauthorized"}), 401
+
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+
+    try:
+        limit = int(request.args.get("limit") or 0)
+    except (TypeError, ValueError):
+        limit = 0
+
+    # 1) 找出待補座標的物件
+    coord_targets = []  # [(seq, area, section, landno)]
+    skipped_reasons = {"已有座標": 0, "非銷售中": 0, "缺段別/地號": 0, "id 非數字": 0}
+    for doc in db.collection("company_properties").stream():
+        r = doc.to_dict()
+        seq = doc.id
+        if not _is_selling(r):
+            skipped_reasons["非銷售中"] += 1
+            continue
+        if r.get("座標"):
+            skipped_reasons["已有座標"] += 1
+            continue
+        area    = (r.get("鄉/市/鎮") or "").strip()
+        section = (r.get("段別") or "").strip()
+        landno  = (r.get("地號") or "").strip()
+        if not (area and section and landno):
+            skipped_reasons["缺段別/地號"] += 1
+            continue
+        if not (seq and str(seq).isdigit()):
+            skipped_reasons["id 非數字"] += 1
+            continue
+        coord_targets.append((seq, area, section, landno))
+
+    if limit > 0:
+        coord_targets = coord_targets[:limit]
+
+    # 2) 逐筆呼叫 easymap 並寫進 Firestore
+    resolved = 0
+    failed = 0
+    details = []
+    for seq, area, section, landno in coord_targets:
+        coord = _easymap_resolve(area, section, landno)
+        if coord:
+            coord_str = f"{coord[0]:.6f},{coord[1]:.6f}"
+            try:
+                db.collection("company_properties").document(seq).set(
+                    {"座標": coord_str}, merge=True
+                )
+                resolved += 1
+                details.append({"seq": seq, "ok": True, "coord": coord_str})
+            except Exception as e:
+                failed += 1
+                details.append({"seq": seq, "ok": False, "error": f"firestore_write: {e}"})
+        else:
+            failed += 1
+            details.append({
+                "seq": seq, "ok": False,
+                "area": area, "section": section, "landno": landno,
+                "error": "easymap 反查失敗",
+            })
+
+    return jsonify({
+        "ok": True,
+        "candidates": len(coord_targets),
+        "resolved": resolved,
+        "failed": failed,
+        "skipped": skipped_reasons,
+        "details": details[:50],  # 只回前 50 筆細節避免回傳過大
+    })
+
+
 @app.route("/api/public/properties", methods=["GET"])
 def api_public_properties():
     """回傳「銷售中 + 委託期間內」的物件（簡化欄位）。home-start 全量同步用。
