@@ -6056,6 +6056,81 @@ def api_yes319_sync():
         return jsonify({"error": str(e)}), 500
 
 
+# ════════════════════════════════════════════════════════
+# 物件事件歷史（home-start 等子服務的稽核 trail）
+# ════════════════════════════════════════════════════════
+
+@app.route("/api/property-events", methods=["POST"])
+def api_property_events_create():
+    """接收 home-start 等子服務 fire-and-forget 寫入的事件。需 service-key。"""
+    expected = (os.environ.get("SERVICE_API_KEY") or "").strip()
+    sent = (request.headers.get("X-Service-Key") or "").strip()
+    if not expected or sent != expected:
+        return jsonify({"error": "unauthorized"}), 401
+    d = request.get_json(silent=True) or {}
+    pid = str(d.get("property_id") or "").strip()
+    event_type = str(d.get("event_type") or "").strip()
+    if not pid or not event_type:
+        return jsonify({"error": "需要 property_id 和 event_type"}), 400
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    try:
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone(timedelta(hours=8))).isoformat()
+        doc_ref = db.collection("property_events").document()
+        doc_ref.set({
+            "property_id": pid,
+            "event_type":  event_type,
+            "source":      d.get("source") or "unknown",
+            "actor":       d.get("actor") or "",
+            "payload":     d.get("payload") or {},
+            "created_at":  now,
+        })
+        return jsonify({"ok": True, "id": doc_ref.id})
+    except Exception as e:
+        import logging
+        logging.exception("property-events create 失敗")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/property-events", methods=["GET"])
+def api_property_events_list():
+    """查詢某物件的事件歷史。只有陳威良 / admin 看得到。"""
+    email, err = _require_user()
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    pid = str(request.args.get("property_id") or "").strip()
+    if not pid:
+        return jsonify({"error": "需要 property_id"}), 400
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    # 能見性：只有陳威良 / 管理員看完整內容
+    is_owner = (email == "a0911190009@gmail.com") or _is_admin(email)
+    if not is_owner:
+        return jsonify({"items": [], "hidden": True})
+    try:
+        docs = list(db.collection("property_events").where("property_id", "==", pid).stream())
+        items = []
+        for d in docs:
+            dd = d.to_dict() or {}
+            items.append({
+                "id":         d.id,
+                "event_type": dd.get("event_type", ""),
+                "source":     dd.get("source", ""),
+                "actor":      dd.get("actor", ""),
+                "payload":    dd.get("payload", {}),
+                "created_at": dd.get("created_at", ""),
+            })
+        items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        return jsonify({"items": items})
+    except Exception as e:
+        import logging
+        logging.exception("property-events list 失敗")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/yes319/unlist-missing", methods=["POST"])
 def api_yes319_unlist_missing():
     """home-start 有 yes319_objno 但 yes319 已不存在的物件 → 標記下架。
@@ -12325,8 +12400,49 @@ window.addEventListener('unhandledrejection', function(e) {
         + row('資料序號', '資料序號')
         + '</div></details>';
 
+      // ── 起家操作歷史（從 home-start 等子服務寫入的事件） ──
+      html += '<div id="cp-detail-events" class="mt-3"></div>';
+
       document.getElementById('cp-detail-body').innerHTML = html || '<p class="text-slate-500">無資料</p>';
       document.getElementById('cp-detail-modal').classList.remove('hidden');
+
+      // 非同步載入事件歷史（避免拖慢主 modal 開啟）
+      fetch('/api/property-events?property_id=' + encodeURIComponent(id))
+        .then(function(r){ return r.json(); })
+        .then(function(ed){
+          var box = document.getElementById('cp-detail-events');
+          if (!box) return;
+          if (ed.hidden) return;  // 非管理員看不到
+          if (!ed.items || !ed.items.length) return;
+          var EVT_LABEL = {
+            'offshelf':     {icon:'🚫', label:'親自下架',   color:'#F5613A'},
+            'onshelf':      {icon:'✅', label:'重新上架',   color:'#1BA896'},
+            'price_change': {icon:'💰', label:'手動改價',   color:'#F5613A'},
+            'price_reset':  {icon:'↩️', label:'解除價格覆寫', color:'#5E6E82'},
+            'meta_update':  {icon:'📝', label:'文案/標籤 修改', color:'#1A5DBF'},
+          };
+          var rows = ed.items.map(function(e){
+            var c = EVT_LABEL[e.event_type] || {icon:'📌', label:e.event_type, color:'#5E6E82'};
+            var when = e.created_at ? e.created_at.slice(0, 16).replace('T', ' ') : '';
+            var detail = '';
+            if (e.event_type === 'price_change' && e.payload) {
+              detail = '<span style="color:#9AA5B4;"> ' + (e.payload.old_price || '?') + ' 萬 → </span><span style="color:#F5613A;font-weight:700;">' + (e.payload.new_price || '?') + ' 萬</span>';
+            } else if (e.event_type === 'meta_update' && e.payload && e.payload.updated) {
+              detail = '<span style="color:#9AA5B4;">（' + (e.payload.updated || []).join(', ') + '）</span>';
+            }
+            return '<div style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:1px solid rgba(148,163,184,0.15);font-size:12px;">'
+              + '<span style="font-size:14px;">' + c.icon + '</span>'
+              + '<span style="color:' + c.color + ';font-weight:700;min-width:80px;">' + c.label + '</span>'
+              + '<span style="flex:1;color:#cbd5e1;">' + detail + '</span>'
+              + '<span style="color:#94a3b8;font-size:11px;white-space:nowrap;">' + when + '</span>'
+              + '</div>';
+          }).join('');
+          box.innerHTML = '<div class="bg-slate-800/60 rounded-xl border border-slate-700/60 overflow-hidden">'
+            + '<div class="flex items-center gap-2 px-4 py-2 bg-slate-700/40 border-b border-slate-700/60">'
+            + '<span class="text-base">📜</span><span class="text-xs font-semibold text-slate-300">起家操作歷史（' + ed.items.length + ' 筆）</span></div>'
+            + '<div style="padding:8px 16px;">' + rows + '</div></div>';
+        })
+        .catch(function(){ /* 無事件就靜默 */ });
     });
   }
 
