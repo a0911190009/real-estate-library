@@ -11290,7 +11290,7 @@ window.addEventListener('unhandledrejection', function(e) {
   // 🔄 在審查 modal 內觸發「同步 Sheets」— 關閉審查 + 呼叫 cpTriggerSync。
   // 同步完成後使用者要自己重新跑比對審查（同步約 1-2 分鐘，期間不能保留現有審查結果）
   function rvTriggerSyncFromReview() {
-    if (!confirm('將執行「🔄 同步 Sheets」（主 Sheets → Firestore，約 1-2 分鐘）。\n\n執行後請：\n1. 等同步完成（右上角會 toast 提示）\n2. 重新點「🔍 比對審查」上傳同一個 Word 檔再跑一次\n\n（目前審查結果會關閉，未確認的配對不會保留）\n\n確認執行？')) return;
+    if (!confirm('將執行「🔄 同步 Sheets」（主 Sheets → Firestore，約 1-2 分鐘）。\\n\\n執行後請：\\n1. 等同步完成（右上角會 toast 提示）\\n2. 重新點「🔍 比對審查」上傳同一個 Word 檔再跑一次\\n\\n（目前審查結果會關閉，未確認的配對不會保留）\\n\\n確認執行？')) return;
     cpCloseReview();
     // 跳到頂部，讓使用者看得到主同步按鈕的狀態變化
     window.scrollTo({ top: 0, behavior: 'smooth' });
