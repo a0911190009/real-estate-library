@@ -5656,6 +5656,7 @@ def api_word_review_upload_doc():
                     "csv_name":  name, "csv_price": price, "csv_expiry": expiry,
                     "csv_agent": agent, "csv_comm": comm,
                     "csv_addr":  csv_addr_nm,
+                    "csv_row":   str(row.get('流水號', '') or '').strip(),  # Word 內行號
                     "match_by":  match_reason,
                     "score":     nm_score,
                     "name_changed": not nm_name_match,
@@ -5730,6 +5731,7 @@ def api_word_review_upload_doc():
             "csv_land":      csv_land,
             "csv_build":     csv_build,
             "csv_interior":  csv_interior,
+            "csv_row":       str(row.get('流水號', '') or '').strip(),  # Word 物件總表內的行號
             "match_by":      match_by,
             "score":         score,
             "has_hard":      best_has_hard,
@@ -10782,7 +10784,10 @@ window.addEventListener('unhandledrejection', function(e) {
         ? '<span style="color:var(--warn);">📝 ' + item.db_name + ' → ' + item.csv_name + '</span>'
         : item.db_name;
       var leftCol = '<div style="flex:1;min-width:0;">'
-        + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;text-transform:uppercase;">Word 物件總表</div>'
+        + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;text-transform:uppercase;display:flex;justify-content:space-between;align-items:center;gap:6px;">'
+        + '<span>Word 物件總表</span>'
+        + (item.csv_row ? '<span style="background:var(--bg-h);color:var(--ac);padding:1px 7px;border-radius:9px;font-weight:700;">行 #' + item.csv_row + '</span>' : '')
+        + '</div>'
         + '<div style="font-size:13px;color:var(--tx);font-weight:600;">' + (item.csv_name || item.db_name) + '</div>'
         + fmtR('售價', item.csv_price!=null ? item.csv_price+' 萬' : '')
         + fmtHardCols(item, false)
@@ -10791,7 +10796,10 @@ window.addEventListener('unhandledrejection', function(e) {
         + fmtR('經紀人', item.csv_agent)
         + '</div>';
       var rightCol = '<div style="flex:1;min-width:0;padding-left:12px;border-left:1px solid var(--bd);">'
-        + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;">FIRESTORE 現有</div>'
+        + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;gap:6px;">'
+        + '<span>FIRESTORE 現有</span>'
+        + (item.db_seq ? '<span style="background:var(--bg-h);color:var(--ac);padding:1px 7px;border-radius:9px;font-weight:700;">序號 #' + item.db_seq + '</span>' : '')
+        + '</div>'
         + '<div style="font-size:13px;color:var(--tx);font-weight:600;">' + nameLabel + '</div>'
         + fmtR('售價', fmtPrice(item.db_price, item.csv_price))
         + fmtHardCols(item, true)
@@ -10818,7 +10826,10 @@ window.addEventListener('unhandledrejection', function(e) {
         ? '<span style="color:var(--warn);">📝 ' + item.db_name + ' → ' + item.csv_name + '</span>'
         : (item.db_name || item.csv_name);
       var leftCol = '<div style="flex:1;min-width:0;">'
-        + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;text-transform:uppercase;">Word 物件總表</div>'
+        + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;text-transform:uppercase;display:flex;justify-content:space-between;align-items:center;gap:6px;">'
+        + '<span>Word 物件總表</span>'
+        + (item.csv_row ? '<span style="background:var(--bg-h);color:var(--ac);padding:1px 7px;border-radius:9px;font-weight:700;">行 #' + item.csv_row + '</span>' : '')
+        + '</div>'
         + '<div style="font-size:13px;color:var(--tx);font-weight:600;">' + (item.csv_name || item.db_name) + '</div>'
         + fmtR('售價', item.csv_price!=null ? item.csv_price+' 萬' : '')
         + fmtHardCols(item, false)
@@ -10827,7 +10838,10 @@ window.addEventListener('unhandledrejection', function(e) {
         + fmtR('經紀人', item.csv_agent)
         + '</div>';
       var rightCol = '<div style="flex:1;min-width:0;padding-left:12px;border-left:1px solid var(--bd);">'
-        + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;">FIRESTORE 現有</div>'
+        + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;gap:6px;">'
+        + '<span>FIRESTORE 現有</span>'
+        + (item.db_seq ? '<span style="background:var(--bg-h);color:var(--ac);padding:1px 7px;border-radius:9px;font-weight:700;">序號 #' + item.db_seq + '</span>' : '')
+        + '</div>'
         + '<div style="font-size:13px;color:var(--tx);font-weight:600;">' + nameLabel + '</div>'
         + fmtR('售價', fmtPrice(item.db_price, item.csv_price))
         + fmtHardCols(item, true)
