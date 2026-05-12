@@ -1203,8 +1203,13 @@ def _easymap_resolve(area, section, landno):
         return re.sub(r"[市鎮鄉區]$", "", str(s or "").strip()).replace("台", "臺")
 
     def _norm_section(s):
-        # 剝 段 後綴 + 台→臺 + 取空格前第一個
-        return str(s or "").split(" ")[0].split(",")[0].strip().rstrip("段").replace("台", "臺")
+        # 段別正規化：library 資料常寫「中濱 掃別」（段名+小段名，空格分隔），
+        # easymap 對應的是「中濱段掃別小段」，所以兩邊都剝掉「段」「小段」「空格」再比。
+        # 例：「中濱 掃別」↔「中濱段掃別小段」→ 剝後都成「中濱掃別」 ✓
+        # 例：「新田」↔「新田段」→ 剝後都成「新田」 ✓
+        s = str(s or "").split(",")[0].strip()
+        # 重要：先剝「小段」再剝「段」，否則「小段」中的「段」會被先剝掉變成「小」
+        return s.replace("小段", "").replace("段", "").replace(" ", "").replace("台", "臺")
 
     try:
         from easymap import EasymapCrawler
