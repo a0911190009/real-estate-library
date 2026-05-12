@@ -6187,6 +6187,64 @@ def api_yes319_create_missing_preview():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/yes319/sync-all", methods=["POST"])
+def api_yes319_sync_all():
+    """一鍵全自動：文案同步 + 照片同步 + 下架預覽 + 缺漏預覽
+    順序執行 4 個動作，回傳合併結果。下架/缺漏只 dry-run，使用者看完結果再決定。
+    預計 10-15 分鐘（4 次 yes319 爬蟲）。
+    """
+    has_session_auth = False
+    try:
+        email, err = _require_user()
+        if not err:
+            has_session_auth = True
+    except Exception:
+        pass
+    if not has_session_auth:
+        expected_key = (os.environ.get("SERVICE_API_KEY") or "").strip()
+        sent_key = (request.headers.get("X-Service-Key") or "").strip()
+        if not expected_key or sent_key != expected_key:
+            return jsonify({"error": "unauthorized"}), 401
+
+    home_start_url = (os.environ.get("HOME_START_URL") or "").strip()
+    service_key    = (os.environ.get("SERVICE_API_KEY") or "").strip()
+    if not home_start_url or not service_key:
+        return jsonify({"error": "HOME_START_URL 或 SERVICE_API_KEY 未設定"}), 500
+
+    import logging as _log
+    out = {"ok": True}
+    try:
+        import yes319_sync
+        # 1. 文案同步（爬 yes319 → 比對 → 推送 features/amenities/age/floor）
+        try:
+            out["sync"] = yes319_sync.run_full_sync(home_start_url, service_key, dry_run=False)
+        except Exception as e:
+            _log.exception("sync-all: full_sync 失敗")
+            out["sync"] = {"ok": False, "error": str(e)}
+        # 2. 照片同步（對「有 yes319_objno 但無照片」的補照）
+        try:
+            out["photos"] = yes319_sync.run_photo_sync(home_start_url, service_key)
+        except Exception as e:
+            _log.exception("sync-all: photo_sync 失敗")
+            out["photos"] = {"ok": False, "error": str(e)}
+        # 3. 下架預覽（不實際下架，回傳待下架清單給使用者確認）
+        try:
+            out["unlist_preview"] = yes319_sync.run_unlist_missing(home_start_url, service_key, dry_run=True)
+        except Exception as e:
+            _log.exception("sync-all: unlist_preview 失敗")
+            out["unlist_preview"] = {"ok": False, "error": str(e)}
+        # 4. 缺漏預覽（yes319 有但 home-start 沒對應的）
+        try:
+            out["create_missing"] = yes319_sync.run_create_missing_dryrun(home_start_url, service_key)
+        except Exception as e:
+            _log.exception("sync-all: create_missing 失敗")
+            out["create_missing"] = {"ok": False, "error": str(e)}
+        return jsonify(out)
+    except Exception as e:
+        _log.exception("sync-all 失敗")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/yes319/sync-photos", methods=["POST"])
 def api_yes319_sync_photos():
     """從 yes319 下載照片，補到 home-start 那些「有 yes319_objno 但無照片」的物件。"""
@@ -8403,29 +8461,11 @@ window.addEventListener('unhandledrejection', function(e) {
         title="【步驟 4】把 Firestore 目前所有物件的「銷售中」狀態，一次回寫到 Google Sheets（只動銷售中欄，不碰其他欄位）。完整流程順序：1.ACCESS比對 → 2.同步Sheets → 3.比對審查 → 4.回寫銷售中。不做這步的話，下次「同步 Sheets」會把 Word 寫的銷售中又打回舊狀態。">
         📤 回寫銷售中
       </button>
-      <!-- 步驟 5（獨立工作）：yes319 → home-start 同步物件特色、生活機能、屋齡、樓層 -->
-      <button id="cp-yes319-btn" onclick="cpSyncYes319()"
+      <!-- 步驟 5：yes319 全自動（一鍵跑文案 + 照片 + 下架預覽 + 缺漏預覽） -->
+      <button id="cp-yes319-btn" onclick="cpSyncYes319All()"
         class="px-4 py-1.5 rounded-lg bg-rose-700 hover:bg-rose-600 text-white text-xs font-semibold transition"
-        title="爬公司 yes319 網頁（http://日盛房屋.tw）→ 自動把『業務員手寫的物件特色、生活機能、屋齡、樓層』補到 home-start 對外網站。預計 3-5 分鐘。">
-        🌐 同步 yes319 文案
-      </button>
-      <!-- 步驟 5.5：補照片（對有 yes319_objno 但無照片的物件，從 yes319 下載照片補上） -->
-      <button id="cp-yes319-photo-btn" onclick="cpSyncYes319Photos()"
-        class="px-4 py-1.5 rounded-lg bg-pink-700 hover:bg-pink-600 text-white text-xs font-semibold transition"
-        title="對 home-start 上「有 yes319_objno 但沒有照片」的物件，從 yes319 公司網頁下載照片補上去（每物件最多 15 張）。建議在「同步 yes319 文案」之後執行。">
-        📷 補 yes319 照片
-      </button>
-      <!-- 步驟 5.6：下架（yes319 已不存在的物件 → home-start 下架） -->
-      <button id="cp-yes319-unlist-btn" onclick="cpUnlistMissingYes319()"
-        class="px-4 py-1.5 rounded-lg bg-orange-700 hover:bg-orange-600 text-white text-xs font-semibold transition"
-        title="home-start 已連結 yes319_objno 但 yes319 已不存在的物件 → 自動標記下架。會先 dry-run 預覽，確認後才執行。">
-        🚫 下架已撤離 yes319
-      </button>
-      <!-- 步驟 5.7：預覽 yes319 多出來的物件（home-start 沒對到的） -->
-      <button id="cp-yes319-preview-btn" onclick="cpPreviewMissingFromYes319()"
-        class="px-4 py-1.5 rounded-lg bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition"
-        title="預覽 yes319 有但 home-start 對不到的物件（dry-run）。看完清單後再決定要不要批次匯入。">
-        👁 預覽 yes319 缺漏物件
+        title="一鍵全自動：(1) 爬 yes319 比對 home-start 推送特色/機能/屋齡/樓層　(2) 對沒照片的物件補 yes319 照片　(3) 列出待下架物件給你確認　(4) 列出 yes319 多出來的物件供查看。預計 10-15 分鐘。">
+        🌐 同步 yes319（一鍵全自動）
       </button>
       <!-- 說明按鈕 -->
       <button onclick="document.getElementById('cp-sync-help-modal').style.display='flex'"
@@ -9513,6 +9553,26 @@ window.addEventListener('unhandledrejection', function(e) {
     <div id="cp-detail-body" class="overflow-y-auto px-6 py-5 space-y-1 text-sm"></div>
     <div class="px-6 py-4 shrink-0" style="border-top:1px solid var(--bd);">
       <button onclick="closeCpDetail()" class="px-4 py-2 rounded-lg text-sm transition" style="background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);cursor:pointer;">關閉</button>
+    </div>
+  </div>
+</div>
+
+<!-- yes319 全自動同步結果 Modal（4 個區塊：文案 / 照片 / 下架預覽 / 缺漏預覽） -->
+<div id="cp-yes319-result-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:650;align-items:flex-start;justify-content:center;padding-top:32px;"
+  onclick="if(event.target===this)closeYes319ResultModal()">
+  <div style="background:var(--bg-s);border:1px solid var(--bd);border-radius:16px;width:96%;max-width:760px;max-height:88vh;display:flex;flex-direction:column;box-shadow:var(--sh);">
+    <div style="padding:16px 24px 12px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px;">
+      <span style="font-size:15px;font-weight:700;color:var(--tx);">✅ yes319 同步完成</span>
+      <span id="cp-yes319-result-subtitle" style="font-size:12px;color:var(--txs);"></span>
+      <button onclick="closeYes319ResultModal()"
+        style="margin-left:auto;background:none;border:none;color:var(--txm);font-size:20px;cursor:pointer;line-height:1;">✕</button>
+    </div>
+    <div id="cp-yes319-result-body" style="flex:1;overflow-y:auto;padding:16px 24px;"></div>
+    <div style="padding:12px 24px;border-top:1px solid var(--bd);display:flex;justify-content:flex-end;gap:8px;">
+      <button onclick="closeYes319ResultModal()"
+        style="padding:7px 18px;border-radius:8px;background:var(--ac);color:#fff;border:none;font-size:13px;font-weight:700;cursor:pointer;">
+        關閉
+      </button>
     </div>
   </div>
 </div>
@@ -12601,121 +12661,159 @@ window.addEventListener('unhandledrejection', function(e) {
     }).catch(function(e){ toast('\u547c\u53eb\u5931\u6557: ' + e, 'error'); btn.disabled=false; });
   }
 
-  // yes319 公司網頁 → home-start 同步（爬蟲+比對+推送，3-5 分鐘）
-  function cpSyncYes319() {
+  // yes319 一鍵全自動：文案 + 照片 + 下架預覽 + 缺漏預覽
+  function cpSyncYes319All() {
     var btn = document.getElementById('cp-yes319-btn');
-    if (!confirm('將爬公司 yes319 網頁（約 170 筆）→ 比對 home-start → 自動推送特色說明/生活機能/屋齡/樓層。\\n預計 3-5 分鐘，期間請勿關閉頁面。\\n\\n確認執行？')) return;
+    if (!confirm('一鍵全自動同步 yes319（預計 10-15 分鐘，期間請勿關閉頁面）：\\n\\n1. 爬 yes319 比對 home-start，推送特色/機能/屋齡/樓層\\n2. 對沒照片的物件補 yes319 照片（最多 15 張/筆）\\n3. 列出 yes319 已撤離的物件（你看完後可確認下架）\\n4. 列出 yes319 有但 home-start 沒對應的物件（供查看）\\n\\n確認執行？')) return;
     btn.disabled = true;
     var orig = btn.innerHTML;
-    btn.innerHTML = '⏳ 同步中…請稍候 3-5 分鐘';
-    toast('yes319 同步開始，預計 3-5 分鐘…', 'info');
-    fetch('/api/yes319/sync', { method: 'POST' })
+    btn.innerHTML = '⏳ 同步中…請稍候 10-15 分鐘';
+    toast('yes319 全自動同步開始，預計 10-15 分鐘…', 'info');
+    fetch('/api/yes319/sync-all', { method: 'POST' })
       .then(function(r){ return r.json(); })
       .then(function(d){
         btn.innerHTML = orig; btn.disabled = false;
         if (d.error) { toast('同步失敗：' + d.error, 'error'); return; }
-        var msg = '✅ yes319 同步完成\\n\\n'
-          + '爬取 yes319: ' + d.yes319_crawled + ' 筆（失敗 ' + d.yes319_fails + '）\\n'
-          + 'home-start 物件: ' + d.home_start_total + ' 筆\\n'
-          + '高信心配對: ' + d.matched + ' 對\\n'
-          + '需人工確認: ' + d.suspect + ' 對\\n'
-          + '無對應物件: ' + d.unmatched + ' 筆\\n'
-          + '成功推送: ' + d.pushed_ok + ' 筆（失敗 ' + d.pushed_fail + '）\\n'
-          + '耗時: ' + d.elapsed_sec + ' 秒';
-        alert(msg);
-      })
-      .catch(function(e){
-        btn.innerHTML = orig; btn.disabled = false;
-        toast('同步呼叫失敗：' + e, 'error');
-      });
-  }
-
-  // 下架 yes319 已撤離物件：先 dry-run 顯示清單、用戶確認後才實際標記
-  function cpUnlistMissingYes319() {
-    var btn = document.getElementById('cp-yes319-unlist-btn');
-    btn.disabled = true;
-    var orig = btn.innerHTML;
-    btn.innerHTML = '⏳ 預覽中…';
-    fetch('/api/yes319/unlist-missing?dry_run=1', { method: 'POST' })
-      .then(function(r){ return r.json(); })
-      .then(function(d){
-        btn.innerHTML = orig; btn.disabled = false;
-        if (d.error) { toast('錯誤：' + d.error, 'error'); return; }
-        if (!d.to_unlist || d.to_unlist.length === 0) {
-          alert('✅ home-start 物件全部都還在 yes319 上，沒有需要下架的');
-          return;
-        }
-        var list = d.to_unlist.map(function(x){
-          return '  #' + x.id + ' [' + x.objno + '] ' + (x.title || '') + (x.price ? ' (' + x.price + '萬)' : '');
-        }).join('\\n');
-        if (!confirm('找到 ' + d.to_unlist.length + ' 筆需下架（yes319 已撤離）：\\n\\n' + list + '\\n\\n確認下架嗎？（會把 is_selling 設為 False，物件不會從 home-start 列表消失但會標記為已下架）')) {
-          return;
-        }
-        btn.disabled = true; btn.innerHTML = '⏳ 下架中…';
-        fetch('/api/yes319/unlist-missing', { method: 'POST' })
-          .then(function(r){ return r.json(); })
-          .then(function(d2){
-            btn.innerHTML = orig; btn.disabled = false;
-            if (d2.error) { toast('下架失敗：' + d2.error, 'error'); return; }
-            alert('✅ 完成：下架 ' + d2.unlisted_ok + ' 筆（失敗 ' + (d2.unlisted_fail || 0) + '）');
-          })
-          .catch(function(e){ btn.innerHTML = orig; btn.disabled = false; toast('下架呼叫失敗：' + e, 'error'); });
-      })
-      .catch(function(e){ btn.innerHTML = orig; btn.disabled = false; toast('預覽失敗：' + e, 'error'); });
-  }
-
-  // 預覽 yes319 有但 home-start 沒對到的物件清單
-  function cpPreviewMissingFromYes319() {
-    var btn = document.getElementById('cp-yes319-preview-btn');
-    btn.disabled = true;
-    var orig = btn.innerHTML;
-    btn.innerHTML = '⏳ 爬蟲中…約 2-3 分鐘';
-    toast('掃描 yes319 中…', 'info');
-    fetch('/api/yes319/create-missing-preview', { method: 'POST' })
-      .then(function(r){ return r.json(); })
-      .then(function(d){
-        btn.innerHTML = orig; btn.disabled = false;
-        if (d.error) { toast('預覽失敗：' + d.error, 'error'); return; }
-        if (!d.missing || d.missing.length === 0) {
-          alert('✅ yes319 全部物件都已對應到 home-start');
-          return;
-        }
-        var preview = d.missing.slice(0, 30).map(function(x, i){
-          return (i+1) + '. [' + x.objno + '] ' + x.kind + ' ' + (x.title || '無案名') + ' | ' + (x.price_wan ? x.price_wan + '萬' : '無價格') + ' | ' + (x.address || '') + ' | ' + x.n_photos + '照' + (x.has_features ? ' ✓特色' : '');
-        }).join('\\n');
-        var msg = 'yes319 有 ' + d.yes319_total + ' 筆、home-start ' + d.home_start_total + ' 筆\\n'
-          + '需新增到 home-start: ' + d.missing_count + ' 筆\\n\\n'
-          + '前 30 筆預覽：\\n' + preview
-          + (d.missing.length > 30 ? '\\n\\n... 還有 ' + (d.missing.length - 30) + ' 筆' : '')
-          + '\\n\\n（這是 dry-run 預覽，未實際寫入。批次匯入功能需另行實作）';
-        alert(msg);
-        console.log('[yes319 missing dump]', d.missing);
-      })
-      .catch(function(e){ btn.innerHTML = orig; btn.disabled = false; toast('預覽呼叫失敗：' + e, 'error'); });
-  }
-
-  // 從 yes319 下載照片，補到 home-start「有 objno 但無照片」的物件
-  function cpSyncYes319Photos() {
-    var btn = document.getElementById('cp-yes319-photo-btn');
-    if (!confirm('將對 home-start 上「有 yes319_objno 但無照片」的物件，從 yes319 下載照片補上。\\n（建議先按過「同步 yes319 文案」連結 objno）\\n\\n每物件最多 15 張、預計 3-5 分鐘。確認執行？')) return;
-    btn.disabled = true;
-    var orig = btn.innerHTML;
-    btn.innerHTML = '⏳ 補照片中…';
-    toast('yes319 補照片開始，預計 3-5 分鐘…', 'info');
-    fetch('/api/yes319/sync-photos', { method: 'POST' })
-      .then(function(r){ return r.json(); })
-      .then(function(d){
-        btn.innerHTML = orig; btn.disabled = false;
-        if (d.error) { toast('補照片失敗：' + d.error, 'error'); return; }
-        var msg = '✅ yes319 補照片完成\\n\\n'
-          + '處理物件: ' + d.targets + ' 筆\\n'
-          + '上傳照片: ' + d.total_uploaded + ' 張（失敗 ' + (d.total_failed || 0) + ' 張）\\n'
-          + '耗時: ' + d.elapsed_sec + ' 秒';
-        alert(msg);
+        showYes319ResultModal(d);
       })
       .catch(function(e){
         btn.innerHTML = orig; btn.disabled = false;
         toast('呼叫失敗：' + e, 'error');
+      });
+  }
+
+  // yes319 同步結果 modal — 4 區塊：文案 / 照片 / 下架預覽 / 缺漏預覽
+  function showYes319ResultModal(d) {
+    var modal    = document.getElementById('cp-yes319-result-modal');
+    var subtitle = document.getElementById('cp-yes319-result-subtitle');
+    var body     = document.getElementById('cp-yes319-result-body');
+    if (!modal || !body) { alert('同步完成'); return; }
+
+    var sync   = d.sync || {};
+    var photos = d.photos || {};
+    var unlist = d.unlist_preview || {};
+    var miss   = d.create_missing || {};
+    var toUnlist = unlist.to_unlist || [];
+    var missing  = miss.missing || [];
+
+    subtitle.textContent = '文案 ' + (sync.pushed_ok || 0)
+      + ' ／ 照片 ' + (photos.total_uploaded || 0) + ' 張'
+      + ' ／ 待下架 ' + toUnlist.length
+      + ' ／ 缺漏 ' + missing.length;
+
+    // 區塊樣式統一
+    function section(emoji, title, color, content) {
+      return '<div style="margin-bottom:14px;border:1px solid var(--bd);border-radius:8px;overflow:hidden;">'
+        + '<div style="padding:8px 12px;background:var(--bg-t);font-size:13px;font-weight:700;color:' + color + ';">'
+        + emoji + ' ' + title + '</div>'
+        + '<div style="padding:10px 12px;font-size:12px;color:var(--tx);">' + content + '</div></div>';
+    }
+
+    // 1. 文案同步
+    var syncContent;
+    if (sync.error) {
+      syncContent = '<span style="color:#dc2626;">❌ ' + escapeHtml(sync.error) + '</span>';
+    } else {
+      syncContent = '爬取 yes319 <b>' + (sync.yes319_crawled || 0) + '</b> 筆（失敗 ' + (sync.yes319_fails || 0) + '）'
+        + '　／　high-start 物件 <b>' + (sync.home_start_total || 0) + '</b> 筆<br>'
+        + '高信心配對 <b style="color:#16a34a;">' + (sync.matched || 0) + '</b> 對 '
+        + '／ 需人工確認 <b style="color:#d97706;">' + (sync.suspect || 0) + '</b> 對 '
+        + '／ 無對應 <b style="color:var(--txs);">' + (sync.unmatched || 0) + '</b> 筆<br>'
+        + '✅ 推送成功 <b style="color:#16a34a;">' + (sync.pushed_ok || 0) + '</b> 筆（失敗 ' + (sync.pushed_fail || 0) + '）'
+        + '　耗時 ' + (sync.elapsed_sec || 0) + ' 秒';
+    }
+
+    // 2. 照片同步
+    var photosContent;
+    if (photos.error) {
+      photosContent = '<span style="color:#dc2626;">❌ ' + escapeHtml(photos.error) + '</span>';
+    } else {
+      photosContent = '處理物件 <b>' + (photos.targets || 0) + '</b> 筆<br>'
+        + '✅ 上傳 <b style="color:#16a34a;">' + (photos.total_uploaded || 0) + '</b> 張'
+        + '（失敗 ' + (photos.total_failed || 0) + '）　耗時 ' + (photos.elapsed_sec || 0) + ' 秒';
+    }
+
+    // 3. 待下架預覽 + 確認按鈕
+    var unlistContent;
+    if (unlist.error) {
+      unlistContent = '<span style="color:#dc2626;">❌ ' + escapeHtml(unlist.error) + '</span>';
+    } else if (toUnlist.length === 0) {
+      unlistContent = '<span style="color:var(--ok);">✅ home-start 物件都還在 yes319 上，沒有需要下架的</span>';
+    } else {
+      var unlistList = toUnlist.map(function(x){
+        return '<div style="padding:4px 0;border-bottom:1px solid var(--bd);">'
+          + '<span style="color:var(--txm);font-weight:700;">#' + escapeHtml(String(x.id)) + '</span>'
+          + ' <span style="color:var(--txs);">[' + escapeHtml(String(x.objno || '')) + ']</span>'
+          + ' ' + escapeHtml(x.title || '(無案名)')
+          + (x.price ? ' <span style="color:var(--txs);">' + x.price + '萬</span>' : '')
+          + '</div>';
+      }).join('');
+      unlistContent = '<div style="margin-bottom:8px;color:#dc2626;font-weight:700;">⚠️ 找到 ' + toUnlist.length + ' 筆 yes319 已撤離的物件</div>'
+        + '<div style="max-height:200px;overflow-y:auto;margin-bottom:10px;border:1px solid var(--bd);border-radius:6px;padding:6px 10px;">' + unlistList + '</div>'
+        + '<button id="cp-yes319-confirm-unlist-btn" onclick="cpYes319ConfirmUnlist(' + toUnlist.length + ')"'
+        + ' style="padding:6px 14px;border-radius:6px;background:#dc2626;color:#fff;border:none;font-size:12px;font-weight:700;cursor:pointer;">'
+        + '🚫 確認下架這 ' + toUnlist.length + ' 筆</button>'
+        + ' <span style="color:var(--txs);font-size:11px;margin-left:8px;">（不下架的話 buyer 端會誤以為還在賣）</span>';
+    }
+
+    // 4. 缺漏預覽
+    var missContent;
+    if (miss.error) {
+      missContent = '<span style="color:#dc2626;">❌ ' + escapeHtml(miss.error) + '</span>';
+    } else if (missing.length === 0) {
+      missContent = '<span style="color:var(--ok);">✅ yes319 物件全部都已對應到 home-start</span>';
+    } else {
+      var missList = missing.slice(0, 50).map(function(x){
+        return '<div style="padding:4px 0;border-bottom:1px solid var(--bd);">'
+          + '<span style="color:var(--txm);font-weight:700;">[' + escapeHtml(String(x.objno || '')) + ']</span>'
+          + ' <span style="color:var(--txs);">' + escapeHtml(x.kind || '') + '</span>'
+          + ' ' + escapeHtml(x.title || '(無案名)')
+          + (x.price_wan ? ' <span style="color:var(--txs);">' + x.price_wan + '萬</span>' : '')
+          + (x.address ? ' <span style="color:var(--txs);">' + escapeHtml(x.address) + '</span>' : '')
+          + ' <span style="color:var(--txs);">' + (x.n_photos || 0) + '照</span>'
+          + (x.has_features ? ' <span style="color:#16a34a;">✓特色</span>' : '')
+          + '</div>';
+      }).join('');
+      missContent = '<div style="margin-bottom:8px;">yes319 有 ' + (miss.yes319_total || 0)
+        + ' 筆、home-start 有 ' + (miss.home_start_total || 0) + ' 筆<br>'
+        + '<span style="color:#d97706;font-weight:700;">需新增到 home-start：' + missing.length + ' 筆</span>'
+        + (missing.length > 50 ? '（僅顯示前 50 筆）' : '') + '</div>'
+        + '<div style="max-height:240px;overflow-y:auto;border:1px solid var(--bd);border-radius:6px;padding:6px 10px;">' + missList + '</div>'
+        + '<div style="color:var(--txs);font-size:11px;margin-top:6px;">（dry-run 預覽，未實際寫入。需匯入請聯絡開發者）</div>';
+    }
+
+    body.innerHTML =
+      section('🌐', '1. 文案同步（特色/機能/屋齡/樓層）', 'var(--ac)', syncContent)
+      + section('📷', '2. 照片同步', '#ec4899', photosContent)
+      + section('🚫', '3. 待下架預覽（yes319 已撤離的物件）', '#dc2626', unlistContent)
+      + section('👁', '4. 缺漏預覽（yes319 有但 home-start 沒）', '#d97706', missContent);
+
+    modal.style.display = 'flex';
+  }
+
+  function closeYes319ResultModal() {
+    var modal = document.getElementById('cp-yes319-result-modal');
+    if (modal) modal.style.display = 'none';
+  }
+
+  // 確認下架按鈕：實際呼叫 unlist-missing（非 dry-run）
+  function cpYes319ConfirmUnlist(expectedCount) {
+    if (!confirm('確定要把這 ' + expectedCount + ' 筆 yes319 已撤離的物件全部下架嗎？\\n（會把 is_selling 設為 False，物件不會消失但 buyer 端不會列出）')) return;
+    var btn = document.getElementById('cp-yes319-confirm-unlist-btn');
+    if (btn) { btn.disabled = true; btn.innerHTML = '⏳ 下架中…'; }
+    fetch('/api/yes319/unlist-missing', { method: 'POST' })
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if (d.error) { toast('下架失敗：' + d.error, 'error'); return; }
+        toast('✅ 完成：下架 ' + (d.unlisted_ok || 0) + ' 筆（失敗 ' + (d.unlisted_fail || 0) + '）', 'success');
+        if (btn) {
+          btn.innerHTML = '✅ 已下架 ' + (d.unlisted_ok || 0) + ' 筆';
+          btn.style.background = '#16a34a';
+        }
+      })
+      .catch(function(e){
+        if (btn) { btn.disabled = false; btn.innerHTML = '🚫 確認下架這 ' + expectedCount + ' 筆'; }
+        toast('下架呼叫失敗：' + e, 'error');
       });
   }
 
