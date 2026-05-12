@@ -1668,6 +1668,9 @@ def _ac_ignore_rule_id(object_key_str, field, ignored_value):
 
 def _ac_load_ignore_rules():
     """從 Firestore 載入所有忽略規則，回傳 set of (object_key_str, field, ignored_value)"""
+    db = _get_db()
+    if db is None:
+        return {}
     try:
         docs = db.collection("access_ignore_rules").stream()
         rules = {}
@@ -1684,8 +1687,10 @@ def api_access_ignore_rules_list():
     """列出所有忽略規則"""
     email, err = _require_user()
     if err: return jsonify({"error": err[0]}), err[1]
+    db = _get_db()
+    if db is None: return jsonify({"error": "Firestore 未連線"}), 503
     try:
-        docs = db.collection("access_ignore_rules").order_by("created_at", direction=firestore.Query.DESCENDING).stream()
+        docs = db.collection("access_ignore_rules").order_by("created_at", direction=_firestore.Query.DESCENDING).stream()
         rules = []
         for doc in docs:
             d = doc.to_dict()
@@ -1704,6 +1709,8 @@ def api_access_ignore_rules_add():
     email, err = _require_user()
     if err: return jsonify({"error": err[0]}), err[1]
     if not _is_admin(email): return jsonify({"error": "僅管理員可使用"}), 403
+    db = _get_db()
+    if db is None: return jsonify({"error": "Firestore 未連線"}), 503
     data = request.get_json(silent=True) or {}
     obj_key     = data.get("object_key", "").strip()
     display_name= data.get("display_name", "").strip()
@@ -1718,7 +1725,7 @@ def api_access_ignore_rules_add():
         "field":          field,
         "ignored_value":  ign_val,
         "created_by":     email,
-        "created_at":     firestore.SERVER_TIMESTAMP,
+        "created_at":     _firestore.SERVER_TIMESTAMP,
     })
     return jsonify({"ok": True, "id": rule_id})
 
@@ -1728,6 +1735,8 @@ def api_access_ignore_rules_delete(rule_id):
     email, err = _require_user()
     if err: return jsonify({"error": err[0]}), err[1]
     if not _is_admin(email): return jsonify({"error": "僅管理員可使用"}), 403
+    db = _get_db()
+    if db is None: return jsonify({"error": "Firestore 未連線"}), 503
     db.collection("access_ignore_rules").document(rule_id).delete()
     return jsonify({"ok": True})
 
@@ -2507,6 +2516,7 @@ def api_access_data_audit():
         "missing_段別":       0,
         "missing_地號":       0,
         "missing_建號（建物）": 0,
+        "missing_類別異常":    0,  # 類別說建物但既沒地址也沒建號 → 類別可能填錯
     }
     total = 0
     hidden = 0  # 被「已檢查」隱藏的筆數
@@ -2522,6 +2532,8 @@ def api_access_data_audit():
             sect     = str(rd.get("段別", "") or "").strip()
             land     = _normalize_landno(rd.get("地號", ""))
             bldg_raw = str(rd.get("建號", "") or "").strip()  # 助理填的原始值
+            addr     = str(rd.get("物件地址", "") or "").strip()
+            has_addr = bool(addr and len(addr) >= 3)
             缺欄位 = []
             if not area:
                 缺欄位.append("鄉/市/鎮")
@@ -2529,12 +2541,17 @@ def api_access_data_audit():
                 缺欄位.append("段別")
             if not land:
                 缺欄位.append("地號")
-            # 建號規則：
-            # - 純土地（農地/建地/土地/林地）或類別空白 → 不檢查
-            # - 含建物部分（公寓/透天/別墅/店住/透天+農地…）且建號欄完全空白 → 提示缺建號
+            # 建號規則（依使用者經驗修正）：
+            # - 純土地類（農地/建地/土地/林地）→ 不檢查（本來就沒建號）
+            # - 建物類 + 有物件地址 + 沒建號 → 「缺建號」（建物地址都有了，建號應該也要有）
+            # - 建物類 + 沒物件地址 + 沒建號 → 「類別異常」
+            #   （沒地址沒建號還說自己是透天/別墅 → 反過來懷疑類別填錯，可能其實是建地）
             # - 助理填了任何值（包括「無」「預售」「N/A」等標記）→ 視為已處理，不提示
             if _has_building_part(cat) and not bldg_raw:
-                缺欄位.append("建號")
+                if has_addr:
+                    缺欄位.append("建號")
+                else:
+                    缺欄位.append("類別異常")
             if 缺欄位:
                 # 過濾掉每個欄位的已檢查確認
                 visible_fields = []
@@ -2550,7 +2567,12 @@ def api_access_data_audit():
                     continue
                 # 累計統計（只統計顯示的欄位）
                 for f in visible_fields:
-                    key = f"missing_{f}" if f != "建號" else "missing_建號（建物）"
+                    if f == "建號":
+                        key = "missing_建號（建物）"
+                    elif f == "類別異常":
+                        key = "missing_類別異常"
+                    else:
+                        key = f"missing_{f}"
                     if key in stats:
                         stats[key] += 1
                 # 用資料序號（= Firestore doc_id）查主頁 Sheets 對應 row
@@ -12591,12 +12613,15 @@ window.addEventListener('unhandledrejection', function(e) {
 
         // 統計徽章
         var statsHtml = '';
-        var icons = {'missing_鄉/市/鎮':'🏙', 'missing_段別':'📍', 'missing_地號':'🆔', 'missing_建號（建物）':'🏢'};
+        var icons = {'missing_鄉/市/鎮':'🏙', 'missing_段別':'📍', 'missing_地號':'🆔', 'missing_建號（建物）':'🏢', 'missing_類別異常':'❓'};
+        var statsLabel = {'missing_類別異常':'類別異常（建物卻無地址無建號）'};
         Object.keys(d.stats).forEach(function(k){
-          var label = k.replace('missing_', '缺');
+          var label = statsLabel[k] || k.replace('missing_', '缺');
           var icon = icons[k] || '⚠️';
           var count = d.stats[k];
-          var color = count > 0 ? '#d97706' : 'var(--txm)';
+          // 類別異常用紅色，其他用橘色
+          var defaultColor = (k === 'missing_類別異常') ? '#dc2626' : '#d97706';
+          var color = count > 0 ? defaultColor : 'var(--txm)';
           statsHtml += '<span style="background:var(--bg-t);border:1px solid var(--bd);border-radius:6px;padding:4px 10px;color:' + color + ';">' + icon + ' ' + label + '：<strong>' + count + '</strong></span>';
         });
         document.getElementById('ac-audit-stats').innerHTML = statsHtml;
@@ -12609,13 +12634,22 @@ window.addEventListener('unhandledrejection', function(e) {
           var html = '';
           items.forEach(function(it){
             // 每個缺欄位徽章旁加 ✓ 按鈕（單獨確認該欄位）
+            // 「類別異常」用紅色 + 不同前綴文案（不是缺欄位，是類別跟硬資料矛盾）
+            var fieldLabelMap = {'類別異常':'⚠️ 類別異常（建物卻沒地址沒建號）'};
             var fields = it.缺欄位.map(function(f){
               var ackId = (it.ack_ids || {})[f] || '';
               var dispName = (it.案名 || '').replace(/'/g, '');
+              var isCatIssue = (f === '類別異常');
+              var bg = isCatIssue ? 'rgba(239,68,68,0.15)' : 'rgba(217,119,6,0.15)';
+              var color = isCatIssue ? '#dc2626' : '#d97706';
+              var label = fieldLabelMap[f] || ('缺 ' + f);
+              var title = isCatIssue
+                ? '此欄位確認過（例如：類別其實是建地，已改）'
+                : '這個欄位確認過（例如：建號是未保存登記）';
               return '<span class="audit-field-tag" data-fid="' + it.doc_id + '" data-field="' + f + '" data-name="' + dispName + '"'
-                   + ' style="display:inline-flex;align-items:center;gap:4px;background:rgba(217,119,6,0.15);color:#d97706;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:700;">'
-                   + '缺 ' + f
-                   + '<button onclick="auditAckField(this)" title="這個欄位確認過（例如：建號是未保存登記）"'
+                   + ' style="display:inline-flex;align-items:center;gap:4px;background:' + bg + ';color:' + color + ';padding:2px 6px;border-radius:4px;font-size:10px;font-weight:700;">'
+                   + label
+                   + '<button onclick="auditAckField(this)" title="' + title + '"'
                    + ' style="background:transparent;border:none;color:#16a34a;cursor:pointer;font-size:11px;padding:0 2px;line-height:1;font-weight:700;">✓</button>'
                    + '</span>';
             }).join(' ');
