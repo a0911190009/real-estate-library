@@ -5333,16 +5333,28 @@ def api_word_review_upload_doc():
         return 0                            # 完全不同 → 不扣分（換手正常）
 
     def _hard_area_score(w_row, d_row):
-        """不動產硬資料：面積欄位精確比對（2% 容差）
+        """不動產硬資料：面積欄位精確比對（依類別調整容差）
         同一物件的實體面積不會因換手或改價而改變，是最可靠的比對基準。
+
+        容差差異化（使用者經驗）：
+          - 建物類（公寓/透天/別墅...）面積精確 → 2% 命中、20% 確定不同
+          - 土地類（農地/建地/林地）常因 平方公尺↔坪↔台分 換算 + 助理估算誤差較大
+            → 10% 命中、30% 才確定不同
+
         回傳 (score, has_hard_match, has_area_data)
-          - has_hard_match：至少一組面積在 2% 內吻合
+          - has_hard_match：至少一組面積在容差內吻合
           - has_area_data ：至少一組面積兩邊都有值（不論是否吻合）
-                            → 給上層用來區分「真的無面積」vs「有面積但不符」
         """
         score = 0
         has_hard = False
         has_area_data = False
+        # 判斷類別：用 Word 或 Firestore 任一邊的類別欄
+        cat_w = str(w_row.get('物件類別', '') or '').strip()
+        cat_d = str(d_row.get('物件類別', '') or '').strip()
+        is_land = _has_land_part(cat_w) or _has_land_part(cat_d)
+        # 土地類容差更寬（10% 命中、30% 才算衝突）
+        tol_match    = 0.10 if is_land else 0.02
+        tol_conflict = 0.30 if is_land else 0.20
         # (Word欄, Firestore欄, 命中加分) — 同一 Firestore 欄只比一次
         pairs = [
             ('地坪',   '地坪',   8),   # 房屋地坪
@@ -5360,10 +5372,10 @@ def api_word_review_upload_doc():
                 continue
             checked_db.add(df)
             has_area_data = True  # 兩邊都有面積資料 → 可以驗證
-            if _sm(wv, dv, 0.02):           # 2% 容差：硬資料命中
+            if _sm(wv, dv, tol_match):           # 容差內：硬資料命中
                 score += pts
                 has_hard = True
-            elif not _sm(wv, dv, 0.20):     # 差距超過 20%：幾乎確定是不同物件
+            elif not _sm(wv, dv, tol_conflict):  # 超過衝突閾值：幾乎確定是不同物件
                 score -= pts
         return score, has_hard, has_area_data
 
@@ -11105,7 +11117,10 @@ window.addEventListener('unhandledrejection', function(e) {
         + fmtR('經紀人', item.csv_agent)
         + '</div>';
       var rightCol = '<div style="flex:1;min-width:0;padding-left:12px;border-left:1px solid var(--bd);">'
-        + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;">FIRESTORE 現有</div>'
+        + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;gap:6px;">'
+        + '<span>FIRESTORE 現有</span>'
+        + (item.db_seq ? '<button type="button" onclick="cpOpenDetail(' + JSON.stringify(String(item.doc_id || '')).replace(/"/g, '&quot;') + ')" title="點下開啟物件詳情 modal" style="background:var(--bg-h);color:var(--ac);padding:1px 7px;border-radius:9px;font-weight:700;border:none;cursor:pointer;font-family:inherit;">序號 #' + item.db_seq + ' →</button>' : '')
+        + '</div>'
         + '<div style="font-size:13px;color:var(--tx);font-weight:600;">' + item.db_name + '</div>'
         + fmtR('售價', item.db_price!=null ? item.db_price+' 萬' : '')
         + fmtHardCols(item, true)
@@ -11197,7 +11212,10 @@ window.addEventListener('unhandledrejection', function(e) {
               }).join('') + '</div>';
         }
         rightCol = '<div style="flex:1;min-width:0;padding-left:12px;border-left:1px solid var(--bd);">'
-          + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;">FIRESTORE 近似候選（分數 ' + item.nm_score + '）</div>'
+          + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;gap:6px;">'
+          + '<span>FIRESTORE 近似候選（分數 ' + item.nm_score + '）</span>'
+          + (item.nm_seq ? '<button type="button" onclick="cpOpenDetail(' + JSON.stringify(String(item.nm_doc_id || '')).replace(/"/g, '&quot;') + ')" title="點下開啟物件詳情 modal" style="background:var(--bg-h);color:var(--ac);padding:1px 7px;border-radius:9px;font-weight:700;border:none;cursor:pointer;font-family:inherit;">序號 #' + item.nm_seq + ' →</button>' : '')
+          + '</div>'
           + '<div style="font-size:13px;color:var(--tx);font-weight:600;' + (item.nm_name!==item.csv_name?'color:var(--warn);':'') + '">' + item.nm_name + '</div>'
           + fmtR('售價', item.nm_price!=null ? item.nm_price+' 萬' : '')
           + fmtR('地址', item.nm_addr)
