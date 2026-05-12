@@ -5561,9 +5561,16 @@ def api_word_review_upload_doc():
             # 近似候選分數很高（地址+經紀人+售價全吻合）→ 升信心，不留在問題區
             if near_miss is not None and nm_score >= 8:
                 nm_name = str(near_miss.get('案名', '') or '')
-                nm_name_match = _nn(nm_name) == _nn(name)   # 案名規範化後相同
-                # 案名完全相同 → 升高信心（主迴圈漏配，近似搜尋補救）
-                # 案名不同但其他資料吻合 → 升中信心，讓使用者確認
+                # 案名「規範化後相同」或「一邊是另一邊的前綴 + 差 ≤ 6 字」都視為同名
+                # 業務常態：助理會在案名加 A7、B1 等戶號後綴；WORD/ACCESS 可能省略
+                _na = _nn(nm_name); _nb = _nn(name)
+                nm_name_match = bool(_na and _nb) and (
+                    _na == _nb or
+                    (_na.startswith(_nb) and len(_na) - len(_nb) <= 6) or
+                    (_nb.startswith(_na) and len(_nb) - len(_na) <= 6)
+                )
+                # 案名相同／前綴變體 → 升高信心（主迴圈漏配，近似搜尋補救）
+                # 案名差異大但其他資料吻合 → 升中信心，讓使用者確認
                 match_reason = "近似搜尋補救（案名完全相符）" if nm_name_match else "近似候選升中信心"
                 item_nm = {
                     "doc_id":    near_miss['_doc_id'],
