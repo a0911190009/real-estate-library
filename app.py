@@ -1202,14 +1202,17 @@ def _easymap_resolve(area, section, landno):
         import re
         return re.sub(r"[市鎮鄉區]$", "", str(s or "").strip()).replace("台", "臺")
 
-    def _norm_section(s):
-        # 段別正規化：library 資料常寫「中濱 掃別」（段名+小段名，空格分隔），
-        # easymap 對應的是「中濱段掃別小段」，所以兩邊都剝掉「段」「小段」「空格」再比。
-        # 例：「中濱 掃別」↔「中濱段掃別小段」→ 剝後都成「中濱掃別」 ✓
-        # 例：「新田」↔「新田段」→ 剝後都成「新田」 ✓
+    def _norm_section_full(s):
+        # 完整正規化：剝段/小段/空格，得到合併字串（含小段名）
+        # 例：「中濱 掃別」→「中濱掃別」、「中濱段掃別小段」→「中濱掃別」 → 匹配
         s = str(s or "").split(",")[0].strip()
-        # 重要：先剝「小段」再剝「段」，否則「小段」中的「段」會被先剝掉變成「小」
         return s.replace("小段", "").replace("段", "").replace(" ", "").replace("台", "臺")
+
+    def _norm_section_first(s):
+        # 只取第一段名（用於跨段物件 fallback）：「中濱 掃別」→「中濱」
+        s = str(s or "").split(",")[0].strip()
+        first = s.split(" ")[0]
+        return first.rstrip("段").replace("台", "臺")
 
     try:
         from easymap import EasymapCrawler
@@ -1237,8 +1240,15 @@ def _easymap_resolve(area, section, landno):
         if sec_key not in _easymap_cache["sections"]:
             _easymap_cache["sections"][sec_key] = c.get_sections(city_code, town_code)
         sections = _easymap_cache["sections"][sec_key]
-        sect_name_norm = _norm_section(section)  # "新田" 或 "新田段" 都成「新田」
-        sec = next((s for s in sections if _norm_section(s.get("name")) == sect_name_norm), None)
+        # 段別比對：先用「完整正規化」（含小段名）→「中濱 掃別」匹配「中濱段掃別小段」
+        # 失敗 fallback 到「只取第一段」→「中濱 掃別」匹配「中濱段」（跨段物件用第一個地號）
+        sect_full = _norm_section_full(section)
+        sec = next((s for s in sections if _norm_section_full(s.get("name")) == sect_full), None)
+        if not sec:
+            sect_first = _norm_section_first(section)
+            # 找最短匹配（避免「中濱」誤匹「中濱段掃別小段」剝後「中濱掃別」——必須完全相等）
+            sec = next((s for s in sections
+                        if _norm_section_full(s.get("name")) == sect_first), None)
         if not sec:
             return None
         sect_no = sec.get("sectNo") or sec.get("id")
