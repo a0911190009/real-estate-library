@@ -5751,18 +5751,25 @@ def api_word_review_upload_doc():
                 if not floor_only_diff:
                     addr_mismatch = True
                     item["match_by"] = match_by + "（地址不符，請確認）"
-        if score == 99 or (match_by in ("委託號碼", "資料序號", "物件地址") and not addr_mismatch) or score >= 3:
+        # 強配對（強行記憶 / 委編 / 資料序號 / 物件地址）→ 高信心
+        if score == 99 or (match_by in ("委託號碼", "資料序號", "物件地址") and not addr_mismatch):
+            high.append(item)
+        # 「中信心定義」修正（使用者經驗：中信心應該是「硬資料命中、軟資料待確認」）：
+        # 兩邊都有面積但沒一組落在 2% 容差 → 一律歸衝突，不該進高/中信心。
+        # 這樣中信心 bucket 就只剩「硬資料 OK」或「沒面積可驗證」兩種。
+        elif best_has_area and not best_has_hard:
+            # 例：金樽沖浪特區農地(四) 847 坪 vs (一) 780.14 坪 → 差 7.89%，明顯不同物件
+            item["conflict_reason"] = f"面積不符（兩邊都有但差 > 2% 容差，分數 {score}）"
+            conflict.append(item)
+        elif score >= 3:
+            # score >= 3 通常代表 has_hard 命中（地坪 +8 / 建坪 +6）或其他強配對
             high.append(item)
         elif score >= 0:
+            # 中信心：has_hard 命中（軟資料差異待確認），或無面積資料但軟資料相符
             medium.append(item)
         elif best_has_hard:
-            # 有硬資料（面積）且明顯衝突 → 確實是不同物件
-            item["conflict_reason"] = f"面積不符（分數 {score}）"
-            conflict.append(item)
-        elif best_has_area:
-            # 兩邊都有面積但差距 > 20%（被扣分卻沒命中 2% 容差）→ 也是不同物件
-            # 之前這種情況誤判成「無面積驗證」歸中信心，AI 看不到面積差距還會說同意。
-            item["conflict_reason"] = f"面積不符（分數 {score}，兩邊面積差 > 20%）"
+            # 面積命中但其他軟資料差距大（少見保險）
+            item["conflict_reason"] = f"面積符合但其他差距大（分數 {score}）"
             conflict.append(item)
         else:
             # 真的無面積可驗證，僅軟資料不符 → 歸中信心，人工確認
