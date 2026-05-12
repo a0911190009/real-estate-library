@@ -8682,6 +8682,15 @@ window.addEventListener('unhandledrejection', function(e) {
                 🤖 用 Gemini 重新配對
               </button>
             </div>
+            <!-- 同步 Sheets 提示 banner（找不到對應常因 Firestore 沒同步主 Sheets 新資料）-->
+            <div style="margin-bottom:12px;padding:10px 12px;background:rgba(217,119,6,0.10);border:1px solid rgba(217,119,6,0.3);border-radius:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;">
+              <span style="color:#d97706;font-weight:700;">💡 找不到對應通常是因為：</span>
+              <span style="color:var(--txs);flex:1;min-width:200px;">主 Sheets 有這筆物件，但 Firestore 還沒同步進來。可以先做一次「🔄 同步 Sheets」，再重新跑比對審查。</span>
+              <button onclick="rvTriggerSyncFromReview()"
+                style="padding:5px 12px;border-radius:6px;background:#d97706;color:#fff;border:none;font-size:12px;font-weight:700;cursor:pointer;flex-shrink:0;">
+                🔄 立即同步 Sheets
+              </button>
+            </div>
             <div id="rv-ai-result" style="display:none;margin-bottom:14px;padding:12px;background:linear-gradient(135deg,rgba(99,102,241,.08),rgba(139,92,246,.08));border:1px solid rgba(139,92,246,.3);border-radius:10px;"></div>
             <div id="rv-issues-list" style="display:flex;flex-direction:column;gap:8px;"></div>
           </div>
@@ -10694,8 +10703,16 @@ window.addEventListener('unhandledrejection', function(e) {
     document.getElementById('rv-loading').style.display = 'none';
     document.getElementById('rv-results').style.display = 'flex';
     var totalWord = d.csv_rows || (d.high.length + d.medium.length + d.conflict.length + d.unmatched.length);
-    document.getElementById('rv-subtitle').textContent =
-      'Word 共 ' + totalWord + ' 筆｜高信心 ' + d.high.length + ' ／ 中信心 ' + d.medium.length + ' ／ 問題 ' + issueCount;
+    var subtitle = 'Word 共 ' + totalWord + ' 筆｜高信心 ' + d.high.length + ' ／ 中信心 ' + d.medium.length + ' ／ 問題 ' + issueCount;
+    // 未配對數量高（> 5 筆）→ subtitle 加紅色提示「強烈建議先同步 Sheets」
+    var unmatchedCount = (d.unmatched || []).length;
+    if (unmatchedCount > 5) {
+      subtitle += ' ｜ <span style="color:#dc2626;font-weight:700;">⚠️ 未配對 ' + unmatchedCount
+        + ' 筆，多半是主 Sheets 已有但 Firestore 沒同步，建議先 🔄 同步 Sheets</span>';
+      document.getElementById('rv-subtitle').innerHTML = subtitle;
+    } else {
+      document.getElementById('rv-subtitle').textContent = subtitle;
+    }
 
     // 更新 tab 數字
     document.getElementById('rv-count-high').textContent   = d.high.length;
@@ -11143,6 +11160,16 @@ window.addEventListener('unhandledrejection', function(e) {
         btn.style.color = 'var(--txm)';
       }
     });
+  }
+
+  // 🔄 在審查 modal 內觸發「同步 Sheets」— 關閉審查 + 呼叫 cpTriggerSync。
+  // 同步完成後使用者要自己重新跑比對審查（同步約 1-2 分鐘，期間不能保留現有審查結果）
+  function rvTriggerSyncFromReview() {
+    if (!confirm('將執行「🔄 同步 Sheets」（主 Sheets → Firestore，約 1-2 分鐘）。\n\n執行後請：\n1. 等同步完成（右上角會 toast 提示）\n2. 重新點「🔍 比對審查」上傳同一個 Word 檔再跑一次\n\n（目前審查結果會關閉，未確認的配對不會保留）\n\n確認執行？')) return;
+    cpCloseReview();
+    // 跳到頂部，讓使用者看得到主同步按鈕的狀態變化
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    cpTriggerSync();
   }
 
   // 🤖 用 Gemini 對問題組重新配對
