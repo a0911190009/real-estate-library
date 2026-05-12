@@ -10786,7 +10786,7 @@ window.addEventListener('unhandledrejection', function(e) {
       var leftCol = '<div style="flex:1;min-width:0;">'
         + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;text-transform:uppercase;display:flex;justify-content:space-between;align-items:center;gap:6px;">'
         + '<span>Word 物件總表</span>'
-        + (item.csv_row ? '<span style="background:var(--bg-h);color:var(--ac);padding:1px 7px;border-radius:9px;font-weight:700;">行 #' + item.csv_row + '</span>' : '')
+        + (item.csv_row ? '<button type="button" onclick="rvCopyName(this, ' + JSON.stringify(item.csv_name || '').replace(/"/g, '&quot;') + ')" title="點下複製案名（可貼到 Word 用 Cmd+F 搜尋）" style="background:var(--bg-h);color:var(--ac);padding:1px 7px;border-radius:9px;font-weight:700;border:none;cursor:pointer;font-family:inherit;">行 #' + item.csv_row + '</button>' : '')
         + '</div>'
         + '<div style="font-size:13px;color:var(--tx);font-weight:600;">' + (item.csv_name || item.db_name) + '</div>'
         + fmtR('售價', item.csv_price!=null ? item.csv_price+' 萬' : '')
@@ -10798,7 +10798,7 @@ window.addEventListener('unhandledrejection', function(e) {
       var rightCol = '<div style="flex:1;min-width:0;padding-left:12px;border-left:1px solid var(--bd);">'
         + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;gap:6px;">'
         + '<span>FIRESTORE 現有</span>'
-        + (item.db_seq ? '<span style="background:var(--bg-h);color:var(--ac);padding:1px 7px;border-radius:9px;font-weight:700;">序號 #' + item.db_seq + '</span>' : '')
+        + (item.db_seq ? '<button type="button" onclick="cpOpenDetail(' + JSON.stringify(String(item.doc_id || '')).replace(/"/g, '&quot;') + ')" title="點下開啟物件詳情 modal" style="background:var(--bg-h);color:var(--ac);padding:1px 7px;border-radius:9px;font-weight:700;border:none;cursor:pointer;font-family:inherit;">序號 #' + item.db_seq + ' →</button>' : '')
         + '</div>'
         + '<div style="font-size:13px;color:var(--tx);font-weight:600;">' + nameLabel + '</div>'
         + fmtR('售價', fmtPrice(item.db_price, item.csv_price))
@@ -10828,7 +10828,7 @@ window.addEventListener('unhandledrejection', function(e) {
       var leftCol = '<div style="flex:1;min-width:0;">'
         + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;text-transform:uppercase;display:flex;justify-content:space-between;align-items:center;gap:6px;">'
         + '<span>Word 物件總表</span>'
-        + (item.csv_row ? '<span style="background:var(--bg-h);color:var(--ac);padding:1px 7px;border-radius:9px;font-weight:700;">行 #' + item.csv_row + '</span>' : '')
+        + (item.csv_row ? '<button type="button" onclick="rvCopyName(this, ' + JSON.stringify(item.csv_name || '').replace(/"/g, '&quot;') + ')" title="點下複製案名（可貼到 Word 用 Cmd+F 搜尋）" style="background:var(--bg-h);color:var(--ac);padding:1px 7px;border-radius:9px;font-weight:700;border:none;cursor:pointer;font-family:inherit;">行 #' + item.csv_row + '</button>' : '')
         + '</div>'
         + '<div style="font-size:13px;color:var(--tx);font-weight:600;">' + (item.csv_name || item.db_name) + '</div>'
         + fmtR('售價', item.csv_price!=null ? item.csv_price+' 萬' : '')
@@ -10840,7 +10840,7 @@ window.addEventListener('unhandledrejection', function(e) {
       var rightCol = '<div style="flex:1;min-width:0;padding-left:12px;border-left:1px solid var(--bd);">'
         + '<div style="font-size:10px;color:var(--txs);font-weight:600;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;gap:6px;">'
         + '<span>FIRESTORE 現有</span>'
-        + (item.db_seq ? '<span style="background:var(--bg-h);color:var(--ac);padding:1px 7px;border-radius:9px;font-weight:700;">序號 #' + item.db_seq + '</span>' : '')
+        + (item.db_seq ? '<button type="button" onclick="cpOpenDetail(' + JSON.stringify(String(item.doc_id || '')).replace(/"/g, '&quot;') + ')" title="點下開啟物件詳情 modal" style="background:var(--bg-h);color:var(--ac);padding:1px 7px;border-radius:9px;font-weight:700;border:none;cursor:pointer;font-family:inherit;">序號 #' + item.db_seq + ' →</button>' : '')
         + '</div>'
         + '<div style="font-size:13px;color:var(--tx);font-weight:600;">' + nameLabel + '</div>'
         + fmtR('售價', fmtPrice(item.db_price, item.csv_price))
@@ -11340,6 +11340,27 @@ window.addEventListener('unhandledrejection', function(e) {
   }
 
   // 中信心：確認一筆（再按一次取消，可回復）
+  // 點 Word 行號徽章：複製案名到剪貼簿，方便去 Word 文件 Cmd+F 搜尋
+  function rvCopyName(btn, name) {
+    if (!name) { toast('沒有案名可複製', 'error'); return; }
+    var done = function() {
+      var orig = btn.innerHTML;
+      btn.innerHTML = '✓ 已複製';
+      setTimeout(function(){ btn.innerHTML = orig; }, 1500);
+      toast('已複製「' + name + '」，可貼到 Word 用 Cmd+F 搜尋', 'info');
+    };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(name).then(done, function(){ done(); });
+      } else {
+        var ta = document.createElement('textarea');
+        ta.value = name; document.body.appendChild(ta);
+        ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+        done();
+      }
+    } catch (e) { toast('複製失敗：' + e, 'error'); }
+  }
+
   function rvAcceptMedium(btn) {
     var docId = btn.dataset.docid;
     if (btn.dataset.state === 'confirmed') {
