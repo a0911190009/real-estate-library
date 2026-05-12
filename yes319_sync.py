@@ -264,6 +264,9 @@ def run_full_sync(home_start_url, service_key, threshold=0.6, dry_run=False):
             "features": yes["features"],
             "amenities": yes["amenities"],
             "yes319_objno": yes["objno"],
+            # yes319 上架代表「銷售中 + 委託期內」（沒委託期間不能上 yes319），
+            # 直接強制 is_selling=True，避免 SHEETS 漏填到期日讓 home-start 隱藏掉
+            "is_selling": True,
         }
         age_int = _parse_age(yes["age_str"])
         floor_norm = _parse_floor(yes["floor_str"])
