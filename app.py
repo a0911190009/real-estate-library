@@ -3024,6 +3024,15 @@ def _do_sync(org_id=None):
 
         written = skipped = deleted = skipped_old = preserved_old = 0
         seen_ids = set()
+        # 明細追蹤（給 UI 顯示）：新增/刪除的案名 + 序號
+        added_items   = []  # [{seq, 案名, 委託日, 經紀人}]
+        deleted_items = []  # 同上
+
+        # 先把 Firestore 既有物件的案名抓出來（待會刪除時顯示用）
+        existing_names = {}  # doc_id → 案名
+        for doc in col.stream():
+            rec = doc.to_dict() or {}
+            existing_names[doc.id] = rec.get("案名", "")
 
         for row in data_rows:
             d = _row_to_doc(headers, row)
@@ -3043,6 +3052,7 @@ def _do_sync(org_id=None):
                     continue
 
             doc_id = seq
+            is_new = doc_id not in existing_ids  # 寫入前判斷是新增還是更新
             seen_ids.add(doc_id)
             d["_synced_at"] = started
             # 標記組織歸屬，讓不同公司的資料互相隔離
@@ -3052,6 +3062,14 @@ def _do_sync(org_id=None):
             # 特別保護「銷售中」：由 Word 審查或手動回寫管理，不被 Sheets 覆蓋
             col.document(doc_id).set(d, merge=True)
             written += 1
+            if is_new:
+                # 新增明細（給 UI 顯示）
+                added_items.append({
+                    "seq":     seq,
+                    "案名":     d.get("案名", ""),
+                    "委託日":   d.get("委託日", ""),
+                    "經紀人":   d.get("經紀人", ""),
+                })
             if written % 200 == 0:
                 log.info(f"進度：{written}/{len(data_rows)}")
 
@@ -3063,18 +3081,30 @@ def _do_sync(org_id=None):
             if ed is None or ed < MIN_COMMIT:
                 preserved_old += 1
                 continue
+            deleted_items.append({
+                "seq":  doc_id,
+                "案名":  existing_names.get(doc_id, ""),
+            })
             col.document(doc_id).delete()
             deleted += 1
 
+        added_count   = len(added_items)
+        updated_count = written - added_count
         result = {
             "ok": True,
-            "written": written,
-            "skipped": skipped,
-            "deleted": deleted,
-            "started": started,
+            "written":        written,        # 新增 + 更新總計
+            "added":          added_count,    # 新增（Firestore 之前沒有）
+            "updated":        updated_count,  # 更新（已存在，欄位刷新）
+            "skipped":        skipped,        # 跳過（資料序號異常）
+            "skipped_old":    skipped_old,    # 跳過寫入（委託日 < 2013/1/1）
+            "deleted":        deleted,        # 刪除（不在 Sheets 中）
+            "preserved_old":  preserved_old,  # 保留不刪（既有舊物件）
+            "added_items":    added_items[:50],   # 新增明細前 50 筆給 UI 顯示
+            "deleted_items":  deleted_items[:50], # 刪除明細前 50 筆給 UI 顯示
+            "started":  started,
             "finished": datetime.now(timezone.utc).isoformat()
         }
-        log.info(f"同步完成：{result}")
+        log.info(f"同步完成：written={written}(added={added_count}/updated={updated_count}) deleted={deleted} skipped_old={skipped_old} preserved_old={preserved_old}")
 
         # 同步完成後，更新物件快速搜尋索引（存入 Firestore meta 文件）
         try:
@@ -9412,6 +9442,26 @@ window.addEventListener('unhandledrejection', function(e) {
   </div>
 </div>
 
+<!-- 同步 Sheets 完成後的結果明細 Modal -->
+<div id="cp-sync-result-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:650;align-items:flex-start;justify-content:center;padding-top:32px;"
+  onclick="if(event.target===this)closeSyncResultModal()">
+  <div style="background:var(--bg-s);border:1px solid var(--bd);border-radius:16px;width:96%;max-width:720px;max-height:88vh;display:flex;flex-direction:column;box-shadow:var(--sh);">
+    <div style="padding:16px 24px 12px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px;">
+      <span style="font-size:15px;font-weight:700;color:var(--tx);">✅ 同步完成</span>
+      <span id="cp-sync-result-subtitle" style="font-size:12px;color:var(--txs);"></span>
+      <button onclick="closeSyncResultModal()"
+        style="margin-left:auto;background:none;border:none;color:var(--txm);font-size:20px;cursor:pointer;line-height:1;">✕</button>
+    </div>
+    <div id="cp-sync-result-body" style="flex:1;overflow-y:auto;padding:16px 24px;"></div>
+    <div style="padding:12px 24px;border-top:1px solid var(--bd);display:flex;justify-content:flex-end;gap:8px;">
+      <button onclick="closeSyncResultModal()"
+        style="padding:7px 18px;border-radius:8px;background:var(--ac);color:#fff;border:none;font-size:13px;font-weight:700;cursor:pointer;">
+        關閉
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- new-prop-modal 已移除（我的物件功能移至廣告文案工具的「文案收藏」） -->
 
 <script>
@@ -12333,6 +12383,76 @@ window.addEventListener('unhandledrejection', function(e) {
     } catch(e) {}
   });
 
+  // 同步結果明細 modal — 顯示新增/更新/刪除統計 + 案名列表
+  // 接收 _do_sync 的回傳：{ ok, written, added, updated, skipped_old, deleted, preserved_old, added_items, deleted_items, ... }
+  function showSyncResultModal(r) {
+    var modal    = document.getElementById('cp-sync-result-modal');
+    var subtitle = document.getElementById('cp-sync-result-subtitle');
+    var body     = document.getElementById('cp-sync-result-body');
+    if (!modal || !subtitle || !body) {
+      toast('同步完成！', 'success');
+      return;
+    }
+    var added         = r.added || 0;
+    var updated       = r.updated || 0;
+    var deleted       = r.deleted || 0;
+    var skippedOld    = r.skipped_old || 0;
+    var preservedOld  = r.preserved_old || 0;
+    var addedItems    = r.added_items || [];
+    var deletedItems  = r.deleted_items || [];
+
+    // 副標題：一行摘要
+    subtitle.textContent = '新增 ' + added + ' ／ 更新 ' + updated + ' ／ 刪除 ' + deleted;
+
+    // 統計徽章列
+    function badge(label, count, color) {
+      return '<span style="display:inline-flex;align-items:center;gap:4px;background:var(--bg-t);border:1px solid var(--bd);border-radius:8px;padding:6px 12px;font-size:12px;color:' + color + ';">'
+        + label + ' <strong style="font-size:14px;">' + count + '</strong></span>';
+    }
+    var stats = '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;">'
+      + badge('🆕 新增', added, added > 0 ? '#16a34a' : 'var(--txm)')
+      + badge('🔄 更新', updated, updated > 0 ? 'var(--ac)' : 'var(--txm)')
+      + badge('🗑️ 刪除', deleted, deleted > 0 ? '#dc2626' : 'var(--txm)')
+      + badge('⏩ 跳過舊資料（< 2013/1/1）', skippedOld, 'var(--txs)')
+      + badge('🛡️ 保留舊 Firestore 物件', preservedOld, 'var(--txs)')
+      + '</div>';
+
+    // 新增明細
+    function renderList(title, items, color, emptyMsg) {
+      if (!items.length) {
+        return '<div style="margin-bottom:14px;padding:10px 12px;background:var(--bg-t);border-radius:8px;font-size:12px;color:var(--txs);">'
+          + '<strong style="color:' + color + ';">' + title + '</strong>：' + emptyMsg + '</div>';
+      }
+      var rows = items.map(function(it){
+        var seq = it.seq || '';
+        var nm  = it.案名 || '(無案名)';
+        var dt  = it.委託日 || '';
+        var ag  = it.經紀人 || '';
+        return '<div style="padding:5px 8px;border-bottom:1px solid var(--bd);font-size:12px;display:flex;gap:8px;flex-wrap:wrap;">'
+          + '<span style="color:var(--txm);font-weight:700;min-width:50px;">#' + escapeHtml(seq) + '</span>'
+          + '<span style="color:var(--tx);flex:1;min-width:120px;">' + escapeHtml(nm) + '</span>'
+          + (dt ? '<span style="color:var(--txs);">' + escapeHtml(dt) + '</span>' : '')
+          + (ag ? '<span style="color:var(--txs);">' + escapeHtml(ag) + '</span>' : '')
+          + '</div>';
+      }).join('');
+      return '<div style="margin-bottom:14px;border:1px solid var(--bd);border-radius:8px;overflow:hidden;">'
+        + '<div style="padding:8px 12px;background:var(--bg-t);font-size:12px;font-weight:700;color:' + color + ';">'
+        + title + '（' + items.length + ' 筆，僅顯示前 50 筆）</div>'
+        + '<div style="max-height:240px;overflow-y:auto;">' + rows + '</div></div>';
+    }
+
+    body.innerHTML = stats
+      + renderList('🆕 新增到 Firestore', addedItems, '#16a34a', '無新增')
+      + renderList('🗑️ 從 Firestore 刪除（已不在 Sheets）', deletedItems, '#dc2626', '無刪除');
+
+    modal.style.display = 'flex';
+  }
+
+  function closeSyncResultModal() {
+    var modal = document.getElementById('cp-sync-result-modal');
+    if (modal) modal.style.display = 'none';
+  }
+
   function cpTriggerSync() {
     var btn = document.getElementById('cp-sync-btn');
     btn.disabled = true;
@@ -12356,7 +12476,8 @@ window.addEventListener('unhandledrejection', function(e) {
             } else {
               window._cpSearched = false;
               cpSearch();
-              toast('同步完成！', 'success');
+              // 顯示同步結果明細 modal（新增/更新/刪除 + 案名列表）
+              showSyncResultModal(r);
             }
           }
         });
