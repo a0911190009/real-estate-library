@@ -176,6 +176,22 @@ def _score(yes, hs):
            _addr_overlap(yes.get("address"), hs.get("address")) * 0.3
 
 
+# ───── home-start 物件清單（含房屋 + 土地兩種；/api/properties 預設只回房屋） ─────
+def _fetch_all_hs_properties(home_start_url):
+    """合併拉 house + land 兩種類別。土地 (農地/建地/道路用地) 預設不在 /api/properties。"""
+    base = home_start_url.rstrip("/")
+    out = []
+    for type_ in ("house", "land"):
+        try:
+            r = requests.get(f"{base}/api/properties?type={type_}&limit=500", timeout=20)
+            d = r.json()
+            items = d if isinstance(d, list) else d.get("items", [])
+            out.extend(items)
+        except Exception as e:
+            log.warning(f"[yes319] 拉 {type_} 清單失敗：{e}")
+    return out
+
+
 # ───── 推送到 home-start ─────
 def _push_to_home_start(home_start_url, service_key, hs_id, payload):
     url = f"{home_start_url.rstrip('/')}/admin/property/{hs_id}/meta"
@@ -216,11 +232,9 @@ def run_full_sync(home_start_url, service_key, threshold=0.6, dry_run=False):
         time.sleep(0.3)
     log.info(f"[yes319] 成功爬 {len(yes_items)} 筆、失敗 {len(crawl_fails)}")
 
-    log.info("[yes319] step 3/4 拉 home-start 物件清單...")
-    r = requests.get(f"{home_start_url.rstrip('/')}/api/properties", timeout=15)
-    hs_resp = r.json()
-    hs_items = hs_resp if isinstance(hs_resp, list) else hs_resp.get("items", [])
-    log.info(f"[yes319] home-start {len(hs_items)} 筆")
+    log.info("[yes319] step 3/4 拉 home-start 物件清單（房屋 + 土地）...")
+    hs_items = _fetch_all_hs_properties(home_start_url)
+    log.info(f"[yes319] home-start {len(hs_items)} 筆（含土地）")
 
     log.info("[yes319] step 4/4 比對 + 推送...")
     matched = []
@@ -303,9 +317,7 @@ def run_unlist_missing(home_start_url, service_key, dry_run=False):
     log.info(f"[unlist] yes319 現有 {len(yes_set)} 筆 objno")
 
     # 2. 拉 home-start 現有物件
-    r = requests.get(f"{home_start_url.rstrip('/')}/api/properties", timeout=15)
-    hs_resp = r.json()
-    hs_items = hs_resp if isinstance(hs_resp, list) else hs_resp.get("items", [])
+    hs_items = _fetch_all_hs_properties(home_start_url)
 
     # 3. 找出「有 yes319_objno 但已不在 yes319 set 中」的物件
     to_unlist = []
@@ -360,9 +372,7 @@ def run_create_missing_dryrun(home_start_url, service_key):
             pass
         time.sleep(0.3)
 
-    r = requests.get(f"{home_start_url.rstrip('/')}/api/properties", timeout=15)
-    hs_resp = r.json()
-    hs_items = hs_resp if isinstance(hs_resp, list) else hs_resp.get("items", [])
+    hs_items = _fetch_all_hs_properties(home_start_url)
 
     missing = []
     for yes in yes_items:
@@ -388,9 +398,7 @@ def run_photo_sync(home_start_url, service_key, max_per_prop=15):
         return {"ok": False, "error": "缺少 home_start_url 或 service_key"}
     started = time.time()
     log.info("[yes319-photo] 拉 home-start 物件清單...")
-    r = requests.get(f"{home_start_url.rstrip('/')}/api/properties", timeout=15)
-    hs_resp = r.json()
-    hs_items = hs_resp if isinstance(hs_resp, list) else hs_resp.get("items", [])
+    hs_items = _fetch_all_hs_properties(home_start_url)
 
     # 找出「有 yes319_objno 但 photos 為空」的物件
     targets = []
