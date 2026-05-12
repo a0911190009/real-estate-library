@@ -1178,6 +1178,113 @@ def _sheets_read_all():
     return headers, data_rows
 
 
+# ─────────────────────────────────────────────────────────────
+# 地號 → 座標反查（easymap 內政部地籍圖資）
+# ─────────────────────────────────────────────────────────────
+_easymap_cache = {"cities": None, "towns": {}, "sections": {}}  # in-memory cache
+
+def _easymap_resolve(area, section, landno):
+    """area=鄉/市/鎮（如「成功鎮」）、section=段別（如「忠仁段」）、landno=地號（如 0123-0004 或 123）。
+    回傳 (lat, lng) 或 None。
+    """
+    if not area or not section or not landno:
+        return None
+    try:
+        from easymap import EasymapCrawler
+        c = EasymapCrawler()
+        # 一次初始化 cache：縣市清單
+        if _easymap_cache["cities"] is None:
+            _easymap_cache["cities"] = c.get_cities()
+        # 找台東縣（台 → 臺 正規化）
+        target_city_name = "臺東縣"
+        city = next((x for x in _easymap_cache["cities"]
+                     if (x.get("name") or "").replace("台", "臺") == target_city_name), None)
+        if not city:
+            return None
+        city_code = city.get("id") or city.get("code")
+        # 鄉鎮 cache（同縣市）
+        if city_code not in _easymap_cache["towns"]:
+            _easymap_cache["towns"][city_code] = c.get_towns(city_code)
+        towns = _easymap_cache["towns"][city_code]
+        area_norm = str(area).replace("台", "臺")
+        town = next((x for x in towns
+                     if (x.get("name") or "").replace("台", "臺") == area_norm), None)
+        if not town:
+            return None
+        town_code = town.get("id") or town.get("code")
+        # 段別 cache
+        sec_key = f"{city_code}|{town_code}"
+        if sec_key not in _easymap_cache["sections"]:
+            _easymap_cache["sections"][sec_key] = c.get_sections(city_code, town_code)
+        sections = _easymap_cache["sections"][sec_key]
+        sect_name_norm = str(section).replace("台", "臺")
+        sec = next((s for s in sections
+                    if (s.get("name") or "").replace("台", "臺") == sect_name_norm), None)
+        if not sec:
+            return None
+        sect_no = sec.get("sectNo") or sec.get("id")
+        office  = sec.get("office") or sec.get("officeCode") or ""
+        # 地號正規化：取第一個（多地號就用第一個）、補零成 8 碼
+        first_landno = str(landno).split(",")[0].split(";")[0].split(" ")[0].strip()
+        coord = c.locate(sect_no, office, first_landno)
+        if coord and "lat" in coord and "lng" in coord:
+            return (coord["lat"], coord["lng"])
+    except Exception as e:
+        import logging
+        logging.warning(f"easymap_resolve 失敗 area={area} section={section} landno={landno}: {e}")
+    return None
+
+
+def _sheets_write_coord_batch(seq_to_coord: dict):
+    """把 seq → 'lat,lng' 字串寫回 SHEETS 的「座標」欄位（只動該欄、其他欄不碰）。"""
+    if not seq_to_coord:
+        return {"ok": True, "updated": 0}
+    import logging
+    log = logging.getLogger("sheets-coord")
+    try:
+        service = _get_sheets_service()
+        result = service.spreadsheets().values().get(
+            spreadsheetId=SHEET_ID, range=f"{SHEET_NAME}!A1:AZ9999"
+        ).execute()
+        all_rows = result.get("values", [])
+        if len(all_rows) < 4:
+            return {"ok": False, "error": "Sheets 列數不足"}
+        headers = all_rows[1]
+        try:
+            seq_col_idx   = headers.index("資料序號")
+            coord_col_idx = headers.index("座標")
+        except ValueError as e:
+            return {"ok": False, "error": f"找不到欄位（請先在 SHEETS 加「座標」欄）：{e}"}
+        def col_letter(idx):
+            r = ""
+            while idx >= 0:
+                r = chr(idx % 26 + ord('A')) + r
+                idx = idx // 26 - 1
+            return r
+        coord_col = col_letter(coord_col_idx)
+        updates = []
+        for i, row in enumerate(all_rows):
+            if i < 3:
+                continue
+            seq_val = row[seq_col_idx].strip() if seq_col_idx < len(row) else ""
+            if seq_val in seq_to_coord:
+                updates.append({
+                    "range": f"{SHEET_NAME}!{coord_col}{i+1}",
+                    "values": [[seq_to_coord[seq_val]]],
+                })
+        if not updates:
+            return {"ok": True, "updated": 0}
+        service.spreadsheets().values().batchUpdate(
+            spreadsheetId=SHEET_ID,
+            body={"valueInputOption": "RAW", "data": updates},
+        ).execute()
+        log.info(f"sheets_write_coord：已更新 {len(updates)} 列")
+        return {"ok": True, "updated": len(updates)}
+    except Exception as e:
+        log.exception("sheets_write_coord 失敗")
+        return {"ok": False, "error": str(e)}
+
+
 def _sheets_write_selling_status(seq_to_selling: dict):
     """
     把 Firestore 的「銷售中」值回寫到 Sheets，只動這一欄，其他欄位完全不碰。
@@ -1276,13 +1383,54 @@ def api_sheets_writeback_selling():
         if not seq_to_selling:
             return jsonify({"ok": False, "error": "Firestore 無資料"}), 400
         result = _sheets_write_selling_status(seq_to_selling)
-        if result.get("ok"):
-            return jsonify({"ok": True, "total": len(seq_to_selling),
-                            "updated": result["updated"],
-                            "message": f"已掃描 {len(seq_to_selling)} 筆，回寫 {result['updated']} 筆"})
-        else:
+        if not result.get("ok"):
             return jsonify({"ok": False, "error": result.get("error", "未知錯誤")}), 500
+
+        # ───── 順便補座標：銷售中 + 委託期內 + 段別/地號齊全 + 座標空白 ─────
+        # 用 easymap 反查座標、寫回 SHEETS「座標」欄位 + Firestore
+        coord_targets = []
+        for doc in db.collection("company_properties").stream():
+            r = doc.to_dict()
+            if not _is_selling(r) or not _is_within_delegation(r):
+                continue
+            if r.get("座標"):  # 已有座標
+                continue
+            area    = (r.get("鄉/市/鎮") or "").strip()
+            section = (r.get("段別") or "").strip()
+            landno  = (r.get("地號") or "").strip()
+            seq     = doc.id
+            if area and section and landno and seq and seq.isdigit():
+                coord_targets.append((seq, area, section, landno))
+
+        coord_updates = {}
+        coord_failed = 0
+        for seq, area, section, landno in coord_targets:
+            coord = _easymap_resolve(area, section, landno)
+            if coord:
+                coord_str = f"{coord[0]:.6f},{coord[1]:.6f}"
+                coord_updates[seq] = coord_str
+                # 寫進 Firestore（用 merge 不影響其他欄位）
+                db.collection("company_properties").document(seq).set(
+                    {"座標": coord_str}, merge=True
+                )
+            else:
+                coord_failed += 1
+
+        coord_result = _sheets_write_coord_batch(coord_updates) if coord_updates else {"ok": True, "updated": 0}
+
+        return jsonify({
+            "ok": True,
+            "selling": {"total": len(seq_to_selling), "updated": result["updated"]},
+            "coord":   {"attempted": len(coord_targets),
+                        "resolved":  len(coord_updates),
+                        "failed":    coord_failed,
+                        "sheets_updated": coord_result.get("updated", 0)},
+            "message": (f"回寫銷售中 {result['updated']} 筆；"
+                        f"補座標：嘗試 {len(coord_targets)} 筆、查到 {len(coord_updates)} 筆、寫回 SHEETS {coord_result.get('updated', 0)} 筆"),
+        })
     except Exception as e:
+        import logging
+        logging.exception("writeback-selling 失敗")
         return jsonify({"error": str(e)}), 500
 
 
@@ -8467,11 +8615,11 @@ window.addEventListener('unhandledrejection', function(e) {
         🔍 比對審查
         <input type="file" accept=".csv,.json,.doc,.docx" multiple class="hidden" onchange="cpOpenReview(this)">
       </label>
-      <!-- 步驟 4：回寫銷售中 → Sheets（靛藍 = 流程終點） -->
+      <!-- 步驟 4：回寫銷售中 + 補座標 → Sheets（靛藍 = 流程終點） -->
       <button id="cp-writeback-btn" onclick="cpWritebackSelling()"
         class="px-4 py-1.5 rounded-lg bg-indigo-700 hover:bg-indigo-600 text-white text-xs font-semibold transition"
-        title="【步驟 4】把 Firestore 目前所有物件的「銷售中」狀態，一次回寫到 Google Sheets（只動銷售中欄，不碰其他欄位）。完整流程順序：1.ACCESS比對 → 2.同步Sheets → 3.比對審查 → 4.回寫銷售中。不做這步的話，下次「同步 Sheets」會把 Word 寫的銷售中又打回舊狀態。">
-        📤 回寫銷售中
+        title="【步驟 4】(1) 把 Firestore 「銷售中」狀態回寫到 Google Sheets；(2) 對銷售中+委託期內+有段別地號但無座標的物件，用 easymap 反查座標，寫回 SHEETS「座標」欄位+Firestore。每筆查 5-10 秒，銷售中物件多會跑 3-10 分鐘。">
+        📤 回寫銷售中 + 補座標
       </button>
       <!-- 步驟 5：yes319 全自動（一鍵跑文案 + 照片 + 下架預覽 + 缺漏預覽） -->
       <button id="cp-yes319-btn" onclick="cpSyncYes319All()"
@@ -12835,26 +12983,33 @@ window.addEventListener('unhandledrejection', function(e) {
       });
   }
 
-  // 一鍵回寫 Firestore 銷售中 → Google Sheets
+  // 一鍵回寫 Firestore 銷售中 → Google Sheets + 補上架物件座標
   function cpWritebackSelling() {
-    if (!confirm('確定要把 Firestore 所有物件的「銷售中」狀態回寫到 Google Sheets 嗎？（只更新銷售中欄，其他欄位不動）')) return;
+    if (!confirm('確定執行？\n(1) 把 Firestore「銷售中」狀態回寫到 Google Sheets\n(2) 對銷售中+委託期內+有段別地號的物件，用 easymap 反查座標、寫回 SHEETS「座標」欄位\n\n預計 3-10 分鐘（看銷售中物件數量）')) return;
     var btn = document.getElementById('cp-writeback-btn');
     btn.disabled = true;
-    btn.textContent = '回寫中…';
+    btn.textContent = '⏳ 回寫中…';
     fetch('/api/sheets/writeback-selling', { method: 'POST' })
       .then(function(r){ return r.json(); })
       .then(function(d) {
         btn.disabled = false;
-        btn.textContent = '📤 回寫銷售中';
+        btn.textContent = '📤 回寫銷售中 + 補座標';
         if (d.ok) {
-          toast('✅ ' + d.message, 'success');
+          var msg = d.message || '完成';
+          if (d.coord) {
+            msg += '\n座標：嘗試 ' + d.coord.attempted
+                 + ' 筆、查到 ' + d.coord.resolved
+                 + '（失敗 ' + d.coord.failed + '）'
+                 + '、寫回 SHEETS ' + d.coord.sheets_updated + ' 筆';
+          }
+          alert('✅ ' + msg);
         } else {
-          toast('❌ 回寫失敗：' + (d.error || '未知錯誤'), 'error');
+          toast('❌ 失敗：' + (d.error || '未知錯誤'), 'error');
         }
       })
       .catch(function(e){
         btn.disabled = false;
-        btn.textContent = '📤 回寫銷售中';
+        btn.textContent = '📤 回寫銷售中 + 補座標';
         toast('❌ 呼叫失敗：' + e, 'error');
       });
   }
