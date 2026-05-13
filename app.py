@@ -13102,7 +13102,7 @@ window.addEventListener('unhandledrejection', function(e) {
 
   // 一鍵回寫 Firestore 銷售中 → Google Sheets + 補上架物件座標
   function cpWritebackSelling() {
-    if (!confirm('確定執行？\n(1) 把 Firestore「銷售中」狀態回寫到 Google Sheets\n(2) 對銷售中+委託期內+有段別地號的物件，用 easymap 反查座標、寫回 SHEETS「座標」欄位\n\n預計 3-10 分鐘（看銷售中物件數量）')) return;
+    if (!confirm('確定執行？\\n(1) 把 Firestore「銷售中」狀態回寫到 Google Sheets\\n(2) 對銷售中+委託期內+有段別地號的物件，用 easymap 反查座標、寫回 SHEETS「座標」欄位\\n\\n預計 3-10 分鐘（看銷售中物件數量）')) return;
     var btn = document.getElementById('cp-writeback-btn');
     btn.disabled = true;
     btn.textContent = '⏳ 回寫中…';
@@ -13114,7 +13114,7 @@ window.addEventListener('unhandledrejection', function(e) {
         if (d.ok) {
           var msg = d.message || '完成';
           if (d.coord) {
-            msg += '\n座標：嘗試 ' + d.coord.attempted
+            msg += '\\n座標：嘗試 ' + d.coord.attempted
                  + ' 筆、查到 ' + d.coord.resolved
                  + '（失敗 ' + d.coord.failed + '）'
                  + '、寫回 SHEETS ' + d.coord.sheets_updated + ' 筆';
