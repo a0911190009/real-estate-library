@@ -172,11 +172,31 @@ def _addr_overlap(a, b):
 
 
 def _score(yes, hs):
-    yp, hp = yes.get("price_wan"), float(hs.get("price") or 0)
-    if not yp or not hp or abs(yp - hp) > 0.1:
+    """yes319 物件 vs home-start 物件相似度（0~1；None = 案名太不像，直接排除）。
+
+    改進歷史：舊版用 `abs(yp-hp) > 0.1` 硬性比對價格——價差超過 1000 元就判定
+    不同物件。但屋主常調價、Sheets 更新有時差，yes319 網頁價與公司庫價幾乎不可能
+    分毫不差（例「徐州街透天住家」yes 749 萬 vs 庫 768 萬，明顯同物件卻被擋掉）。
+    新版改成：案名為主要訊號，價格接近度當加分，價格差異不再一票否決。
+    """
+    title_sim = _title_sim(yes.get("title"), hs.get("title"))
+    addr_sim  = _addr_overlap(yes.get("address"), hs.get("address"))
+
+    yp = yes.get("price_wan")
+    hp = float(hs.get("price") or 0)
+    if yp and hp:
+        diff_ratio = abs(yp - hp) / max(yp, hp)
+        # 價差 0% → 1.0；20% → 0.5；>=40% → 0（價差過大才視為弱訊號，但不硬性排除）
+        price_sim = max(0.0, 1.0 - diff_ratio / 0.4)
+    else:
+        price_sim = 0.0  # 缺價格 → 此項不加分，但也不靠它排除
+
+    # 安全閘：案名極不像（< 0.35）一律排除，避免把錯的照片/特色推上對外網站
+    if title_sim < 0.35:
         return None
-    return _title_sim(yes.get("title"), hs.get("title")) * 0.7 + \
-           _addr_overlap(yes.get("address"), hs.get("address")) * 0.3
+
+    # 案名最強（台東房仲案名通常很獨特，如「徐州街透天住家」）；地址、價格輔助
+    return title_sim * 0.6 + addr_sim * 0.2 + price_sim * 0.2
 
 
 # ───── home-start 物件清單（含房屋 + 土地兩種；/api/properties 預設只回房屋） ─────
