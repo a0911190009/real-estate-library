@@ -8410,54 +8410,20 @@ window.addEventListener('unhandledrejection', function(e) {
   </div>
 </div>
 
-<!-- ── 桌機左側 Sidebar（80px icon-only，與 Portal 一致） ── -->
+<!-- ── 桌機左側 Sidebar：改由 Portal 的 re-sidebar.js 統一渲染（單一來源）──
+     下面這個極簡 #app-sidebar 是「回首頁退路」：Portal 正常時，
+     re-sidebar.js 載入後會把整個 #app-sidebar 換成完整側欄；
+     Portal 掛掉、re-sidebar.js 載不到時，使用者至少還看得到這顆「回首頁」。 -->
 <aside id="app-sidebar">
   <div class="sb-logo">
-    <a id="sb-logo-link" href="javascript:void(0)" onclick="var el=document.getElementById('sb-portal-home');if(el&&el.href&&el.href!='javascript:void(0)')window.open(el.href,'tool-portal');else if(el&&el.getAttribute('data-href'))window.open(el.getAttribute('data-href'),'tool-portal');" title="回到工具首頁" style="display:flex;align-items:center;justify-content:center;">
+    <a href="https://real-estate-portal-334765337861.asia-east1.run.app/" target="tool-portal" title="回到工具首頁" style="display:flex;align-items:center;justify-content:center;">
       <img src="/static/logo.png" alt="U.P." onerror="this.style.display='none'" />
     </a>
     <span>物件庫</span>
   </div>
   <nav>
-    <a href="__PORTAL_LINK__" target="tool-portal" id="sb-portal-home" class="hidden"><img src="/static/tool-reels.png" alt="" /><span class="sb-nav-text">工具首頁</span><span class="sb-tooltip">工具首頁</span></a>
-    <div class="sb-fw hidden" id="sb-ad">
-      <a href="javascript:void(0)" id="sb-ad-link" target="tool-post"><img src="/static/tool-ad.png" alt="" /><span class="sb-tooltip">廣告文案</span></a>
-      <div class="sb-flyout"><div class="sb-flyout-title">廣告文案</div>
-        <a id="sb-ad-campaigns" href="#" target="tool-post" class="sb-flyout-item"><span class="fi-dot"></span>廣告活動</a>
-        <a id="sb-ad-photos" href="#" target="tool-post" class="sb-flyout-item"><span class="fi-dot"></span>物件照片</a>
-        <a id="sb-ad-showcase" href="#" target="tool-post" class="sb-flyout-item"><span class="fi-dot"></span>展示頁</a>
-      </div>
-    </div>
-    <a href="#" class="active"><img src="/static/tool-library.png" alt="" /><span class="sb-nav-text">物件庫</span><span class="sb-tooltip">物件庫</span></a>
-    <div class="sb-fw hidden" id="sb-buyer">
-      <a href="javascript:void(0)" id="sb-buyer-link" target="tool-buyer"><img src="/static/tool-buyer.png" alt="" /><span class="sb-tooltip">買方管理</span></a>
-      <div class="sb-flyout"><div class="sb-flyout-title">買方管理</div>
-        <a id="sb-buyer-buyers" href="#" target="tool-buyer" class="sb-flyout-item"><span class="fi-dot"></span>買方需求</a>
-        <a id="sb-buyer-war" href="#" target="tool-buyer" class="sb-flyout-item"><span class="fi-dot"></span>戰況版</a>
-        <a id="sb-buyer-showings" href="#" target="tool-buyer" class="sb-flyout-item"><span class="fi-dot"></span>帶看紀錄</a>
-      </div>
-    </div>
-    <a href="javascript:void(0)" id="sb-survey" class="hidden"><img src="/static/tool-survey.png" alt="" /><span class="sb-nav-text">周邊調查</span><span class="sb-tooltip">周邊調查</span></a>
-    <div class="sb-fw hidden" id="sb-calendar">
-      <a href="javascript:void(0)" id="sb-calendar-link" target="tool-calendar"><img src="/static/tool-calendar.png" alt="" /><span class="sb-tooltip">業務行事曆</span></a>
-      <div class="sb-flyout"><div class="sb-flyout-title">業務行事曆</div>
-        <a id="sb-calendar-week" href="#" target="tool-calendar" class="sb-flyout-item"><span class="fi-dot"></span>週視圖</a>
-        <a id="sb-calendar-month" href="#" target="tool-calendar" class="sb-flyout-item"><span class="fi-dot"></span>月視圖</a>
-      </div>
-    </div>
-    <a href="javascript:void(0)" id="sb-notes" class="hidden"><img src="/static/tool-doc.png" alt="" /><span class="sb-nav-text">記事本</span><span class="sb-tooltip">記事本</span></a>
+    <a href="https://real-estate-portal-334765337861.asia-east1.run.app/" target="tool-portal" title="工具首頁"><img src="/static/tool-reels.png" alt="" onerror="this.style.display='none'" /><span class="sb-tooltip">工具首頁</span></a>
   </nav>
-  <div class="sb-user">
-    <!-- 桌機：只顯示頭像，文字隱藏 -->
-    <button type="button" onclick="libToggleDropdown(event)">
-      <div id="sb-avatar" class="av-wrap" style="width:36px;height:36px;flex-shrink:0;"><div class="av-fb">?</div></div>
-      <div class="sb-hide" style="min-width:0;flex:1;">
-        <div id="sb-name" style="font-size:0.82rem;font-weight:600;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
-        <span id="sb-badge" class="points-pill points" style="margin-top:2px;">— 點</span>
-      </div>
-      <svg class="sb-hide" style="width:16px;height:16px;color:var(--txm);flex-shrink:0;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-    </button>
-  </div>
 </aside>
 
 <!-- ── 手機頂部 Header ── -->
@@ -13920,6 +13886,8 @@ window.addEventListener('unhandledrejection', function(e) {
     // 從 session API 取得登入者資訊
     fetch('/api/me').then(function(r){ return r.json(); }).then(function(u) {
       if (u.error) return;
+      // 把登入者交給統一左側工具列（re-sidebar.js）：決定權限可見項目 + 頭像/徽章
+      try { window.__RE_SIDEBAR = window.__RE_SIDEBAR || {}; window.__RE_SIDEBAR.user = u; if (window.reSidebar && window.reSidebar.setUser) window.reSidebar.setUser(u); } catch(e){}
       _setAll(['sb-name', 'dd-name'], u.name || u.email, 'textContent');
       _setAvatar(['sb-avatar', 'hd-avatar'], u.picture || '', u.name || u.email);
       // 更新 points-pill badge（管理員/訂閱/點數，與 Portal 一致）
@@ -15198,6 +15166,18 @@ function closeMoreMenu(){ toggleMoreMenu(); }
       }
     });
   </script>
+
+<!-- ── 統一左側工具列：載入 Portal 單一來源 re-sidebar.js（CSS 由它自動補上）──
+     active 指這支工具是哪個（物件庫=library）。
+     onAvatarClick 把側欄頭像點擊接回本工具自己的下拉選單 libToggleDropdown。 -->
+<script>
+  window.__RE_SIDEBAR = {
+    active: 'library',
+    portalUrl: "https://real-estate-portal-334765337861.asia-east1.run.app",
+    onAvatarClick: function (ev) { try { libToggleDropdown(ev); } catch (e) {} }
+  };
+</script>
+<script src="https://real-estate-portal-334765337861.asia-east1.run.app/static/re-sidebar.js"></script>
 </body>
 </html>
 """
