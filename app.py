@@ -8211,13 +8211,13 @@ OBJECTS_APP_HTML = """
     #app-sidebar .sb-logo img{height:48px;width:48px;object-fit:contain;border-radius:8px;}
     #app-sidebar .sb-logo span{display:none;}
     #app-sidebar nav{flex:1;padding:12px 0;display:flex;flex-direction:column;align-items:center;gap:4px;overflow-y:auto;overflow-x:hidden;min-height:0;}
-    #app-sidebar nav a{width:60px;height:60px;min-width:60px;min-height:60px;display:flex;align-items:center;justify-content:center;border-radius:14px;color:var(--txs);text-decoration:none;transition:background 0.15s,color 0.15s;position:relative;}
-    #app-sidebar nav a img{width:36px;height:36px;object-fit:contain;}
-    #app-sidebar nav a .sb-nav-text{display:none;}
-    #app-sidebar nav a:hover{background:var(--bg-h);}
-    #app-sidebar nav a.active{background:var(--acs);}
-    #app-sidebar nav a .sb-tooltip{position:absolute;left:calc(100% + 10px);top:50%;transform:translateY(-50%);background:var(--bg-s);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:5px 10px;font-size:0.78rem;font-weight:600;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity 0.15s;z-index:300;box-shadow:0 4px 12px rgba(0,0,0,.08);}
-    #app-sidebar nav a:hover .sb-tooltip{opacity:1;}
+    #app-sidebar nav>a{width:60px;height:60px;min-width:60px;min-height:60px;display:flex;align-items:center;justify-content:center;border-radius:14px;color:var(--txs);text-decoration:none;transition:background 0.15s,color 0.15s;position:relative;}
+    #app-sidebar nav>a img{width:36px;height:36px;object-fit:contain;}
+    #app-sidebar nav>a .sb-nav-text{display:none;}
+    #app-sidebar nav>a:hover{background:var(--bg-h);}
+    #app-sidebar nav>a.active{background:var(--acs);}
+    #app-sidebar nav>a .sb-tooltip{position:absolute;left:calc(100% + 10px);top:50%;transform:translateY(-50%);background:var(--bg-s);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:5px 10px;font-size:0.78rem;font-weight:600;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity 0.15s;z-index:300;box-shadow:0 4px 12px rgba(0,0,0,.08);}
+    #app-sidebar nav>a:hover .sb-tooltip{opacity:1;}
     /* flyout 子選單（position:fixed 逃脫 overflow-x:hidden）*/
     .sb-fw{width:60px;height:60px;min-width:60px;min-height:60px;display:flex;align-items:center;justify-content:center;}
     .sb-fw.hidden{display:none!important;}
