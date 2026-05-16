@@ -3672,6 +3672,36 @@ def _is_within_delegation(r):
     return expiry >= today
 
 
+# yes319 應變放行的有效天數：yes319 同步是週排程，給 21 天 ≈ 3 個週期的寬限。
+# 超過代表 yes319 同步可能停了或物件早就不在架上 → 自動失效，避免變成永久髒資料。
+_YES319_OVERRIDE_GRACE_DAYS = 21
+
+
+def _has_yes319_override(r):
+    """委託過期但 yes319 還在架上的「助理時間差應變放行」。
+
+    `yes319_active_override` 由 yes319_sync.run_delegation_override 寫入（值為當天日期），
+    每次 yes319 同步會重新確認；本函式再加一道時效保險（超過寬限天數視為失效）。
+    """
+    ov = (r.get("yes319_active_override") or "").strip()
+    if not ov:
+        return False
+    from datetime import datetime, timezone, timedelta
+    try:
+        ov_date = datetime.strptime(ov[:10], "%Y-%m-%d")
+    except ValueError:
+        return False
+    now = datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
+    return (now - ov_date).days <= _YES319_OVERRIDE_GRACE_DAYS
+
+
+def _is_publicly_visible(r):
+    """對外網站是否該顯示：銷售中 ∧（委託期內 或 yes319 應變放行）。"""
+    if not _is_selling(r):
+        return False
+    return _is_within_delegation(r) or _has_yes319_override(r)
+
+
 def _notify_home_start(property_id, action="upsert"):
     """通知 home-start 物件變動（webhook）。失敗不影響主流程。
     action: upsert（新增/修改）/ unlist（下架）/ delete（刪除）。
@@ -3737,6 +3767,9 @@ def _public_property_payload(r):
         "lat":           lat,
         "lng":           lng,
         "is_selling":    _is_selling(r),
+        # yes319 應變放行：True = 委託到期日過期但 yes319 還在架上，因助理時間差暫放行
+        "yes319_override":    _has_yes319_override(r) and not _is_within_delegation(r),
+        "yes319_override_at": (r.get("yes319_active_override") or "").strip() or None,
     }
 
 
@@ -3852,10 +3885,9 @@ def api_public_properties():
         for doc in db.collection("company_properties").stream():
             r = doc.to_dict()
             r["id"] = doc.id
-            if not _is_selling(r):
+            # 銷售中 ∧（委託期內 或 yes319 應變放行）才對外
+            if not _is_publicly_visible(r):
                 continue
-            if not _is_within_delegation(r):
-                continue  # 委託已到期或無到期日，不對外公開
             payload = _public_property_payload(r)
             if payload:
                 items.append(payload)
@@ -3880,7 +3912,7 @@ def api_public_property_one(prop_id):
             return jsonify({"error": "not found"}), 404
         r = doc.to_dict()
         r["id"] = doc.id
-        if not _is_selling(r) or not _is_within_delegation(r):
+        if not _is_publicly_visible(r):
             return jsonify({"error": "gone"}), 410
         return jsonify(_public_property_payload(r))
     except Exception as e:
@@ -6464,6 +6496,44 @@ def api_yes319_create_missing_preview():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/yes319/delegation-override", methods=["GET", "POST"])
+def api_yes319_delegation_override():
+    """委託到期應變：yes319 還在架上的物件，暫時放行給起家顯示。
+
+    用途：助理會先把物件上架 yes319 打廣告，公司總表委託到期日晚點才補。
+    這支 API 爬 yes319 → 比對 company_properties → 對「銷售中 ∧ 委託過期 ∧
+    yes319 還在架上」標記 yes319_active_override（暫時放行），並清掉 yes319
+    已撤掉的舊放行。是「助理時間差」的應變，不是永久改委託到期日。
+    """
+    has_session_auth = False
+    try:
+        email, err = _require_user()
+        if not err:
+            has_session_auth = True
+    except Exception:
+        pass
+    if not has_session_auth:
+        expected_key = (os.environ.get("SERVICE_API_KEY") or "").strip()
+        sent_key = (request.headers.get("X-Service-Key") or "").strip()
+        if not expected_key or sent_key != expected_key:
+            return jsonify({"error": "unauthorized"}), 401
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore 未連線"}), 503
+    from datetime import datetime, timezone, timedelta
+    today_str = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+    try:
+        import yes319_sync
+        result = yes319_sync.run_delegation_override(
+            db, _is_selling, _is_within_delegation, today_str
+        )
+        return jsonify(result)
+    except Exception as e:
+        import logging
+        logging.exception("yes319 delegation-override 失敗")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/yes319/sync-all", methods=["POST"])
 def api_yes319_sync_all():
     """一鍵全自動：文案同步 + 照片同步 + 下架預覽 + 缺漏預覽
@@ -6489,9 +6559,21 @@ def api_yes319_sync_all():
         return jsonify({"error": "HOME_START_URL 或 SERVICE_API_KEY 未設定"}), 500
 
     import logging as _log
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
     out = {"ok": True}
     try:
         import yes319_sync
+        # 0. 委託到期應變：yes319 還在架上的（委託過期但實際還在賣）→ 標記放行
+        #    放最前面：先讓 company_properties 標好旗標，home-start 之後同步才會帶到這些物件
+        try:
+            _db = _get_db()
+            _today = _dt.now(_tz(_td(hours=8))).strftime("%Y-%m-%d")
+            out["delegation_override"] = yes319_sync.run_delegation_override(
+                _db, _is_selling, _is_within_delegation, _today
+            )
+        except Exception as e:
+            _log.exception("sync-all: delegation_override 失敗")
+            out["delegation_override"] = {"ok": False, "error": str(e)}
         # 1. 文案同步（爬 yes319 → 比對 → 推送 features/amenities/age/floor）
         try:
             out["sync"] = yes319_sync.run_full_sync(home_start_url, service_key, dry_run=False)

@@ -417,6 +417,119 @@ def run_create_missing_dryrun(home_start_url, service_key):
             "elapsed_sec": round(time.time() - started, 1)}
 
 
+# ───── 委託到期應變：yes319 還在架上 → 暫時放行給起家 ─────
+def run_delegation_override(db, is_selling_fn, is_within_delegation_fn,
+                            today_str, threshold=0.6):
+    """處理「助理時間差」應變：
+
+    營運現實：助理會先把物件上架到 yes319 公司網頁打廣告，公司總表 Sheets 的
+    委託到期日晚點才補。導致一些「實際還在賣」的物件，因 Sheets 委託到期日過期，
+    被 home-start 對外規則（銷售中 ∧ 委託期內）擋掉、不顯示。
+
+    本函式：爬 yes319 現有上架物件 → 比對 company_properties →
+      - 銷售中 ∧ 委託過期 ∧ 比對到 yes319 上架中 → 標記 `yes319_active_override = today`
+        （= yes319 證明確實還有委託，暫時放行；這只是助理時間差的應變，非永久改資料）
+      - 之前有 override 但現在 yes319 已沒這筆 → 清掉 override（助理真的下架了就停止放行）
+
+    參數 db / is_selling_fn / is_within_delegation_fn 由 app.py 傳入，
+    讓「銷售中」「委託期內」的判斷權威留在 app.py，本模組只負責爬+比對+寫旗標。
+    """
+    started = time.time()
+    log.info("[deleg-override] step 1 爬 yes319 列表+詳情...")
+    objs_m2 = _crawl_list("m2")
+    objs_m3 = _crawl_list("m3")
+    targets = [("m2", o) for o in sorted(objs_m2)] + [("m3", o) for o in sorted(objs_m3)]
+    yes_items = []
+    seen = set()
+    for kind, obj in targets:
+        if obj in seen:
+            continue
+        seen.add(obj)
+        try:
+            yes_items.append(_parse_detail(kind, obj))
+        except Exception:
+            pass
+        time.sleep(0.3)
+    log.info(f"[deleg-override] yes319 上架 {len(yes_items)} 筆")
+
+    # company_property（中文欄位）轉成 _score() 看得懂的 {title, price, address}
+    def _as_hs(r):
+        price = r.get("售價(萬)") or r.get("售價") or 0
+        try:
+            price = float(price)
+        except (ValueError, TypeError):
+            price = 0
+        return {
+            "title":   (r.get("案名") or "").strip(),
+            "price":   price,
+            "address": (r.get("物件地址") or "").strip(),
+        }
+
+    set_cnt = clear_cnt = 0
+    set_items, clear_items = [], []
+    for doc in db.collection("company_properties").stream():
+        r = doc.to_dict()
+        seq = doc.id
+        had_override = bool(r.get("yes319_active_override"))
+
+        # 只處理「銷售中」物件；非銷售中不該因 yes319 放行
+        if not is_selling_fn(r):
+            if had_override:
+                doc.reference.set({"yes319_active_override": firestore_delete()},
+                                  merge=True)
+                clear_cnt += 1
+                clear_items.append({"seq": seq, "reason": "非銷售中"})
+            continue
+
+        within = is_within_delegation_fn(r)
+        hs = _as_hs(r)
+        # 找 yes319 是否有對應上架中物件（沿用同一套比對演算法）
+        best = 0.0
+        for yes in yes_items:
+            s = _score(yes, hs)
+            if s is not None and s > best:
+                best = s
+        on_yes319 = best >= threshold
+
+        if within:
+            # 委託期內，本來就會顯示；若殘留舊 override 清掉（保持資料乾淨）
+            if had_override:
+                doc.reference.set({"yes319_active_override": firestore_delete()},
+                                  merge=True)
+                clear_cnt += 1
+                clear_items.append({"seq": seq, "reason": "委託期已恢復正常"})
+            continue
+
+        # 委託過期：靠 yes319 判斷要不要放行
+        if on_yes319:
+            doc.reference.set({"yes319_active_override": today_str}, merge=True)
+            set_cnt += 1
+            set_items.append({"seq": seq, "name": r.get("案名", ""),
+                              "expiry": r.get("委託到期日", ""), "score": round(best, 3)})
+        elif had_override:
+            # 之前放行過，但 yes319 已沒這筆 → 助理真的下架了，停止放行
+            doc.reference.set({"yes319_active_override": firestore_delete()},
+                              merge=True)
+            clear_cnt += 1
+            clear_items.append({"seq": seq, "reason": "yes319 已無此物件"})
+
+    return {
+        "ok": True,
+        "yes319_listed": len(yes_items),
+        "override_set": set_cnt,       # 新放行（委託過期但 yes319 還在賣）
+        "override_cleared": clear_cnt, # 清掉的舊放行
+        "set_items": set_items[:50],
+        "clear_items": clear_items[:50],
+        "elapsed_sec": round(time.time() - started, 1),
+    }
+
+
+def firestore_delete():
+    """回傳 Firestore 的「刪除欄位」哨兵（延遲 import，避免模組載入期就需要套件）。"""
+    from google.cloud import firestore as _fs
+    return _fs.DELETE_FIELD
+
+
 # ───── 補照片：對 home-start 沒照片但有 yes319_objno 的物件，從 yes319 下載照片補上 ─────
 def run_photo_sync(home_start_url, service_key, max_per_prop=15):
     """對 home-start 已連結 yes319 但無照片的物件，從 yes319 下載並上傳照片。"""
