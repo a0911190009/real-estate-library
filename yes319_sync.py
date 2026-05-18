@@ -419,7 +419,7 @@ def run_create_missing_dryrun(home_start_url, service_key):
 
 # ───── 委託到期應變：yes319 還在架上 → 暫時放行給起家 ─────
 def run_delegation_override(db, is_selling_fn, is_within_delegation_fn,
-                            today_str, threshold=0.6):
+                            today_str, threshold=0.6, hard_keys_fn=None):
     """處理「助理時間差」應變：
 
     營運現實：助理會先把物件上架到 yes319 公司網頁打廣告，公司總表 Sheets 的
@@ -431,8 +431,13 @@ def run_delegation_override(db, is_selling_fn, is_within_delegation_fn,
         （= yes319 證明確實還有委託，暫時放行；這只是助理時間差的應變，非永久改資料）
       - 之前有 override 但現在 yes319 已沒這筆 → 清掉 override（助理真的下架了就停止放行）
 
-    參數 db / is_selling_fn / is_within_delegation_fn 由 app.py 傳入，
-    讓「銷售中」「委託期內」的判斷權威留在 app.py，本模組只負責爬+比對+寫旗標。
+    防呆（2026-05-18 修）：若同一硬資料指紋（鄉鎮+段別+地號+建號）已有另一筆
+    「委託期內」的物件正常顯示，就**不放行**這筆過期重複舊版（避免起家出現
+    「有照片的正本 + 沒照片的過期重複」雙胞胎，如皇家大樓一樓 5960/5433）。
+
+    參數 db / is_selling_fn / is_within_delegation_fn / hard_keys_fn 由 app.py 傳入，
+    讓「銷售中」「委託期內」「硬資料指紋」的判斷權威留在 app.py，
+    本模組只負責爬+比對+寫旗標。
     """
     started = time.time()
     log.info("[deleg-override] step 1 爬 yes319 列表+詳情...")
@@ -465,9 +470,21 @@ def run_delegation_override(db, is_selling_fn, is_within_delegation_fn,
             "address": (r.get("物件地址") or "").strip(),
         }
 
-    set_cnt = clear_cnt = 0
+    # 預先掃一輪：收集「銷售中 ∧ 委託期內」物件的硬資料指紋集合。
+    # 之後若某過期物件的硬資料指紋已在這集合裡，代表同一間房已有現役版正常顯示，
+    # 就不放行這筆過期重複舊版（防皇家大樓一樓那種雙胞胎）。
+    visible_hard_keys = set()
+    all_docs = list(db.collection("company_properties").stream())
+    if hard_keys_fn:
+        for doc in all_docs:
+            r = doc.to_dict()
+            if is_selling_fn(r) and is_within_delegation_fn(r):
+                for k in (hard_keys_fn(r) or []):
+                    visible_hard_keys.add(str(k))
+
+    set_cnt = clear_cnt = skip_dup_cnt = 0
     set_items, clear_items = [], []
-    for doc in db.collection("company_properties").stream():
+    for doc in all_docs:
         r = doc.to_dict()
         seq = doc.id
         had_override = bool(r.get("yes319_active_override"))
@@ -500,6 +517,18 @@ def run_delegation_override(db, is_selling_fn, is_within_delegation_fn,
                 clear_items.append({"seq": seq, "reason": "委託期已恢復正常"})
             continue
 
+        # 防呆：同硬資料指紋已有現役版正常顯示 → 不放行這筆過期重複舊版
+        if hard_keys_fn:
+            my_keys = [str(k) for k in (hard_keys_fn(r) or [])]
+            if any(k in visible_hard_keys for k in my_keys):
+                skip_dup_cnt += 1
+                if had_override:
+                    doc.reference.set({"yes319_active_override": firestore_delete()},
+                                      merge=True)
+                    clear_cnt += 1
+                    clear_items.append({"seq": seq, "reason": "同物件已有現役版,免放行重複舊版"})
+                continue
+
         # 委託過期：靠 yes319 判斷要不要放行
         if on_yes319:
             doc.reference.set({"yes319_active_override": today_str}, merge=True)
@@ -516,8 +545,9 @@ def run_delegation_override(db, is_selling_fn, is_within_delegation_fn,
     return {
         "ok": True,
         "yes319_listed": len(yes_items),
-        "override_set": set_cnt,       # 新放行（委託過期但 yes319 還在賣）
-        "override_cleared": clear_cnt, # 清掉的舊放行
+        "override_set": set_cnt,         # 新放行（委託過期但 yes319 還在賣）
+        "override_cleared": clear_cnt,   # 清掉的舊放行
+        "skip_dup": skip_dup_cnt,        # 因同物件已有現役版而略過的重複舊版
         "set_items": set_items[:50],
         "clear_items": clear_items[:50],
         "elapsed_sec": round(time.time() - started, 1),

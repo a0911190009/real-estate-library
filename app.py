@@ -6525,7 +6525,8 @@ def api_yes319_delegation_override():
     try:
         import yes319_sync
         result = yes319_sync.run_delegation_override(
-            db, _is_selling, _is_within_delegation, today_str
+            db, _is_selling, _is_within_delegation, today_str,
+            hard_keys_fn=_access_hard_keys
         )
         return jsonify(result)
     except Exception as e:
@@ -6569,7 +6570,8 @@ def api_yes319_sync_all():
             _db = _get_db()
             _today = _dt.now(_tz(_td(hours=8))).strftime("%Y-%m-%d")
             out["delegation_override"] = yes319_sync.run_delegation_override(
-                _db, _is_selling, _is_within_delegation, _today
+                _db, _is_selling, _is_within_delegation, _today,
+                hard_keys_fn=_access_hard_keys
             )
         except Exception as e:
             _log.exception("sync-all: delegation_override 失敗")
