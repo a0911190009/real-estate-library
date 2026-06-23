@@ -8627,6 +8627,24 @@ window.addEventListener('unhandledrejection', function(e) {
 <!-- ══ 公司物件庫分頁 ══ -->
 <div id="pane-company" style="display:none" class="max-w-4xl mx-auto px-4 py-6">
 
+  <!-- ── 物件素材預覽入口 ── -->
+  <div class="rounded-2xl p-4 mb-4" style="background:var(--bg-t);border:1px solid var(--bd);">
+    <div class="flex items-center gap-2 mb-3">
+      <span style="font-size:1.1rem;">🎬</span>
+      <span style="font-weight:700;color:var(--tx);">物件素材預覽</span>
+      <span class="text-xs" style="color:var(--txs);">影片 · 物件照片 · REELS</span>
+    </div>
+    <div class="flex flex-wrap gap-2">
+      <a href="https://property.taitunghouse.com" target="_blank" rel="noopener"
+         class="flex-1 text-center rounded-lg px-3 py-2 text-sm font-semibold"
+         style="min-width:140px;background:var(--ac);color:#fff;text-decoration:none;">☁️ 雲端檢視</a>
+      <a href="http://192.168.1.28:5010" target="_blank" rel="noopener"
+         class="flex-1 text-center rounded-lg px-3 py-2 text-sm font-semibold"
+         style="min-width:140px;background:var(--bg-h);color:var(--tx);border:1px solid var(--bd);text-decoration:none;">🖥️ 本地端檢視</a>
+    </div>
+    <div class="text-xs mt-2" style="color:var(--txm);">雲端＝任何地方/手機（需登入）；本地端＝公司 Wi-Fi 內。</div>
+  </div>
+
   <!-- 搜尋條件列 -->
   <div class="rounded-2xl p-4 mb-4" style="background:var(--bg-t);border:1px solid var(--bd);">
     <!-- 第一列：關鍵字 + 售價 + 狀態 -->
