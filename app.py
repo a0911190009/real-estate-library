@@ -8639,10 +8639,12 @@ window.addEventListener('unhandledrejection', function(e) {
          class="flex-1 text-center rounded-lg px-3 py-2 text-sm font-semibold"
          style="min-width:140px;background:var(--ac);color:#fff;text-decoration:none;">☁️ 雲端檢視</a>
       <a href="http://192.168.1.28:5010" target="_blank" rel="noopener"
+         onclick="document.getElementById('mp-local-hint').style.display='block'"
          class="flex-1 text-center rounded-lg px-3 py-2 text-sm font-semibold"
-         style="min-width:140px;background:var(--bg-h);color:var(--tx);border:1px solid var(--bd);text-decoration:none;">🖥️ 本地端檢視</a>
+         style="min-width:140px;background:var(--bg-h);color:var(--txs);border:1px solid var(--bd);text-decoration:none;">🖥️ 本地端檢視 <span style="font-weight:400;opacity:.7;">· 限公司Wi-Fi</span></a>
     </div>
-    <div class="text-xs mt-2" style="color:var(--txm);">雲端＝任何地方/手機（需登入）；本地端＝公司 Wi-Fi 內。</div>
+    <div class="text-xs mt-2" style="color:var(--txm);">雲端＝任何地方/手機（需登入）；本地端＝只在公司 Wi-Fi 內可用。</div>
+    <div id="mp-local-hint" class="text-xs mt-2" style="display:none;color:var(--ac);">💡 本地端打不開＝你目前不在公司 Wi-Fi，請改點上面的「☁️ 雲端檢視」。</div>
   </div>
 
   <!-- 搜尋條件列 -->
